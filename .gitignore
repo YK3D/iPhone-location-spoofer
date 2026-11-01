@@ -1,9 +1,5 @@
-__pycache__/
-*.pyc
-.venv/
-venv/
+/target
+/dist
+*.pdb
 .pytest_cache/
-*.egg-info/
-dist/
-build/
-*.spec
+__pycache__/

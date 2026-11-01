@@ -1,0 +1,247 @@
+//! Self-update for the standalone exe from GitHub Releases tagged `standalone-v<version>`.
+//!
+//! Same scheme as the browser version: download next to the exe, verify SHA-256 and the
+//! download host, then swap on "Restart now" or at the next launch (Windows allows renaming a
+//! running exe). Disabled in Microsoft Store builds (`--features store`): the Store updates
+//! packaged apps itself and its policies do not allow self-updating packages.
+
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+pub const REPO: &str = "YK3D/iPhone-location-spoofer";
+pub const TAG_PREFIX: &str = "standalone-v";
+pub const ASSET: &str = "LocationSpooferStandalone.exe";
+const ALLOWED_HOSTS: [&str; 3] = ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"];
+
+pub fn current_version() -> &'static str {
+    option_env!("SPOOFER_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+pub fn parse_version(s: &str) -> Vec<u64> {
+    let s = s.trim().trim_start_matches(TAG_PREFIX).trim_start_matches('v');
+    let num: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    num.split('.').filter(|x| !x.is_empty()).filter_map(|x| x.parse().ok()).collect()
+}
+
+pub fn is_newer(candidate: &str, current: &str) -> bool {
+    let (mut a, mut b) = (parse_version(candidate), parse_version(current));
+    if a.is_empty() {
+        return false;
+    }
+    let n = a.len().max(b.len());
+    a.resize(n, 0);
+    b.resize(n, 0);
+    a > b
+}
+
+#[derive(Default)]
+struct UState {
+    state: String,
+    latest: Option<String>,
+    notes: String,
+    error: Option<String>,
+    progress: f64,
+}
+
+pub struct Updater {
+    pub enabled: bool,
+    exe: PathBuf,
+    st: Mutex<UState>,
+    busy: tokio::sync::Mutex<()>,
+}
+
+impl Updater {
+    pub fn new(enabled: bool) -> Self {
+        let exe = std::env::current_exe().unwrap_or_default();
+        Self {
+            enabled,
+            exe,
+            st: Mutex::new(UState { state: if enabled { "idle".into() } else { "disabled".into() }, ..Default::default() }),
+            busy: tokio::sync::Mutex::new(()),
+        }
+    }
+
+    fn sibling(&self, suffix: &str) -> PathBuf {
+        let stem = self.exe.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "LocationSpooferStandalone".into());
+        self.exe.with_file_name(format!("{stem}{suffix}"))
+    }
+    fn staged(&self) -> PathBuf {
+        self.sibling(".update.exe")
+    }
+    fn staged_meta(&self) -> PathBuf {
+        self.sibling(".update.json")
+    }
+    fn old(&self) -> PathBuf {
+        self.sibling(".old.exe")
+    }
+
+    pub fn status(&self) -> Value {
+        let s = self.st.lock().unwrap();
+        json!({"enabled": self.enabled, "state": s.state, "current": current_version(), "latest": s.latest,
+               "notes": s.notes, "error": s.error, "progress": s.progress, "repo": REPO})
+    }
+
+    pub fn staged_version(&self) -> Option<String> {
+        let meta: Value = serde_json::from_str(&std::fs::read_to_string(self.staged_meta()).ok()?).ok()?;
+        let bytes = std::fs::read(self.staged()).ok()?;
+        let digest = hex::encode(Sha256::digest(&bytes));
+        let v = meta["version"].as_str()?.to_string();
+        (digest == meta["sha256"].as_str()? && is_newer(&v, current_version())).then_some(v)
+    }
+
+    pub fn cleanup_old(&self) {
+        for _ in 0..40 {
+            if !self.old().exists() || std::fs::remove_file(self.old()).is_ok() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+
+    pub fn swap_in_staged(&self) -> Result<bool, String> {
+        if self.staged_version().is_none() {
+            return Ok(false);
+        }
+        let _ = std::fs::remove_file(self.old());
+        std::fs::rename(&self.exe, self.old()).map_err(|e| {
+            format!("Could not replace the program file ({e}). Move the app to a folder you can write to, e.g. your Desktop.")
+        })?;
+        if let Err(e) = std::fs::rename(self.staged(), &self.exe) {
+            let _ = std::fs::rename(self.old(), &self.exe);
+            return Err(format!("Could not install the update: {e}"));
+        }
+        let _ = std::fs::remove_file(self.staged_meta());
+        Ok(true)
+    }
+
+    pub fn relaunch(&self, mut args: Vec<String>) {
+        if let Some(i) = args.iter().position(|a| a == "--wait-pid") {
+            args.drain(i..(i + 2).min(args.len()));
+        }
+        args.push("--wait-pid".into());
+        args.push(std::process::id().to_string());
+        let _ = std::process::Command::new(&self.exe).args(args).spawn();
+    }
+
+    fn set(&self, f: impl FnOnce(&mut UState)) {
+        f(&mut self.st.lock().unwrap());
+    }
+
+    pub async fn check(&self) -> Value {
+        if !self.enabled {
+            return self.status();
+        }
+        let Ok(_guard) = self.busy.try_lock() else { return self.status() };
+        self.set(|s| {
+            s.state = "checking".into();
+            s.error = None;
+        });
+        if let Err(e) = self.check_inner().await {
+            self.set(|s| {
+                s.state = "error".into();
+                s.error = Some(e);
+            });
+        }
+        self.status()
+    }
+
+    async fn check_inner(&self) -> Result<(), String> {
+        let http = crate::routing::http();
+        let rels: Vec<Value> = http
+            .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        let rel = rels.iter().find(|r| {
+            r["tag_name"].as_str().map(|t| t.starts_with(TAG_PREFIX)).unwrap_or(false)
+                && !r["draft"].as_bool().unwrap_or(false)
+                && !r["prerelease"].as_bool().unwrap_or(false)
+        });
+        let Some(rel) = rel else {
+            self.set(|s| s.state = "up_to_date".into());
+            return Ok(());
+        };
+        let tag = rel["tag_name"].as_str().unwrap_or("").to_string();
+        let latest = tag.trim_start_matches(TAG_PREFIX).to_string();
+        self.set(|s| {
+            s.latest = Some(latest.clone());
+            s.notes = rel["body"].as_str().unwrap_or("").chars().take(2000).collect();
+        });
+        if !is_newer(&latest, current_version()) {
+            self.set(|s| s.state = "up_to_date".into());
+            return Ok(());
+        }
+        if self.staged_version().as_deref() == Some(latest.as_str()) {
+            self.set(|s| s.state = "ready".into());
+            return Ok(());
+        }
+        let asset = |name: &str| {
+            rel["assets"].as_array().into_iter().flatten().find(|a| a["name"] == name).and_then(|a| a["browser_download_url"].as_str().map(String::from))
+        };
+        let (exe_url, sum_url) = (asset(ASSET).ok_or("Release has no exe")?, asset(&format!("{ASSET}.sha256")).ok_or("Release has no checksum")?);
+        for u in [&exe_url, &sum_url] {
+            check_host(u)?;
+        }
+        let sum = http.get(&sum_url).send().await.map_err(|e| e.to_string())?.text().await.map_err(|e| e.to_string())?;
+        let expected = sum.split_whitespace().next().unwrap_or("").to_lowercase();
+        if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("The release checksum file is malformed".into());
+        }
+        self.set(|s| s.state = "downloading".into());
+        let resp = http.get(&exe_url).send().await.map_err(|e| e.to_string())?;
+        check_host(resp.url().as_str())?;
+        let total = resp.content_length().unwrap_or(0) as f64;
+        let mut hasher = Sha256::new();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut stream = resp.bytes_stream();
+        use futures_util::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| e.to_string())?;
+            hasher.update(&chunk);
+            buf.extend_from_slice(&chunk);
+            if total > 0.0 {
+                let p = buf.len() as f64 / total;
+                self.set(|s| s.progress = p);
+            }
+        }
+        if hex::encode(hasher.finalize()) != expected {
+            return Err("Downloaded update failed the SHA-256 check and was discarded".into());
+        }
+        std::fs::write(self.staged(), &buf).map_err(|e| e.to_string())?;
+        std::fs::write(self.staged_meta(), json!({"version": latest, "sha256": expected}).to_string()).map_err(|e| e.to_string())?;
+        self.set(|s| {
+            s.state = "ready".into();
+            s.progress = 1.0;
+        });
+        Ok(())
+    }
+}
+
+fn check_host(u: &str) -> Result<(), String> {
+    let url = url::Url::parse(u).map_err(|_| "bad url")?;
+    let host = url.host_str().unwrap_or("");
+    if url.scheme() != "https" || !ALLOWED_HOSTS.contains(&host) {
+        return Err(format!("Refusing to download an update from {host}"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn versions() {
+        assert!(is_newer("standalone-v0.2.5", "0.1.9"));
+        assert!(!is_newer("0.1.9", "0.1.10"));
+        assert!(is_newer("1.0", "0.9.99"));
+        assert!(!is_newer("garbage", "0.1.0"));
+        assert!(check_host("https://evil.example/x").is_err());
+        assert!(check_host("https://github.com/x").is_ok());
+    }
+}
