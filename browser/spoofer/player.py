@@ -133,6 +133,17 @@ class Player:
             self.state = "idle"
         self.joy_moving = False
 
+    async def unload(self) -> None:
+        """Forget the loaded route (e.g. after the user cleared it)."""
+        await self.stop()
+        self.timeline = None
+        self.timeline_name = ""
+        self.t = 0.0
+        self.direction = 1
+        self.laps = 0
+        if self.state not in ("joystick",):
+            self.state = "idle"
+
     async def seek(self, t: float) -> None:
         if self.timeline is None:
             return

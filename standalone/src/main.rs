@@ -138,11 +138,12 @@ fn start_server(rt: &tokio::runtime::Runtime, listener: tokio::net::TcpListener,
         if a2.updater.enabled {
             let u = a2.updater.clone();
             std::thread::spawn(move || u.cleanup_old());
-            let u = a2.updater.clone();
+            let a3 = a2.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                 loop {
-                    u.check().await;
+                    let channel = server::update_channel(&a3);
+                    a3.updater.check(&channel).await;
                     tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
                 }
             });
@@ -215,6 +216,18 @@ mod gui {
         Restart,
     }
 
+    fn window_icon() -> Option<tao::window::Icon> {
+        let png = include_bytes!("../../assets/icon/icon-64.png");
+        let decoder = png::Decoder::new(std::io::Cursor::new(&png[..]));
+        let mut reader = decoder.read_info().ok()?;
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).ok()?;
+        if info.color_type != png::ColorType::Rgba {
+            return None;
+        }
+        tao::window::Icon::from_rgba(buf[..info.buffer_size()].to_vec(), info.width, info.height).ok()
+    }
+
     pub fn run(url: String, app: Option<crate::server::App>, raw_args: Vec<String>, rt: tokio::runtime::Runtime) {
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
@@ -226,13 +239,30 @@ mod gui {
         }
         let window = WindowBuilder::new()
             .with_title("Location Spoofer")
+            .with_window_icon(window_icon())
             .with_inner_size(LogicalSize::new(1280.0, 820.0))
             .with_min_inner_size(LogicalSize::new(720.0, 520.0))
             .build(&event_loop)
             .expect("window");
         let downloads = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
+        let base = url.clone();
         let builder = WebViewBuilder::new()
             .with_url(&url)
+            // Links to the terms, privacy policy, GitHub etc. open in the system browser.
+            .with_new_window_req_handler(|u, _features| {
+                if u.starts_with("https://") || u.starts_with("http://") {
+                    let _ = open::that(&u);
+                }
+                wry::NewWindowResponse::Deny
+            })
+            .with_navigation_handler(move |u| {
+                if u.starts_with(&base) || u.starts_with("about:") || u.starts_with("data:") || u.starts_with("blob:") {
+                    true
+                } else {
+                    let _ = open::that(&u);
+                    false
+                }
+            })
             .with_download_started_handler(move |_url, path| {
                 // Save exported GPX files to the Downloads folder.
                 let name = path.file_name().map(|n| n.to_owned()).unwrap_or_else(|| "route.gpx".into());

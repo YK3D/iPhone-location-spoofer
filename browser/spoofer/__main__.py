@@ -152,6 +152,7 @@ def main() -> None:
     from spoofer.server import app
 
     app.state.s.updater = updater
+    updater.channel_getter = lambda: (app.state.s.store.load().get("settings") or {}).get("update_channel", "stable")
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=args.port, log_level="warning"))
     app.state.server = server
     if not args.no_browser:

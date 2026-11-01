@@ -192,6 +192,20 @@ impl Player {
         s.joy_moving = false;
     }
 
+    /// Forget the loaded route (e.g. after the user cleared it).
+    pub async fn unload(&self) {
+        self.stop().await;
+        let mut s = self.st.lock().unwrap();
+        s.timeline = None;
+        s.name.clear();
+        s.t = 0.0;
+        s.direction = 1.0;
+        s.laps = 0;
+        if s.state != "joystick" {
+            s.state = "idle".into();
+        }
+    }
+
     pub async fn seek(&self, t: f64) -> Result<(), String> {
         let (p, playing) = {
             let mut s = self.st.lock().unwrap();

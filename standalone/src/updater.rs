@@ -129,7 +129,7 @@ impl Updater {
         f(&mut self.st.lock().unwrap());
     }
 
-    pub async fn check(&self) -> Value {
+    pub async fn check(&self, channel: &str) -> Value {
         if !self.enabled {
             return self.status();
         }
@@ -138,7 +138,7 @@ impl Updater {
             s.state = "checking".into();
             s.error = None;
         });
-        if let Err(e) = self.check_inner().await {
+        if let Err(e) = self.check_inner(channel).await {
             self.set(|s| {
                 s.state = "error".into();
                 s.error = Some(e);
@@ -147,10 +147,10 @@ impl Updater {
         self.status()
     }
 
-    async fn check_inner(&self) -> Result<(), String> {
+    async fn check_inner(&self, channel: &str) -> Result<(), String> {
         let http = crate::routing::http();
         let rels: Vec<Value> = http
-            .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
+            .get(format!("https://api.github.com/repos/{REPO}/releases?per_page=40"))
             .header("Accept", "application/vnd.github+json")
             .send()
             .await
@@ -158,11 +158,7 @@ impl Updater {
             .json()
             .await
             .map_err(|e| e.to_string())?;
-        let rel = rels.iter().find(|r| {
-            r["tag_name"].as_str().map(|t| t.starts_with(TAG_PREFIX)).unwrap_or(false)
-                && !r["draft"].as_bool().unwrap_or(false)
-                && !r["prerelease"].as_bool().unwrap_or(false)
-        });
+        let rel = pick_release(&rels, channel);
         let Some(rel) = rel else {
             self.set(|s| s.state = "up_to_date".into());
             return Ok(());
@@ -223,6 +219,18 @@ impl Updater {
     }
 }
 
+/// Newest standalone release for the channel; "stable" ignores pre-releases (test builds).
+pub fn pick_release<'a>(rels: &'a [Value], channel: &str) -> Option<&'a Value> {
+    rels.iter()
+        .filter(|r| r["tag_name"].as_str().map(|t| t.starts_with(TAG_PREFIX)).unwrap_or(false))
+        .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+        .filter(|r| channel == "dev" || !r["prerelease"].as_bool().unwrap_or(false))
+        .fold(None, |best: Option<&Value>, r| match best {
+            Some(b) if !is_newer(r["tag_name"].as_str().unwrap_or(""), b["tag_name"].as_str().unwrap_or("")) => Some(b),
+            _ => Some(r),
+        })
+}
+
 fn check_host(u: &str) -> Result<(), String> {
     let url = url::Url::parse(u).map_err(|_| "bad url")?;
     let host = url.host_str().unwrap_or("");
@@ -243,5 +251,18 @@ mod tests {
         assert!(!is_newer("garbage", "0.1.0"));
         assert!(check_host("https://evil.example/x").is_err());
         assert!(check_host("https://github.com/x").is_ok());
+    }
+
+    #[test]
+    fn channels() {
+        let rels = serde_json::json!([
+            {"tag_name": "browser-v9.0.0", "prerelease": false},
+            {"tag_name": "standalone-v0.2.5", "prerelease": false},
+            {"tag_name": "standalone-v0.2.9-dev", "prerelease": true},
+            {"tag_name": "standalone-v0.2.7", "prerelease": false},
+        ]);
+        let rels = rels.as_array().unwrap();
+        assert_eq!(pick_release(rels, "stable").unwrap()["tag_name"], "standalone-v0.2.7");
+        assert_eq!(pick_release(rels, "dev").unwrap()["tag_name"], "standalone-v0.2.9-dev");
     }
 }

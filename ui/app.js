@@ -1,4 +1,4 @@
-/* Location Spoofer — UI (shared by the browser and standalone apps). Talks to the local server at /api. */
+/* Location Spoofer — UI shared by the standalone and browser apps. Talks to the local server at /api. */
 "use strict";
 
 // ------------------------------------------------------------------ helpers
@@ -8,6 +8,7 @@ const el = (tag, props = {}, ...kids) => {
   for (const [k, v] of Object.entries(props)) {
     if (k === "class") e.className = v;
     else if (k === "dataset") Object.assign(e.dataset, v);
+    else if (k === "style") e.setAttribute("style", v);
     else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
     else if (k in e) e[k] = v;
     else e.setAttribute(k, v);
@@ -35,23 +36,24 @@ async function api(path, opts = {}) {
 }
 
 let toastTimer;
-function toast(msg, isErr = false) {
+function toast(msg, isErr = false, action = null) {
   const t = $("toast");
-  t.textContent = msg;
+  t.replaceChildren(el("span", { textContent: msg }));
+  if (action) t.append(el("button", { type: "button", textContent: action.label, onclick: () => { t.className = ""; action.run(); } }));
   t.className = "show" + (isErr ? " err" : "");
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (t.className = ""), isErr ? 7000 : 3500);
+  toastTimer = setTimeout(() => (t.className = ""), action ? 8000 : isErr ? 7000 : 3500);
 }
 const guard = (fn) => async (...a) => {
-  try { await fn(...a); } catch (e) { toast(e.message || String(e), true); console.error(e); }
+  try { return await fn(...a); } catch (e) { toast(e.message || String(e), true); console.error(e); }
 };
 // Disable a button while an async action runs, so double clicks don't send twice.
 const busy = (btn, label, fn) => guard(async (...a) => {
   if (btn.disabled) return;
-  const old = btn.textContent;
+  const old = [...btn.childNodes];
   btn.disabled = true;
   if (label) btn.textContent = label;
-  try { await fn(...a); } finally { btn.disabled = false; btn.textContent = old; }
+  try { await fn(...a); } finally { btn.disabled = false; btn.replaceChildren(...old); }
 });
 
 const fmtTime = (s) => {
@@ -74,20 +76,31 @@ const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValu
 const looksLikeGoogleLink = (t) => /^https?:\/\/([a-z0-9-]+\.)*(google\.[a-z.]+|goo\.gl|g\.co)\//i.test(t.trim());
 
 const MODE_LABEL = { foot: "Footpaths", bike: "Cycle paths", car: "Roads", sea: "Sea lanes", straight: "Straight" };
-const MODE_COLOR = { foot: "#2e7d32", bike: "#6a1b9a", car: "#1565c0", sea: "#00838f", straight: "#ef6c00" };
 const SPEED_PRESETS = [
   ["Walk", 5, 0.5], ["Jog", 10, 0.8], ["Cycle", 18, 1.0], ["City car", 50, 2.0],
   ["Highway", 110, 2.5], ["Boat", 35, 0.3], ["Train", 160, 0.8], ["Plane", 850, 2.0],
 ];
+const THEMES = [
+  ["system", "System", "#f3f5f8", "#2563eb", "#15171b"], ["light", "Light", "#f3f5f8", "#2563eb", "#ffffff"],
+  ["dark", "Dark", "#15171b", "#4b9bff", "#1e2126"], ["midnight", "Midnight", "#0b1020", "#7c8cff", "#121933"],
+  ["graphite", "Graphite", "#1b1d21", "#10b981", "#23262b"], ["ocean", "Ocean", "#e9f4f8", "#0e7490", "#ffffff"],
+  ["forest", "Forest", "#eef3ec", "#2f7d32", "#ffffff"], ["sunset", "Sunset", "#fff3ea", "#ea580c", "#ffffff"],
+  ["rose", "Rose", "#fdf0f4", "#db2777", "#ffffff"], ["lavender", "Lavender", "#f3f0fb", "#7c3aed", "#ffffff"],
+  ["sand", "Sand", "#f4ecdd", "#8b5e34", "#fbf6ec"], ["nord", "Nord", "#2e3440", "#88c0d0", "#3b4252"],
+  ["dracula", "Dracula", "#1e1f29", "#bd93f9", "#282a36"], ["solarized-light", "Solarized light", "#eee8d5", "#268bd2", "#fdf6e3"],
+  ["solarized-dark", "Solarized dark", "#002b36", "#2aa198", "#073642"], ["contrast-dark", "High contrast dark", "#000000", "#ffd400", "#0a0a0a"],
+  ["contrast-light", "High contrast light", "#ffffff", "#0040c0", "#f2f2f2"],
+];
+const DARK_THEMES = new Set(["dark", "midnight", "graphite", "nord", "dracula", "solarized-dark", "contrast-dark"]);
 
 // ------------------------------------------------------------------ state
 const state = {
   tab: "teleport",
-  picked: null,            // [lat, lon]
+  picked: null,
   waypoints: [],           // {id, lat, lon, name, speed_kmh, dwell_s, leg:{mode,cruise_kmh,ramp}}
-  built: null,             // last /api/route/build or /api/gpx/timeline response
+  built: null,
   builtSource: null,       // "route" | "gpx"
-  gpx: null,               // last import response {filename, tracks}
+  gpx: null,
   gpxIndex: 0,
   store: { favorites: [], routes: [], settings: {} },
   status: null,
@@ -97,16 +110,17 @@ const state = {
   devicesError: null,
 };
 let nextId = 1;
+const settings = () => state.store.settings || (state.store.settings = {});
 
 // ------------------------------------------------------------------ map
 const map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([51.505, -0.09], 13);
 const baseLayers = {
   "Streets": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19, attribution: "&copy; OpenStreetMap contributors" }),
+    maxZoom: 19, attribution: "&copy; OpenStreetMap contributors", className: "osm-tiles" }),
   "Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
     maxZoom: 19, attribution: "Imagery &copy; Esri" }),
   "Topographic": L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
-    maxZoom: 17, attribution: "&copy; OpenStreetMap contributors, SRTM | &copy; OpenTopoMap (CC-BY-SA)" }),
+    maxZoom: 17, attribution: "&copy; OpenStreetMap contributors, SRTM | &copy; OpenTopoMap (CC-BY-SA)", className: "osm-tiles" }),
 };
 baseLayers.Streets.addTo(map);
 const layerControl = L.control.layers(baseLayers).addTo(map);
@@ -115,7 +129,7 @@ L.control.scale().addTo(map);
 const routeLayer = L.layerGroup().addTo(map);
 const wpLayer = L.layerGroup().addTo(map);
 const gpxLayer = L.layerGroup().addTo(map);
-let pickMarker = null, deviceMarker = null, previewMarker = null, trailLine = null;
+let pickMarker = null, deviceMarker = null, previewMarker = null, trailLine = null, realMarker = null, realCircle = null;
 const icon = (cls, html = "") => L.divIcon({ className: cls, html, iconSize: null });
 
 map.on("click", (e) => {
@@ -123,7 +137,6 @@ map.on("click", (e) => {
   if (state.tab === "route") addWaypoint(e.latlng.lat, lon);
   else setPicked(e.latlng.lat, lon, false);
 });
-// Right-click: teleport straight away.
 map.on("contextmenu", guard(async (e) => {
   setPicked(e.latlng.lat, wrapLon(e.latlng.lng), false);
   await teleport();
@@ -149,7 +162,7 @@ async function ensureGoogleLayer() {
     g.session = s.session; g.key = s.key; g.expiry = +s.expiry || Date.now() / 1000 + 3600 * 12;
     if (g.layer) { layerControl.removeLayer(g.layer); map.removeLayer(g.layer); }
     g.layer = L.tileLayer(`https://tile.googleapis.com/v1/2dtiles/{z}/{x}/{y}?session=${encodeURIComponent(g.session)}&key=${encodeURIComponent(g.key)}`, {
-      maxZoom: 22, attribution: "", className: "google-tiles" });
+      maxZoom: 22, attribution: "" });
     layerControl.addBaseLayer(g.layer, "Google Maps");
   }
   return g.layer;
@@ -194,10 +207,9 @@ function showTip(btn) {
   tip.textContent = btn.dataset.tip;
   tip.hidden = false;
   const r = btn.getBoundingClientRect();
-  const w = Math.min(300, window.innerWidth - 24);
-  tip.style.maxWidth = w + "px";
+  tip.style.maxWidth = Math.min(300, window.innerWidth - 24) + "px";
   const tr = tip.getBoundingClientRect();
-  let left = Math.min(Math.max(12, r.left + r.width / 2 - tr.width / 2), window.innerWidth - tr.width - 12);
+  const left = Math.min(Math.max(12, r.left + r.width / 2 - tr.width / 2), window.innerWidth - tr.width - 12);
   let top = r.bottom + 8;
   if (top + tr.height > window.innerHeight - 8) top = r.top - tr.height - 8;
   tip.style.left = left + "px";
@@ -215,10 +227,91 @@ function wireInfoButtons(root = document) {
     b.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); tip.hidden ? showTip(b) : hideTip(); });
   });
 }
-document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideTip(); });
 document.addEventListener("scroll", hideTip, true);
 
+// ------------------------------------------------------------------ themes & appearance
+function applyAppearance() {
+  const s = settings();
+  const theme = THEMES.some((t) => t[0] === s.theme) ? s.theme : "system";
+  document.documentElement.dataset.theme = theme;
+  const dark = DARK_THEMES.has(theme) || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
+  document.documentElement.classList.toggle("night-map", !!s.night_map && dark);
+  document.documentElement.classList.toggle("compact", !!s.compact);
+  document.querySelectorAll(".theme-card").forEach((c) => c.classList.toggle("active", c.dataset.theme === theme));
+}
+function renderThemeGrid() {
+  $("theme-grid").replaceChildren(...THEMES.map(([id, name, bg, accent, panel]) =>
+    el("button", { type: "button", class: "theme-card", dataset: { theme: id }, title: name,
+      onclick: () => { settings().theme = id; applyAppearance(); saveSettingsSoon(); } },
+      el("span", { class: "theme-swatch" },
+        el("span", { style: `background:${bg}` }),
+        el("span", {}, el("span", { style: `background:${accent}` }), el("span", { style: `background:${panel}` }))),
+      el("span", { class: "theme-name", textContent: name }))));
+  applyAppearance();
+}
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyAppearance);
+$("pref-night-map").onchange = (e) => { settings().night_map = e.target.checked; applyAppearance(); saveSettingsSoon(); };
+$("pref-compact").onchange = (e) => { settings().compact = e.target.checked; applyAppearance(); saveSettingsSoon(); };
+
+// ------------------------------------------------------------------ collapsible sections (open/closed state is remembered)
+function wireSections() {
+  document.querySelectorAll("details.section").forEach((d) => {
+    d.addEventListener("toggle", () => {
+      const s = settings();
+      s.sections = { ...(s.sections || {}), [d.id]: d.open };
+      saveSettingsSoon();
+    });
+  });
+}
+function applySections() {
+  const saved = settings().sections || {};
+  for (const [id, open] of Object.entries(saved)) {
+    const d = $(id);
+    if (d && d.tagName === "DETAILS") d.open = !!open;
+  }
+}
+
+// ------------------------------------------------------------------ resizable / hideable side menu
+const sidebar = $("sidebar"), resizer = $("resizer");
+const SIDEBAR_DEFAULT = 380;
+function setSidebarWidth(w, save = true) {
+  const max = Math.max(320, Math.min(720, window.innerWidth * 0.7));
+  w = Math.round(Math.min(max, Math.max(300, w)));
+  document.documentElement.style.setProperty("--sidebar-w", w + "px");
+  map.invalidateSize();
+  if (save) { settings().sidebar_w = w; saveSettingsSoon(); }
+}
+resizer.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  resizer.setPointerCapture(e.pointerId);
+  resizer.classList.add("drag");
+  document.body.classList.add("resizing");
+  const move = (ev) => setSidebarWidth(ev.clientX - sidebar.getBoundingClientRect().left, false);
+  const up = () => {
+    resizer.classList.remove("drag");
+    document.body.classList.remove("resizing");
+    resizer.removeEventListener("pointermove", move);
+    setSidebarWidth(sidebar.getBoundingClientRect().width);
+  };
+  resizer.addEventListener("pointermove", move);
+  resizer.addEventListener("pointerup", up, { once: true });
+});
+resizer.addEventListener("dblclick", () => setSidebarWidth(SIDEBAR_DEFAULT));
+resizer.addEventListener("keydown", (e) => {
+  const w = sidebar.getBoundingClientRect().width;
+  if (e.key === "ArrowLeft") { e.preventDefault(); setSidebarWidth(w - 20); }
+  if (e.key === "ArrowRight") { e.preventDefault(); setSidebarWidth(w + 20); }
+});
+function setSidebarHidden(hidden) {
+  document.body.classList.toggle("sidebar-hidden", hidden);
+  $("btn-show-sidebar").hidden = !hidden;
+  setTimeout(() => map.invalidateSize(), 50);
+}
+$("btn-hide-sidebar").onclick = () => setSidebarHidden(true);
+$("btn-show-sidebar").onclick = () => setSidebarHidden(false);
+
 // ------------------------------------------------------------------ tabs
+const TABS = ["teleport", "route", "gpx", "joystick", "saved"];
 function openTab(name) {
   state.tab = name;
   document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
@@ -243,7 +336,6 @@ async function refreshDevices(userAsked = false) {
     if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
     if (!devices.length && userAsked) toast("No device found. Plug in the iPhone, unlock it and tap Trust.", true);
   } catch (e) {
-    // Shown in the status line instead of a pop-up, so the app doesn't greet people with an error.
     state.devicesError = e.message;
     if (userAsked) toast(e.message, true);
   }
@@ -264,34 +356,68 @@ async function connectNow() {
     await poll();
   }
 }
+async function disconnectNow() { await api("/api/disconnect", { body: {} }); await poll(); }
 $("btn-connect").onclick = busy($("btn-connect"), "Connecting…", connectNow);
-$("btn-disconnect").onclick = guard(async () => { await api("/api/disconnect", { body: {} }); await poll(); });
+$("btn-disconnect").onclick = guard(disconnectNow);
 async function revealDevMode() { toast((await api("/api/device/reveal-developer-mode", { body: {} })).message); }
 $("btn-reveal").onclick = busy($("btn-reveal"), "Asking the iPhone…", revealDevMode);
 $("btn-mount").onclick = busy($("btn-mount"), "Mounting…", async () => toast((await api("/api/device/mount", { body: {} })).message));
-$("btn-clear").onclick = guard(async () => {
+
+async function stopSpoofing() {
   await api("/api/location/clear", { body: {} });
-  toast("Location simulation stopped. The iPhone uses its real GPS again.");
+  clearTrail();
   await poll();
-});
+  toast("Stopped spoofing. The iPhone uses its real GPS again.");
+  await showRealLocation(true);
+}
+$("btn-clear").onclick = guard(stopSpoofing);
 
 function renderDevice(st) {
   const d = st.device;
-  const box = $("device-status");
+  const box = $("device-status"), chip = $("conn-chip");
   $("btn-connect").hidden = !!d;
   $("btn-disconnect").hidden = !d;
   if (d) {
     box.className = "status ok";
     box.textContent = `● ${d.name}${d.ios_version ? ` · iOS ${d.ios_version}` : ""} · ${d.transport}`;
     $("driver").value = st.driver;
+    chip.className = "chip ok"; chip.textContent = d.name;
+    $("dev-summary").textContent = `Connected · ${d.name}`;
   } else if (state.devicesError && $("driver").value !== "mock") {
-    box.className = "status warn";
-    box.textContent = state.devicesError;
+    box.className = "status warn"; box.textContent = state.devicesError;
+    chip.className = "chip warn"; chip.textContent = "Not ready";
+    $("dev-summary").textContent = "Not connected";
   } else {
-    box.className = "status";
-    box.textContent = "Not connected";
+    box.className = "status"; box.textContent = "Not connected";
+    chip.className = "chip"; chip.textContent = "Not connected";
+    $("dev-summary").textContent = "Not connected";
   }
 }
+
+// ------------------------------------------------------------------ real location (after spoofing stops)
+function showRealLocation(afterStop = false) {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) {
+      if (!afterStop) toast("This window can't read your location.", true);
+      return resolve(false);
+    }
+    navigator.geolocation.getCurrentPosition((pos) => {
+      const ll = [pos.coords.latitude, pos.coords.longitude];
+      if (realMarker) { map.removeLayer(realMarker); map.removeLayer(realCircle); }
+      realCircle = L.circle(ll, { radius: Math.min(pos.coords.accuracy || 50, 5000), color: "#1a73e8", weight: 1, fillOpacity: 0.12, interactive: false }).addTo(map);
+      realMarker = L.marker(ll, { icon: icon("real-icon"), zIndexOffset: 900, title: "Your real location" }).addTo(map)
+        .bindPopup(`<b>Your real location</b><br>Approximate position of this computer (±${Math.round(pos.coords.accuracy || 0)} m). The iPhone doesn't share its own GPS over USB.`);
+      map.setView(ll, Math.max(map.getZoom(), 15));
+      if (afterStop) realMarker.openPopup();
+      resolve(true);
+    }, (err) => {
+      toast(err.code === 1 ? "Location permission was denied, so your real location can't be shown." :
+        "Your real location isn't available (turn on location services for this computer to show it).", !afterStop);
+      resolve(false);
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+  });
+}
+$("btn-locate").onclick = guard(() => showRealLocation(false));
 
 // ------------------------------------------------------------------ teleport
 function setPicked(lat, lon, pan = true) {
@@ -303,11 +429,11 @@ function setPicked(lat, lon, pan = true) {
   if (pan) map.setView([lat, lon], Math.max(map.getZoom(), 15));
   $("picked").textContent = fmtLL(lat, lon);
   $("picked").classList.remove("muted");
+  $("picked-sub").textContent = fmtLL(lat, lon);
   ["btn-teleport", "btn-fav", "btn-copy", "btn-pick-to-route"].forEach((id) => ($(id).disabled = false));
   $("coords").value = fmtLL(lat, lon);
   updateJumpInfo();
 }
-
 function updateJumpInfo() {
   const pos = state.status && state.status.player.position;
   if (!pos || !state.picked) { $("jump-info").textContent = ""; return; }
@@ -318,18 +444,14 @@ function updateJumpInfo() {
     `Jump of ${fmtDist(d)} from the current spoofed spot. Real travel time: walking ${fmtTime(walk)}, ` +
     `driving ${fmtTime(drive)}, flying ${fmtTime(fly)}. Apps may flag instant long jumps; a route looks more natural.`;
 }
-
 async function teleport() {
-  if (!state.picked) return;
+  if (!state.picked) { toast("Pick a point on the map first."); return; }
   const r = await api("/api/location/set", { body: { lat: state.picked[0], lon: state.picked[1] } });
   toast(`Location set to ${fmtLL(r.lat, r.lon)}${r.jump_m ? ` (jumped ${fmtDist(r.jump_m)})` : ""}`);
   await poll();
 }
 $("btn-teleport").onclick = busy($("btn-teleport"), "Setting…", teleport);
-$("btn-copy").onclick = guard(async () => {
-  await navigator.clipboard.writeText(fmtLL(...state.picked));
-  toast("Copied");
-});
+$("btn-copy").onclick = guard(async () => { await navigator.clipboard.writeText(fmtLL(...state.picked)); toast("Copied"); });
 $("btn-fav").onclick = guard(async () => {
   const name = prompt("Name for this place:", "Favourite " + (state.store.favorites.length + 1));
   if (name === null) return;
@@ -338,7 +460,6 @@ $("btn-fav").onclick = guard(async () => {
   toast("Saved to favourites");
 });
 $("btn-pick-to-route").onclick = () => { addWaypoint(...state.picked); toast("Added to the route (Route tab)"); };
-
 $("btn-coords").onclick = guard(async () => {
   const text = $("coords").value.trim();
   if (looksLikeGoogleLink(text)) return openGoogleLink(text);
@@ -346,7 +467,6 @@ $("btn-coords").onclick = guard(async () => {
   setPicked(lat, lon);
 });
 $("coords").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btn-coords").click(); });
-
 $("search").addEventListener("keydown", guard(async (e) => {
   if (e.key !== "Enter") return;
   const q = $("search").value.trim();
@@ -359,13 +479,12 @@ $("search").addEventListener("keydown", guard(async (e) => {
   const { results } = await api(`/api/geocode?q=${encodeURIComponent(q)}`);
   list.replaceChildren();
   if (!results.length) list.append(el("li", { textContent: "No results" }));
-  for (const r of results) {
-    list.append(el("li", { textContent: r.name, onclick: () => { setPicked(r.lat, r.lon); list.replaceChildren(); } }));
-  }
+  for (const r of results) list.append(el("li", { textContent: r.name, onclick: () => { setPicked(r.lat, r.lon); list.replaceChildren(); } }));
 }));
 
 // ------------------------------------------------------------------ Google Maps links
 async function parseGoogleLink(text) {
+  if (!text.trim()) throw new Error("Paste a Google Maps link first.");
   toast("Reading the Google Maps link…");
   return api("/api/links/parse", { body: { text: text.trim() } });
 }
@@ -387,9 +506,9 @@ function loadLinkAsRoute(p) {
   map.fitBounds(L.latLngBounds(state.waypoints.map((w) => [w.lat, w.lon])), { padding: [30, 30] });
   toast(`Imported ${p.stops.length} stops from Google Maps. Press Build route.`);
 }
-$("btn-gmaps-link").onclick = busy($("btn-gmaps-link"), "Opening…", () => openGoogleLink($("gmaps-link").value));
+$("btn-gmaps-link").onclick = busy($("btn-gmaps-link"), "…", () => openGoogleLink($("gmaps-link").value));
 $("gmaps-link").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btn-gmaps-link").click(); });
-$("btn-route-link").onclick = busy($("btn-route-link"), "Importing…", async () => {
+$("btn-route-link").onclick = busy($("btn-route-link"), "…", async () => {
   const p = await parseGoogleLink($("route-link").value);
   if (p.kind === "point") {
     addWaypoint(p.stops[0].lat, p.stops[0].lon, { name: p.stops[0].name || "" });
@@ -399,43 +518,48 @@ $("btn-route-link").onclick = busy($("btn-route-link"), "Importing…", async ()
 $("route-link").addEventListener("keydown", (e) => { if (e.key === "Enter") $("btn-route-link").click(); });
 
 // ------------------------------------------------------------------ route builder
-function defaultLeg() {
-  return { mode: $("default-mode").value, cruise_kmh: null, ramp: "accel" };
-}
+function defaultLeg() { return { mode: $("default-mode").value, cruise_kmh: null, ramp: "accel" }; }
 function addWaypoint(lat, lon, extra = {}) {
   state.waypoints.push({ id: nextId++, lat, lon, name: "", speed_kmh: null, dwell_s: 0, leg: defaultLeg(), ...extra });
   invalidateBuilt();
   renderWaypoints();
 }
-
+// A route changed: the built route (and the player) no longer match it.
 function invalidateBuilt() {
-  if (state.builtSource === "route") {
-    routeLayer.clearLayers();
-    $("route-result").replaceChildren();
-    $("speed-legend").hidden = true;
-    state.built = null;
-    stopPreview();
-  }
+  if (state.builtSource !== "route") return;
+  const hadRoute = !!state.built;
+  routeLayer.clearLayers();
+  $("route-result").replaceChildren();
+  $("sec-route-result").hidden = true;
+  $("speed-legend").hidden = true;
+  state.built = null;
+  stopPreview();
+  const p = state.status && state.status.player;
+  if (hadRoute && state.loaded === "route" && p && !["playing", "joystick"].includes(p.state)) unloadPlayer();
 }
-
+async function unloadPlayer() {
+  try { await api("/api/player/unload", { body: {} }); } catch (_) { /* older server */ }
+  state.loaded = null;
+  clearTrail();
+  await poll();
+}
 function renderWaypoints() {
   const list = $("waypoints");
   list.replaceChildren();
   wpLayer.clearLayers();
   const n = state.waypoints.length;
   const closed = $("closed").checked;
+  $("wp-count").textContent = n ? `${n} checkpoint${n > 1 ? "s" : ""}` : "";
   if (!n) list.append(el("li", { class: "hint", textContent: "No checkpoints yet — click the map." }));
-
   state.waypoints.forEach((w, i) => {
     const change = (fn) => (e) => { fn(e.target); invalidateBuilt(); };
     const move = (j) => () => { [state.waypoints[j], state.waypoints[i]] = [state.waypoints[i], state.waypoints[j]]; invalidateBuilt(); renderWaypoints(); };
     const head = el("div", { class: "wp-head" },
       el("span", { class: "wp-num", textContent: i + 1 }),
-      el("input", { value: w.name, placeholder: fmtLL(w.lat, w.lon), title: "Name", oninput: (e) => (w.name = e.target.value) }),
-      el("button", { class: "small", textContent: "↑", title: "Move up", disabled: i === 0, onclick: move(i - 1) }),
-      el("button", { class: "small", textContent: "↓", title: "Move down", disabled: i === n - 1, onclick: move(i + 1) }),
-      el("button", { class: "small", textContent: "✕", title: "Remove",
-        onclick: () => { state.waypoints.splice(i, 1); invalidateBuilt(); renderWaypoints(); } }),
+      el("input", { value: w.name, placeholder: fmtLL(w.lat, w.lon), title: "Name", "aria-label": "Checkpoint name", oninput: (e) => (w.name = e.target.value) }),
+      el("button", { textContent: "↑", title: "Move up", disabled: i === 0, onclick: move(i - 1) }),
+      el("button", { textContent: "↓", title: "Move down", disabled: i === n - 1, onclick: move(i + 1) }),
+      el("button", { textContent: "✕", title: "Remove", onclick: () => { state.waypoints.splice(i, 1); invalidateBuilt(); renderWaypoints(); } }),
     );
     const fields = el("div", { class: "wp-fields" },
       el("label", {}, "Speed here (km/h)",
@@ -443,51 +567,64 @@ function renderWaypoints() {
           title: "Exact speed when passing this checkpoint. Blank = whatever the limits allow. 0 = come to a stop.",
           onchange: change((t) => (w.speed_kmh = numOrNull(t.value))) })),
       el("label", {}, "Wait here (s)",
-        el("input", { type: "number", min: 0, step: 1, value: w.dwell_s || "", placeholder: "0",
-          title: "Stop and wait this long", onchange: change((t) => (w.dwell_s = Math.max(0, +t.value || 0))) })),
+        el("input", { type: "number", min: 0, step: 1, value: w.dwell_s || "", placeholder: "0", title: "Stop and wait this long",
+          onchange: change((t) => (w.dwell_s = Math.max(0, +t.value || 0))) })),
     );
     const li = el("li", { class: "wp" }, head, fields);
-
     if (i < n - 1 || (closed && n > 1)) {
-      const modeSel = el("select", { title: "How this leg is routed", onchange: change((t) => { w.leg.mode = t.value; }) },
+      const modeSel = el("select", { title: "How this leg is routed", "aria-label": "Leg routing", onchange: change((t) => { w.leg.mode = t.value; }) },
         ...Object.entries(MODE_LABEL).map(([k, v]) => el("option", { value: k, textContent: v, selected: w.leg.mode === k })));
-      const cruise = el("input", { type: "number", min: 0.1, step: 0.1, value: w.leg.cruise_kmh ?? "",
+      const cruise = el("input", { type: "number", min: 0.1, step: 0.1, value: w.leg.cruise_kmh ?? "", "aria-label": "Leg speed",
         placeholder: $("road-aware").checked ? "road speed" : `${$("default-speed").value} km/h`,
         title: "Cruise speed for this leg (km/h). Blank = default (or the road's speed in road-aware mode).",
         onchange: change((t) => (w.leg.cruise_kmh = numOrNull(t.value))) });
-      const ramp = el("select", { title: "How speed changes on this leg", onchange: change((t) => (w.leg.ramp = t.value)) },
+      const ramp = el("select", { title: "How speed changes on this leg", "aria-label": "Speed ramp", onchange: change((t) => (w.leg.ramp = t.value)) },
         el("option", { value: "accel", textContent: "Accel rate", selected: w.leg.ramp === "accel" }),
         el("option", { value: "linear", textContent: "Even ramp", selected: w.leg.ramp === "linear" }));
       li.append(el("div", { class: "leg", title: `Leg ${i + 1} → ${i + 2 > n ? 1 : i + 2}` }, modeSel, cruise, ramp));
     }
     list.append(li);
-
     L.marker([w.lat, w.lon], { draggable: true, icon: icon("wp-icon", String(i + 1)), title: w.name || `Checkpoint ${i + 1}` })
       .on("dragend", (e) => { const p = e.target.getLatLng(); w.lat = p.lat; w.lon = wrapLon(p.lng); invalidateBuilt(); renderWaypoints(); })
       .addTo(wpLayer);
   });
-
   if (!state.built || state.builtSource !== "route") {
     const pts = state.waypoints.map((w) => [w.lat, w.lon]);
     if (closed && pts.length > 1) pts.push(pts[0]);
     if (pts.length > 1) L.polyline(pts, { color: "#888", weight: 2, dashArray: "4 6", interactive: false }).addTo(wpLayer);
   }
+  renderRouteSettingsSub();
+}
+function renderRouteSettingsSub() {
+  $("route-settings-sub").textContent = `${MODE_LABEL[$("default-mode").value]} · ${$("default-speed").value} km/h${$("road-aware").checked ? " · road-aware" : ""}`;
 }
 $("closed").onchange = () => { invalidateBuilt(); renderWaypoints(); };
 $("default-speed").onchange = () => renderWaypoints();
-$("btn-clear-route").onclick = () => {
-  if (state.waypoints.length && !confirm("Remove all checkpoints?")) return;
-  state.waypoints = []; invalidateBuilt(); renderWaypoints();
-};
+$("default-mode").onchange = () => renderRouteSettingsSub();
+async function clearRoute() {
+  const saved = { waypoints: state.waypoints.map((w) => ({ ...w, leg: { ...w.leg } })), built: state.built };
+  state.builtSource = "route";
+  state.waypoints = [];
+  invalidateBuilt();
+  renderWaypoints();
+  const p = state.status && state.status.player;
+  if (p && state.loaded === "route" && p.state !== "joystick") {
+    if (["playing", "paused"].includes(p.state)) await api("/api/player/stop", { body: {} }).catch(() => {});
+    await unloadPlayer();
+  }
+  if (saved.waypoints.length) {
+    toast(`Cleared ${saved.waypoints.length} checkpoint${saved.waypoints.length > 1 ? "s" : ""}.`, false,
+      { label: "Undo", run: () => { state.waypoints = saved.waypoints; renderWaypoints(); toast("Checkpoints restored. Press Build route to load it again."); } });
+  }
+}
+$("btn-clear-route").onclick = guard(clearRoute);
 $("btn-reverse").onclick = () => {
   const n = state.waypoints.length;
   const legs = state.waypoints.map((w) => w.leg);
   state.waypoints.reverse();
-  // leg i now runs from new i to new i+1, which was old leg (n-2-i); the closing leg keeps its settings
   state.waypoints.forEach((w, i) => (w.leg = { ...(i < n - 1 ? legs[n - 2 - i] : legs[n - 1]) || defaultLeg() }));
   invalidateBuilt(); renderWaypoints();
 };
-
 function presetButtons(containerId, onPick) {
   const c = $(containerId);
   for (const [name, kmh, acc] of SPEED_PRESETS) {
@@ -503,40 +640,29 @@ $("speed-factor").oninput = () => ($("speed-factor-out").textContent = `${Math.r
   .forEach((id) => $(id).addEventListener("change", () => { invalidateBuilt(); if (id === "road-aware") renderWaypoints(); }));
 $("provider").addEventListener("change", () => {
   if ($("provider").value === "google" && !state.google.configured) {
-    toast("Add your Google Maps API key in Settings (⚙) to use Google routing.", true);
+    toast("Add your Google Maps API key in Settings (⚙ › Google Maps) to use Google routing.", true);
     $("provider").value = "osrm";
   }
 });
-
 function profileSettings() {
   return {
-    default_cruise_kmh: +$("default-speed").value || 5,
-    accel_ms2: +$("accel").value || 1,
-    decel_ms2: +$("decel").value || 1,
-    start_from_rest: $("start-rest").checked,
-    stop_at_end: $("stop-end").checked,
-    road_aware: $("road-aware").checked,
-    road_data: $("road-data").checked,
-    match_eta: $("match-eta").checked,
-    corner_slowdown: $("corner-slow").checked,
-    speed_factor: +$("speed-factor").value || 1,
+    default_cruise_kmh: +$("default-speed").value || 5, accel_ms2: +$("accel").value || 1, decel_ms2: +$("decel").value || 1,
+    start_from_rest: $("start-rest").checked, stop_at_end: $("stop-end").checked,
+    road_aware: $("road-aware").checked, road_data: $("road-data").checked, match_eta: $("match-eta").checked,
+    corner_slowdown: $("corner-slow").checked, speed_factor: +$("speed-factor").value || 1,
   };
 }
-
 function routeBody(name = "Route") {
   const wps = state.waypoints;
   const closed = $("closed").checked;
   const legs = wps.slice(0, closed ? wps.length : wps.length - 1).map((w) => w.leg);
   return {
-    name, closed, provider: $("provider").value,
-    settings: profileSettings(),
+    name, closed, provider: $("provider").value, settings: profileSettings(), legs,
     waypoints: wps.map((w, i) => ({ lat: w.lat, lon: w.lon, name: w.name || `Checkpoint ${i + 1}`, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s || 0 })),
-    legs,
   };
 }
-
-$("btn-build").onclick = busy($("btn-build"), "Routing…", async () => {
-  if (state.waypoints.length < 2) throw new Error("Add at least two checkpoints");
+async function buildRoute() {
+  if (state.waypoints.length < 2) throw new Error("Add at least two checkpoints (click the map in the Route tab).");
   const body = routeBody($("route-name").value.trim() || "Route");
   const res = await api("/api/route/build", { body });
   state.built = res;
@@ -545,11 +671,16 @@ $("btn-build").onclick = busy($("btn-build"), "Routing…", async () => {
   if ((res.providers || []).includes("google")) await useGoogleBase();
   drawBuilt(res, routeLayer);
   renderResult($("route-result"), res);
+  $("sec-route-result").hidden = false;
+  $("sec-route-result").open = true;
+  $("route-result-sub").textContent = `${fmtDist(res.summary.distance_m)} · ${fmtTime(res.summary.duration_s)}`;
   renderWaypoints();
   await api(`/api/player/load/${res.id}`, { body: {} });
+  state.loaded = "route";
   clearTrail();
   await poll();
-});
+}
+$("btn-build").onclick = busy($("btn-build"), "Routing…", buildRoute);
 
 // ------------------------------------------------------------------ speed-coloured route line
 const SPEED_STOPS = [[0, [49, 54, 149]], [0.2, [69, 117, 180]], [0.4, [116, 173, 209]], [0.55, [171, 217, 233]],
@@ -571,12 +702,10 @@ function drawBuilt(res, layer) {
   const pv = res.preview || [];
   const all = [];
   (res.legs || []).forEach((pts) => all.push(...pts));
-  // casing so light colours stay visible on any map
   (res.legs || []).forEach((pts) => L.polyline(pts, { color: "#222", weight: 7, opacity: 0.35, interactive: false }).addTo(layer));
   const vmax = Math.max(1, ...pv.map((p) => p[3]));
   const vmin = Math.min(...pv.map((p) => p[3]), vmax);
   const span = Math.max(1, vmax - vmin);
-  // Group consecutive samples with the same colour bucket into one polyline.
   let run = [], runBucket = -1;
   const flush = () => {
     if (run.length > 1) {
@@ -598,17 +727,16 @@ function drawBuilt(res, layer) {
   $("speed-legend").hidden = pv.length < 2;
   if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
 }
-
+function fitRoute() {
+  const layers = [];
+  [routeLayer, gpxLayer, wpLayer].forEach((g) => g.eachLayer((l) => layers.push(l)));
+  if (!layers.length) { toast("Nothing to fit yet."); return; }
+  map.fitBounds(L.featureGroup(layers).getBounds(), { padding: [30, 30] });
+}
 function renderResult(box, res) {
   const s = res.summary;
   const intervalSel = el("select", { "aria-label": "GPX point interval" },
-    ...[0.5, 1, 2, 5, 10].map((v) => el("option", { value: v, textContent: `${v}s`, selected: v === 1 })));
-  const items = [
-    el("span", {}, "Distance ", el("b", { textContent: fmtDist(s.distance_m) })),
-    el("span", {}, "Duration ", el("b", { textContent: fmtTime(s.duration_s) })),
-    el("span", {}, "Average ", el("b", { textContent: `${s.avg_speed_kmh} km/h` })),
-    el("span", {}, "Top speed ", el("b", { textContent: `${s.max_speed_kmh} km/h` })),
-  ];
+    ...[0.5, 1, 2, 5, 10].map((v) => el("option", { value: v, textContent: `GPX every ${v}s`, selected: v === 1 })));
   const extra = [];
   if (s.reference_eta_s) {
     const diff = (s.moving_time_s - s.reference_eta_s) / s.reference_eta_s * 100;
@@ -630,17 +758,21 @@ function renderResult(box, res) {
     title: res.exportable === false ? "Google routes can't be exported (Google's terms restrict storing route data)." : "",
     onclick: () => { window.location.href = `/api/gpx/export/${res.id}?interval=${intervalSel.value || 1}`; } });
   box.replaceChildren(
-    el("div", { class: "summary" }, ...items),
+    el("div", { class: "summary" },
+      el("span", {}, "Distance ", el("b", { textContent: fmtDist(s.distance_m) })),
+      el("span", {}, "Duration ", el("b", { textContent: fmtTime(s.duration_s) })),
+      el("span", {}, "Average ", el("b", { textContent: `${s.avg_speed_kmh} km/h` })),
+      el("span", {}, "Top speed ", el("b", { textContent: `${s.max_speed_kmh} km/h` }))),
     ...extra,
     ...(s.warnings || []).map((w) => el("p", { class: "warn", textContent: "⚠ " + w })),
     chartCanvas(res.preview),
-    el("div", { class: "row wrap" },
-      el("button", { class: "grow", textContent: "▷ Preview on map", onclick: () => togglePreview(res) }),
-      el("label", { class: "button inline", title: "Seconds between GPX points" }, "GPX every ", intervalSel),
-      exportBtn),
+    el("div", { class: "btn-row" },
+      el("button", { textContent: "▷ Preview", "data-action": "preview", onclick: () => togglePreview(res) }),
+      el("button", { textContent: "Fit on map", "data-action": "fit", onclick: fitRoute })),
+    el("div", { class: "btn-row" }, intervalSel, exportBtn),
   );
+  decorateShortcutHints(box);
 }
-
 function chartCanvas(preview) {
   const c = el("canvas", { class: "chart", title: "Speed (km/h) over time" });
   requestAnimationFrame(() => {
@@ -670,13 +802,13 @@ function chartCanvas(preview) {
   });
   return c;
 }
-
-// Local animation of a built route (does not touch the phone)
 function togglePreview(res) {
+  res = res || state.built;
   if (state.preview) { stopPreview(); return; }
+  if (!res) { toast("Build a route first."); return; }
   const data = res.preview;
   if (!data || data.length < 2) return;
-  const mult = Math.max(1, data[data.length - 1][0] / 20); // whole route in ~20 s
+  const mult = Math.max(1, data[data.length - 1][0] / 20);
   previewMarker = L.marker([data[0][1], data[0][2]], { icon: icon("prev-icon"), interactive: false }).addTo(map);
   const t0 = performance.now();
   let i = 0;
@@ -691,15 +823,13 @@ function togglePreview(res) {
     state.preview.raf = requestAnimationFrame(step);
   };
   state.preview = { raf: requestAnimationFrame(step) };
-  toast(`Previewing at ${Math.round(mult)}× speed`);
+  toast(`Previewing at ${Math.round(mult)}× speed (this does not move the phone)`);
 }
 function stopPreview() {
   if (state.preview) cancelAnimationFrame(state.preview.raf);
   state.preview = null;
   if (previewMarker) { map.removeLayer(previewMarker); previewMarker = null; }
 }
-
-// Random wander
 $("btn-wander").onclick = () => {
   const c = state.picked || [map.getCenter().lat, wrapLon(map.getCenter().lng)];
   const R = Math.max(20, +$("wander-radius").value || 500);
@@ -714,6 +844,7 @@ $("btn-wander").onclick = () => {
   state.waypoints = pts.map(([la, lo]) => ({ id: nextId++, lat: la, lon: lo, name: "", speed_kmh: null, dwell_s: 0, leg: defaultLeg() }));
   state.waypoints.slice(1, -1).forEach((w) => (w.dwell_s = Math.random() < 0.4 ? Math.round(5 + Math.random() * 40) : 0));
   state.builtSource = "route"; invalidateBuilt(); renderWaypoints();
+  $("sec-checkpoints").open = true;
   toast(`Generated ${n} checkpoints. Press Build route.`);
 };
 
@@ -724,12 +855,11 @@ drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " "
 ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
 ["dragleave", "dragend"].forEach((t) => drop.addEventListener(t, () => drop.classList.remove("over")));
 drop.addEventListener("drop", (e) => {
-  e.preventDefault();
+  e.preventDefault(); e.stopPropagation();
   drop.classList.remove("over");
   const f = e.dataTransfer.files && e.dataTransfer.files[0];
   if (f) uploadGpx(f);
 });
-// Dropping a file anywhere else must not navigate the window away from the app.
 window.addEventListener("dragover", (e) => e.preventDefault());
 window.addEventListener("drop", (e) => {
   e.preventDefault();
@@ -738,15 +868,10 @@ window.addEventListener("drop", (e) => {
 });
 $("gpx-file").onchange = (e) => {
   const f = e.target.files[0];
-  e.target.value = ""; // always reset, so choosing the same file again (e.g. after an error) works
+  e.target.value = "";
   if (f) uploadGpx(f);
 };
-
-function gpxError(msg) {
-  const box = $("gpx-error");
-  box.textContent = msg || "";
-  box.hidden = !msg;
-}
+function gpxError(msg) { $("gpx-error").textContent = msg || ""; $("gpx-error").hidden = !msg; }
 async function uploadGpx(file) {
   gpxError("");
   if (!/\.(gpx|xml)$/i.test(file.name)) { gpxError(`"${file.name}" is not a .gpx file.`); return; }
@@ -772,16 +897,17 @@ function renderGpxDrop() {
   if (state.gpx) {
     $("gpx-drop-title").textContent = `📄 ${state.gpx.filename}`;
     $("gpx-drop-sub").textContent = `${fmtSize(state.gpx.size || 0)} · ${state.gpx.tracks.length} item${state.gpx.tracks.length > 1 ? "s" : ""} — click or drop to replace`;
+    $("gpx-sub").textContent = state.gpx.filename;
     drop.classList.add("loaded");
   } else {
     $("gpx-drop-title").textContent = "Drop a .gpx file here";
     $("gpx-drop-sub").textContent = "or click to choose one";
+    $("gpx-sub").textContent = "";
     drop.classList.remove("loaded");
   }
 }
 $("gpx-track").onchange = (e) => { state.gpxIndex = +e.target.value; showGpxTrack(); };
 $("gpx-use-times").onchange = () => ($("gpx-speed").disabled = $("gpx-use-times").checked && !$("gpx-use-times").disabled);
-
 function showGpxTrack() {
   const t = state.gpx.tracks[state.gpxIndex];
   gpxLayer.clearLayers();
@@ -802,7 +928,6 @@ function showGpxTrack() {
   $("gpx-info").textContent = `${fmtDist(len)}${dur ? `, recorded over ${fmtTime(dur)} (average ${(len / Math.max(1, dur) * 3.6).toFixed(1)} km/h)` : " — no timestamps, so it will be timed with the speed below"}`;
   $("btn-gpx-load").disabled = pts.length < 2;
 }
-
 $("btn-gpx-load").onclick = busy($("btn-gpx-load"), "Loading…", async () => {
   const t = state.gpx.tracks[state.gpxIndex];
   const res = await api("/api/gpx/timeline", { body: {
@@ -815,11 +940,25 @@ $("btn-gpx-load").onclick = busy($("btn-gpx-load"), "Loading…", async () => {
   drawBuilt(res, gpxLayer);
   renderResult($("gpx-result"), res);
   await api(`/api/player/load/${res.id}`, { body: {} });
+  state.loaded = "gpx";
   clearTrail();
   await poll();
 });
-
-// Douglas–Peucker simplification that keeps original indices (planar metres, equirectangular)
+$("btn-gpx-remove").onclick = guard(async () => {
+  state.gpx = null;
+  gpxLayer.clearLayers();
+  $("gpx-panel").hidden = true;
+  $("gpx-result").replaceChildren();
+  $("speed-legend").hidden = true;
+  gpxError("");
+  renderGpxDrop();
+  if (state.loaded === "gpx") {
+    state.built = null;
+    const p = state.status && state.status.player;
+    if (p && ["playing", "paused"].includes(p.state)) await api("/api/player/stop", { body: {} }).catch(() => {});
+    await unloadPlayer();
+  }
+});
 function simplifyIdx(pts, tol) {
   if (pts.length < 3) return pts.map((_, i) => i);
   const lat0 = (pts[0][0] * Math.PI) / 180;
@@ -856,25 +995,25 @@ $("btn-gpx-to-route").onclick = () => {
 
 // ------------------------------------------------------------------ player
 const playerBtns = { play: $("btn-play"), pause: $("btn-pause"), stop: $("btn-stop") };
-playerBtns.play.onclick = guard(async () => {
+async function playOrPause() {
   const st = state.status && state.status.player;
-  if (st && st.state !== "paused" && st.t === 0) clearTrail();
-  await api(st && st.state === "paused" ? "/api/player/resume" : "/api/player/play", { body: {} });
+  if (!st) return;
+  if (st.state === "playing") { await api("/api/player/pause", { body: {} }); await poll(); return; }
+  if (!st.name && !st.duration) { toast("Build a route or load a GPX track first."); return; }
+  if (!state.status.device) { toast("Connect a device (or the Simulator) first.", true); return; }
+  if (st.state !== "paused" && st.t === 0) clearTrail();
+  await api(st.state === "paused" ? "/api/player/resume" : "/api/player/play", { body: {} });
   await poll();
-});
-playerBtns.pause.onclick = guard(async () => { await api("/api/player/pause", { body: {} }); await poll(); });
-playerBtns.stop.onclick = guard(async () => { await api("/api/player/stop", { body: {} }); await poll(); });
-
+}
+async function stopPlayback() { await api("/api/player/stop", { body: {} }); await poll(); }
+playerBtns.play.onclick = guard(playOrPause);
+playerBtns.pause.onclick = guard(playOrPause);
+playerBtns.stop.onclick = guard(stopPlayback);
 const seek = $("seek");
-seek.addEventListener("input", () => {
-  state.seeking = true;
-  $("player-time").textContent = `${fmtTime(+seek.value)} / ${fmtTime(+seek.max)}`;
-});
+seek.addEventListener("input", () => { state.seeking = true; $("player-time").textContent = `${fmtTime(+seek.value)} / ${fmtTime(+seek.max)}`; });
 seek.addEventListener("change", guard(async () => {
-  try { await api("/api/player-seek", { body: { t: +seek.value } }); }
-  finally { state.seeking = false; await poll(); }
+  try { await api("/api/player-seek", { body: { t: +seek.value } }); } finally { state.seeking = false; await poll(); }
 }));
-
 const sendOptions = guard(async () => {
   await api("/api/player-options", { body: {
     multiplier: +$("multiplier").value, loop: $("loop").value,
@@ -883,38 +1022,32 @@ const sendOptions = guard(async () => {
   saveSettingsSoon();
 });
 ["multiplier", "loop", "jitter", "tick"].forEach((id) => $(id).addEventListener("change", sendOptions));
-
-function clearTrail() {
-  if (trailLine) trailLine.setLatLngs([]);
-}
+function clearTrail() { if (trailLine) trailLine.setLatLngs([]); }
 function renderPlayer(st) {
   const p = st.player;
-  $("player-name").textContent = p.name || "No route loaded";
+  const has = p.duration > 0 || !!p.name;
+  $("player").classList.toggle("empty", !has && p.state !== "joystick");
+  $("player-name").textContent = p.state === "joystick" ? "Joystick" : (p.name || "No route loaded");
   const badge = $("player-state");
   badge.textContent = p.state + (p.laps ? ` · lap ${p.laps + 1}` : "");
   badge.className = "badge " + p.state;
-  const has = p.duration > 0 || !!p.name;
   const connected = !!st.device;
   playerBtns.play.disabled = !has || !connected || p.state === "playing";
   playerBtns.play.title = !connected ? "Connect a device (or the Simulator) first" : !has ? "Build a route or load a GPX track first" : "";
-  playerBtns.play.textContent = p.state === "paused" ? "▶ Resume" : "▶ Play on device";
+  playerBtns.play.firstChild.textContent = p.state === "paused" ? "▶ Resume" : "▶ Play";
   playerBtns.pause.disabled = p.state !== "playing";
   playerBtns.stop.disabled = !["playing", "paused", "joystick"].includes(p.state);
   seek.disabled = !has;
   seek.max = p.duration;
-  if (!state.seeking) {
-    seek.value = p.t;
-    $("player-time").textContent = `${fmtTime(p.t)} / ${fmtTime(p.duration)}`;
-  }
+  if (!state.seeking) { seek.value = p.t; $("player-time").textContent = `${fmtTime(p.t)} / ${fmtTime(p.duration)}`; }
   $("player-dist").textContent = `${fmtDist(p.distance_m)} / ${fmtDist(p.total_distance_m)}`;
   $("player-speed").textContent = p.position ? `${p.position.speed_kmh.toFixed(1)} km/h` : "—";
   if (p.state === "error" && p.error && state.lastError !== p.error) toast(p.error, true);
   state.lastError = p.error;
-
   if (p.position) {
     const ll = [p.position.lat, p.position.lon];
     if (!deviceMarker) {
-      deviceMarker = L.marker(ll, { icon: icon("dev-icon"), interactive: true, zIndexOffset: 1000, title: "Spoofed location" }).addTo(map);
+      deviceMarker = L.marker(ll, { icon: icon("dev-icon"), zIndexOffset: 1000, title: "Spoofed location" }).addTo(map);
       trailLine = L.polyline([], { color: "#e53935", weight: 2, opacity: 0.6, interactive: false }).addTo(map);
     }
     deviceMarker.setLatLng(ll);
@@ -950,15 +1083,17 @@ function keyVector() {
   for (const k of held) { const v = KEYS[k]; if (v) { x += v[0]; y += v[1]; } }
   return [x, y];
 }
-const typing = () => ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName) || document.querySelector("dialog[open]");
-document.addEventListener("keydown", (e) => {
-  if (state.tab !== "joystick" || !KEYS[e.code] || typing()) return;
+const typing = () => ["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement.tagName) || !!document.querySelector("dialog[open]");
+function joystickKeydown(e) {
+  if (state.tab !== "joystick" || !KEYS[e.code] || typing()) return false;
   e.preventDefault();
-  if (held.has(e.code)) return;
-  held.add(e.code);
-  const [x, y] = keyVector();
-  if (x || y) joySend(true, ((Math.atan2(x, y) * 180) / Math.PI + 360) % 360);
-});
+  if (!held.has(e.code)) {
+    held.add(e.code);
+    const [x, y] = keyVector();
+    if (x || y) joySend(true, ((Math.atan2(x, y) * 180) / Math.PI + 360) % 360);
+  }
+  return true;
+}
 document.addEventListener("keyup", (e) => {
   if (!held.delete(e.code)) return;
   const [x, y] = keyVector();
@@ -976,10 +1111,110 @@ document.querySelectorAll("#dpad button[data-b]").forEach((b) => {
 $("joy-stop").onclick = guard(async () => { joyLast = ""; await api("/api/player/stop", { body: {} }); $("joy-info").textContent = "Joystick off"; await poll(); });
 presetButtons("joy-presets", (kmh) => { $("joy-speed").value = kmh; joyLast = ""; });
 
+// ------------------------------------------------------------------ keyboard shortcuts (single keys, customizable)
+const ACTIONS = [
+  ["teleport", "T", "Teleport to the picked point", () => teleport()],
+  ["build", "B", "Build route", () => buildRoute()],
+  ["playpause", "P", "Play / pause on the device", () => playOrPause()],
+  ["stop", "X", "Stop playback", () => stopPlayback()],
+  ["clear", "C", "Stop spoofing (back to real location)", () => stopSpoofing()],
+  ["connect", "K", "Connect / disconnect", () => (state.status && state.status.device ? disconnectNow() : connectNow())],
+  ["locate", "R", "Show my real location", () => showRealLocation(false)],
+  ["fit", "F", "Fit the route on the map", () => fitRoute()],
+  ["preview", "V", "Preview the route on the map", () => togglePreview()],
+  ["gpx", "G", "Open a GPX file", () => { openTab("gpx"); $("gpx-file").click(); }],
+  ["link", "L", "Paste a Google Maps link", () => { openTab("teleport"); $("sec-find").open = true; $("gmaps-link").focus(); }],
+  ["search", "Q", "Search for a place", () => { openTab("teleport"); $("sec-find").open = true; $("search").focus(); }],
+  ["sidebar", "M", "Hide / show the side menu", () => setSidebarHidden(!document.body.classList.contains("sidebar-hidden"))],
+  ["settings", "O", "Open settings", () => openSettings("appearance")],
+  ["help", "H", "Show keyboard shortcuts", () => openShortcutHelp()],
+  ["tab-teleport", "1", "Teleport tab", () => openTab("teleport")],
+  ["tab-route", "2", "Route tab", () => openTab("route")],
+  ["tab-gpx", "3", "GPX tab", () => openTab("gpx")],
+  ["tab-joystick", "4", "Joystick tab", () => openTab("joystick")],
+  ["tab-saved", "5", "Saved tab", () => openTab("saved")],
+];
+const actionById = Object.fromEntries(ACTIONS.map((a) => [a[0], a]));
+function shortcutMap() {
+  const custom = settings().shortcuts || {};
+  return Object.fromEntries(ACTIONS.map(([id, def]) => [id, (custom[id] || def).toUpperCase()]));
+}
+function keyFor(id) { return shortcutMap()[id]; }
+document.addEventListener("keydown", (e) => {
+  if (listeningFor) return;
+  if (joystickKeydown(e)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || typing()) return;
+  if (e.key === "Escape") { hideTip(); return; }
+  const k = e.key.length === 1 ? e.key.toUpperCase() : "";
+  if (!/^[A-Z0-9]$/.test(k)) return;
+  const m = shortcutMap();
+  const id = Object.keys(m).find((a) => m[a] === k);
+  if (!id) return;
+  e.preventDefault();
+  guard(actionById[id][3])();
+});
+function decorateShortcutHints(root = document) {
+  const m = shortcutMap();
+  root.querySelectorAll("[data-action]").forEach((b) => {
+    const k = m[b.dataset.action];
+    let hint = b.querySelector(".kbd");
+    if (!k) { if (hint) hint.remove(); return; }
+    if (!hint) { hint = el("span", { class: "kbd" }); b.append(hint); }
+    hint.textContent = k;
+    b.title = `${(b.title || "").replace(/ \(shortcut .\)$/, "")} (shortcut ${k})`.trim();
+  });
+}
+let listeningFor = null;
+function renderShortcutEditor() {
+  const m = shortcutMap();
+  const list = $("shortcut-list");
+  list.replaceChildren();
+  for (const [id, , label] of ACTIONS) {
+    const cap = el("button", { type: "button", class: "keycap", textContent: m[id], "aria-label": `Change the shortcut for ${label}` });
+    cap.onclick = () => {
+      document.querySelectorAll(".keycap.listening").forEach((c) => c.classList.remove("listening"));
+      listeningFor = id;
+      cap.classList.add("listening");
+      cap.textContent = "…";
+    };
+    list.append(el("span", { textContent: label }), cap);
+  }
+}
+document.addEventListener("keydown", (e) => {
+  if (!listeningFor) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const id = listeningFor;
+  listeningFor = null;
+  if (e.key === "Escape") { renderShortcutEditor(); return; }
+  const k = e.key.length === 1 ? e.key.toUpperCase() : "";
+  if (!/^[A-Z0-9]$/.test(k)) { toast("Use a single letter (A–Z) or number (0–9).", true); renderShortcutEditor(); return; }
+  const m = shortcutMap();
+  const clash = Object.keys(m).find((a) => a !== id && m[a] === k);
+  const custom = { ...(settings().shortcuts || {}) };
+  if (clash) { custom[clash] = m[id]; toast(`Swapped with “${actionById[clash][2]}”, which now uses ${m[id]}.`); }
+  custom[id] = k;
+  if ("WASD".includes(k)) toast(`${k} also moves the joystick while the Joystick tab is open.`);
+  settings().shortcuts = custom;
+  saveSettingsSoon();
+  renderShortcutEditor();
+  decorateShortcutHints();
+}, true);
+$("btn-shortcuts-reset").onclick = () => { settings().shortcuts = {}; saveSettingsSoon(); renderShortcutEditor(); decorateShortcutHints(); toast("Default shortcuts restored."); };
+function openShortcutHelp() {
+  const m = shortcutMap();
+  $("shortcut-help-list").replaceChildren(...ACTIONS.flatMap(([id, , label]) => [el("span", { textContent: label }), el("span", { class: "kbd", textContent: m[id] })]),
+    el("span", { textContent: "Move the joystick (Joystick tab)" }), el("span", { class: "kbd", textContent: "WASD" }));
+  $("shortcut-help").showModal();
+}
+$("btn-shortcuts").onclick = openShortcutHelp;
+$("btn-shortcut-help-close").onclick = () => $("shortcut-help").close();
+$("btn-shortcut-customize").onclick = () => { $("shortcut-help").close(); openSettings("keys"); };
+
 // ------------------------------------------------------------------ saved data
 async function loadStore() {
   try { state.store = await api("/api/store"); } catch (e) { toast(e.message, true); }
-  applySettings(state.store.settings || {});
+  applySettings(settings());
   renderSaved();
 }
 async function saveStore() {
@@ -990,13 +1225,12 @@ let settingsTimer;
 function saveSettingsSoon() {
   clearTimeout(settingsTimer);
   settingsTimer = setTimeout(guard(async () => {
-    state.store.settings = { ...state.store.settings, ...collectSettings() };
+    state.store.settings = { ...settings(), ...collectSettings() };
     await saveStore();
-  }), 800);
+  }), 700);
 }
 const SETTING_IDS = ["driver", "provider", "default-mode", "default-speed", "accel", "decel", "start-rest", "stop-end",
-  "road-aware", "road-data", "corner-slow", "match-eta", "speed-factor",
-  "multiplier", "loop", "jitter", "tick", "joy-speed", "gpx-speed"];
+  "road-aware", "road-data", "corner-slow", "match-eta", "speed-factor", "multiplier", "loop", "jitter", "tick", "joy-speed", "gpx-speed"];
 function collectSettings() {
   const s = {};
   for (const id of SETTING_IDS) { const e = $(id); s[id] = e.type === "checkbox" ? e.checked : e.value; }
@@ -1012,30 +1246,48 @@ function applySettings(s) {
   $("speed-factor").oninput();
   if (Array.isArray(s.view)) map.setView([s.view[0], s.view[1]], s.view[2]);
   $("google-key").value = s.google_api_key || "";
+  $("pref-night-map").checked = !!s.night_map;
+  $("pref-compact").checked = !!s.compact;
+  $("pref-channel").value = s.update_channel === "dev" ? "dev" : "stable";
+  if (s.sidebar_w) setSidebarWidth(s.sidebar_w, false);
+  applyAppearance();
+  applySections();
+  decorateShortcutHints();
+  renderRouteSettingsSub();
 }
 SETTING_IDS.forEach((id) => $(id).addEventListener("change", saveSettingsSoon));
 map.on("moveend", saveSettingsSoon);
-
 function renderSaved() {
   const fl = $("fav-list");
   fl.replaceChildren();
-  if (!state.store.favorites.length) fl.append(el("li", { class: "hint", textContent: "Nothing saved yet" }));
+  $("fav-count").textContent = state.store.favorites.length ? String(state.store.favorites.length) : "";
+  if (!state.store.favorites.length) fl.append(el("li", { class: "hint", textContent: "Nothing saved yet. Pick a point and press ☆ Save." }));
   state.store.favorites.forEach((f, i) => {
     fl.append(el("li", {},
-      el("span", { textContent: `${f.name} — ${fmtLL(f.lat, f.lon)}`, title: fmtLL(f.lat, f.lon) }),
-      el("button", { class: "small", textContent: "Show", onclick: () => { setPicked(f.lat, f.lon); } }),
-      el("button", { class: "small", textContent: "Teleport", onclick: guard(async () => { setPicked(f.lat, f.lon); await teleport(); }) }),
-      el("button", { class: "small", textContent: "✕", onclick: guard(async () => { state.store.favorites.splice(i, 1); await saveStore(); }) }),
+      el("span", { textContent: f.name, title: fmtLL(f.lat, f.lon) }),
+      el("button", { textContent: "Show", onclick: () => { openTab("teleport"); setPicked(f.lat, f.lon); } }),
+      el("button", { textContent: "Teleport", onclick: guard(async () => { setPicked(f.lat, f.lon); await teleport(); }) }),
+      el("button", { class: "x", textContent: "✕", title: "Delete", onclick: guard(async () => {
+        const [removed] = state.store.favorites.splice(i, 1);
+        await saveStore();
+        toast(`Deleted “${removed.name}”.`, false, { label: "Undo", run: guard(async () => { state.store.favorites.splice(i, 0, removed); await saveStore(); }) });
+      }) }),
     ));
   });
   const rl = $("route-list");
   rl.replaceChildren();
-  if (!state.store.routes.length) rl.append(el("li", { class: "hint", textContent: "Nothing saved yet" }));
+  $("route-count").textContent = state.store.routes.length ? String(state.store.routes.length) : "";
+  if (!state.store.routes.length) rl.append(el("li", { class: "hint", textContent: "Nothing saved yet." }));
   state.store.routes.forEach((r, i) => {
     rl.append(el("li", {},
-      el("span", { textContent: `${r.name} (${(r.waypoints || []).length} checkpoints)` }),
-      el("button", { class: "small", textContent: "Load", onclick: () => loadRoute(r) }),
-      el("button", { class: "small", textContent: "✕", onclick: guard(async () => { state.store.routes.splice(i, 1); await saveStore(); }) }),
+      el("span", { textContent: `${r.name} (${(r.waypoints || []).length})`, title: r.name }),
+      el("button", { textContent: "Load", onclick: () => loadRoute(r) }),
+      el("span"),
+      el("button", { class: "x", textContent: "✕", title: "Delete", onclick: guard(async () => {
+        const [removed] = state.store.routes.splice(i, 1);
+        await saveStore();
+        toast(`Deleted “${removed.name}”.`, false, { label: "Undo", run: guard(async () => { state.store.routes.splice(i, 0, removed); await saveStore(); }) });
+      }) }),
     ));
   });
 }
@@ -1069,7 +1321,7 @@ function loadRoute(r) {
   if (pts.length) map.fitBounds(L.latLngBounds(pts), { padding: [30, 30] });
 }
 $("btn-export-data").onclick = () => {
-  const data = { ...state.store, settings: { ...state.store.settings } };
+  const data = { ...state.store, settings: { ...settings() } };
   delete data.settings.google_api_key; // never put the API key in a backup file
   const blob = new Blob([JSON.stringify(data, null, 1)], { type: "application/json" });
   const a = el("a", { href: URL.createObjectURL(blob), download: "location-spoofer-backup.json" });
@@ -1086,7 +1338,7 @@ $("import-data").onchange = guard(async (e) => {
   state.store = {
     favorites: [...state.store.favorites, ...okList(data.favorites).filter((v) => v && isFinite(v.lat) && isFinite(v.lon))],
     routes: [...state.store.routes, ...okList(data.routes).filter((r) => r && Array.isArray(r.waypoints))],
-    settings: state.store.settings,
+    settings: settings(),
   };
   await saveStore();
   toast("Imported");
@@ -1094,7 +1346,15 @@ $("import-data").onchange = guard(async (e) => {
 
 // ------------------------------------------------------------------ settings dialog
 const settingsDlg = $("settings-dialog");
-$("btn-settings").onclick = () => { $("key-status").textContent = ""; settingsDlg.showModal(); };
+function openSettings(pane = "appearance") {
+  $("key-status").textContent = "";
+  document.querySelectorAll("#settings-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
+  document.querySelectorAll("#settings-dialog .pane").forEach((p) => (p.hidden = p.dataset.pane !== pane));
+  if (pane === "keys") renderShortcutEditor();
+  if (!settingsDlg.open) settingsDlg.showModal();
+}
+document.querySelectorAll("#settings-tabs button").forEach((b) => (b.onclick = () => openSettings(b.dataset.pane)));
+$("btn-settings").onclick = () => openSettings("appearance");
 $("btn-key-show").onclick = () => {
   const k = $("google-key");
   k.type = k.type === "password" ? "text" : "password";
@@ -1102,7 +1362,8 @@ $("btn-key-show").onclick = () => {
 };
 async function saveKey() {
   const key = $("google-key").value.trim();
-  state.store.settings = { ...state.store.settings, google_api_key: key };
+  if ((settings().google_api_key || "") === key) return;
+  settings().google_api_key = key;
   await saveStore();
   state.google.session = null;
   await refreshGoogleStatus();
@@ -1110,14 +1371,11 @@ async function saveKey() {
 $("btn-key-test").onclick = busy($("btn-key-test"), "Testing…", async () => {
   await saveKey();
   if (!state.google.configured) { $("key-status").textContent = "No key entered."; return; }
-  try {
-    await ensureGoogleLayer();
-    $("key-status").textContent = "✓ Map Tiles API works with this key.";
-  } catch (e) {
-    $("key-status").textContent = "✗ " + e.message;
-  }
+  try { await ensureGoogleLayer(); $("key-status").textContent = "✓ Map Tiles API works with this key."; }
+  catch (e) { $("key-status").textContent = "✗ " + e.message; }
 });
-settingsDlg.addEventListener("close", guard(saveKey));
+$("pref-channel").onchange = () => { settings().update_channel = $("pref-channel").value; saveSettingsSoon(); };
+settingsDlg.addEventListener("close", () => { listeningFor = null; guard(saveKey)(); });
 $("btn-tutorial-again").onclick = () => { settingsDlg.close(); openTutorial(0); };
 async function refreshGoogleStatus() {
   try { state.google.configured = (await api("/api/google/status")).configured; } catch (_) { state.google.configured = false; }
@@ -1127,14 +1385,16 @@ async function refreshGoogleStatus() {
 }
 
 // ------------------------------------------------------------------ first-run tutorial
+const REPO = "https://github.com/YK3D/iPhone-location-spoofer/blob/main";
 const TUTORIAL = [
   { title: "Welcome", body: [
       "This app sets your iPhone's location from this computer over a USB cable: jump to any place, follow routes at realistic speeds, or replay GPX files.",
       "Use it only where it is allowed, for example testing your own apps. Games and dating, school or work apps often ban fake locations and can suspend accounts.",
+      ["By continuing you agree to the ", ["Terms of Use", `${REPO}/TERMS.md`], ". The ", ["Privacy Policy", `${REPO}/PRIVACY.md`], " explains which online map services the app contacts. Nothing is collected by the app's authors."],
       "Want to look around first? Pick “Simulator (no iPhone)” as the connection and skip ahead." ] },
   { title: "1 · Install Apple's device software", body: [
       "Windows needs Apple's iPhone drivers. Open the Microsoft Store, search for “Apple Devices” and install it (iTunes also works).",
-      "Open it once and leave it running in the background while you use this app.",
+      "Leave it installed; it runs in the background while you use this app.",
       "macOS: nothing to install. Linux: install the usbmuxd package." ] },
   { title: "2 · Connect and trust", body: [
       "Plug the iPhone in with a cable and unlock it.",
@@ -1152,18 +1412,23 @@ const TUTORIAL = [
     action: { label: "Connect now", run: connectNow } },
   { title: "5 · Move your iPhone", body: [
       "Teleport: click the map (or paste a Google Maps link) and press Teleport here. Right-click the map to jump instantly.",
-      "Route: click checkpoints, choose roads, footpaths or sea lanes, set speeds, Build route, then Play on device. The line's colour shows the speed.",
-      "GPX: drop a .gpx file to replay it. Joystick: walk around live with W A S D.",
+      "Route: click checkpoints, choose roads, footpaths or sea lanes, set speeds, Build route, then Play. The line's colour shows the speed.",
+      "Every section can be folded away, the side menu can be resized by dragging its edge, and ⚙ Settings has themes and keyboard shortcuts (press H to see them).",
       "When you're done, press “Stop spoofing — back to real location”." ] },
 ];
 let tutIndex = 0;
 const tutDlg = $("tutorial");
 function openTutorial(i = 0) { tutIndex = i; renderTutorial(); if (!tutDlg.open) tutDlg.showModal(); }
+function richParagraph(p) {
+  if (typeof p === "string") return el("p", { textContent: p });
+  return el("p", {}, ...p.map((part) => (Array.isArray(part) ? el("a", { href: part[1], target: "_blank", rel: "noopener", textContent: part[0] }) : part)));
+}
 function renderTutorial() {
   const step = TUTORIAL[tutIndex];
   $("tut-step").textContent = `Step ${tutIndex + 1} of ${TUTORIAL.length}`;
+  $("tut-bar").style.width = `${((tutIndex + 1) / TUTORIAL.length) * 100}%`;
   $("tut-title").textContent = step.title;
-  $("tut-body").replaceChildren(...step.body.map((p) => el("p", { textContent: p })));
+  $("tut-body").replaceChildren(...step.body.map(richParagraph));
   const act = $("tut-action");
   act.replaceChildren();
   if (step.action) {
@@ -1171,12 +1436,13 @@ function renderTutorial() {
     b.onclick = busy(b, "Working…", step.action.run);
     act.append(b);
   }
+  act.hidden = !step.action;
   $("tut-back").disabled = tutIndex === 0;
   $("tut-next").textContent = tutIndex === TUTORIAL.length - 1 ? "Start using the app" : "Next";
 }
 function finishTutorial() {
   tutDlg.close();
-  state.store.settings = { ...state.store.settings, tutorial_done: true };
+  settings().tutorial_done = true;
   saveStore().catch(() => {});
 }
 $("tut-back").onclick = () => { if (tutIndex > 0) { tutIndex--; renderTutorial(); } };
@@ -1186,13 +1452,15 @@ tutDlg.addEventListener("cancel", (e) => { e.preventDefault(); finishTutorial();
 $("btn-tutorial").onclick = () => openTutorial(0);
 
 // ------------------------------------------------------------------ updates
-$("btn-update-check").onclick = busy($("btn-update-check"), "Checking…", async () => {
+const checkUpdates = async () => {
   const u = await api("/api/update/check", { body: {} });
-  if (!u.enabled) toast("Automatic updates only work in the installed app build. From source, run: git pull");
+  if (!u.enabled) toast("This copy is updated by its installer or from source (git pull).");
   else if (u.state === "up_to_date") toast(`You have the latest version (${u.current}).`);
   else if (u.state === "error") toast(`Update check failed: ${u.error}`, true);
   await poll();
-});
+};
+$("btn-update-check").onclick = busy($("btn-update-check"), "Checking…", checkUpdates);
+$("btn-update-check2").onclick = busy($("btn-update-check2"), "Checking…", checkUpdates);
 $("btn-update-install").onclick = guard(async () => {
   await api("/api/update/install", { body: {} });
   state.restarting = true;
@@ -1200,16 +1468,14 @@ $("btn-update-install").onclick = guard(async () => {
   $("btn-update-install").hidden = true;
 });
 $("btn-tunneld").onclick = busy($("btn-tunneld"), "Starting…", async () => toast((await api("/api/tunneld/start", { body: {} })).message));
-
 function renderUpdate(st) {
   const u = st.update;
-  const banner = $("update-banner");
   if (state.restarting) {
     if (state.bootVersion && st.version !== state.bootVersion) location.reload();
     return;
   }
   const show = u && u.enabled && ["downloading", "ready", "available"].includes(u.state);
-  banner.hidden = !show;
+  $("update-banner").hidden = !show;
   if (!show) return;
   $("btn-update-install").hidden = u.state !== "ready";
   $("update-text").textContent =
@@ -1217,8 +1483,7 @@ function renderUpdate(st) {
     : u.state === "downloading" ? `Downloading version ${u.latest}… ${Math.round(u.progress * 100)}%`
     : `Version ${u.latest} is available.`;
 }
-
-// The standalone (Rust) app has no CLI driver and needs no admin tunnel helper.
+// Features differ between the standalone app and the browser version.
 function applyFeatures(f) {
   if (!f) return;
   if (f.cli_driver === false) { const o = $("driver").querySelector('option[value="cli"]'); if (o) o.remove(); }
@@ -1232,7 +1497,8 @@ async function poll() {
   try {
     const st = await api("/api/status");
     state.status = st;
-    $("version").textContent = `v${st.version}`;
+    $("version").textContent = `v${st.version}${st.app === "standalone" ? "" : " · browser"}`;
+    $("about-version").textContent = `Version ${st.version} (${st.app === "standalone" ? "standalone app" : "browser version"})`;
     if (!state.bootVersion) { state.bootVersion = st.version; applyFeatures(st.features); }
     renderUpdate(st);
     renderDevice(st);
@@ -1248,12 +1514,15 @@ async function poll() {
 
 // ------------------------------------------------------------------ boot
 wireInfoButtons();
+wireSections();
+renderThemeGrid();
 renderWaypoints();
 renderGpxDrop();
+decorateShortcutHints();
 (async () => {
   await loadStore();
   await refreshGoogleStatus();
   await poll();
   refreshDevices(false);
-  if (!state.store.settings.tutorial_done) openTutorial(0);
+  if (!settings().tutorial_done) openTutorial(0);
 })();

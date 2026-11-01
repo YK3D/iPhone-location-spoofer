@@ -1,6 +1,11 @@
-# Research: standalone native Windows app, Microsoft Store, and independence from the Apple Devices app
+# Design notes: standalone app, Microsoft Store, and running without the Apple Devices app
 
-Status: research only, nothing implemented. Date: 2026-11-01.
+Date: 2026-11-01. These notes record the research behind the standalone app.
+
+**Current state:**
+* The standalone (Rust) app now exists. It took the "Tauri-style" route: a native window around the shared interface, with the `idevice` library talking to the iPhone.
+* Running without the Apple Devices app (options B/C below) is being tested on the `feature/no-apple-devices` branch.
+* Microsoft Store publishing is postponed until the standalone app is mature.
 
 ## Questions
 
@@ -97,13 +102,10 @@ Policy references are to the Microsoft Store Policies, version 7.20 (updated 202
 | Admin elevation | n/a | The iOS 17.0–17.3 tunnel helper needs admin | Drop iOS 17.0–17.3 support in the Store build; the userspace tunnel (iOS 17.4+) needs no admin |
 | Developer Disk Image | n/a | pymobiledevice3 downloads Apple's DDI at runtime from a third-party GitHub repository; these images are Apple-copyrighted | Legal grey area. Document it, or require Xcode-sourced images. Ask for legal advice before Store submission |
 
-## Decision needed before implementation
+## Open questions
 
-1. Run the **hardware spike** for option B. It decides whether "no Apple Devices app" is achievable.
-2. Choose between:
-   - **pywebview on the Python stack**: fast, GPL-3, about 90 MB.
-   - **Tauri with Rust (idevice + netmuxd)**: a rewrite, MIT/LGPL, small, best Store fit.
-3. Choose a Store name without "iPhone", and write a privacy policy.
+1. Hardware test of option B/C: does the Apple USB driver from Windows Update, plus netmuxd, work with no Apple software installed?
+2. Microsoft Store: a store name without "iPhone", the review outcome for a location-simulation app, and code signing.
 
 ## Sources
 

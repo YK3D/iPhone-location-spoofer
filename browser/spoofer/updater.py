@@ -4,8 +4,9 @@ Flow
 ----
 1. A push to ``main`` makes GitHub Actions build ``LocationSpoofer.exe`` and publish it as a
    release (tag ``v<version>``) together with ``LocationSpoofer.exe.sha256``.
-2. The running exe checks ``/releases/latest`` at start-up and every few hours. When the release
-   is newer, it downloads the exe next to itself as ``LocationSpoofer.update.exe``, verifies the
+2. The running exe lists the repository's releases at start-up and every few hours and picks the
+   newest one tagged ``browser-v<version>`` (test builds are pre-releases and are only used on the
+   "dev" update channel). When the release is newer, it downloads the exe next to itself as ``LocationSpoofer.update.exe``, verifies the
    SHA-256 and records it in ``LocationSpoofer.update.json``.
 3. The update is installed either when the user presses *Restart now* or automatically at the
    next launch: the running exe is renamed to ``LocationSpoofer.old.exe`` (Windows allows
@@ -36,15 +37,19 @@ from . import __version__
 log = logging.getLogger(__name__)
 
 REPO = os.environ.get("SPOOFER_UPDATE_REPO", "YK3D/iPhone-location-spoofer")
-ASSET = "LocationSpoofer.exe"
+ASSET = "LocationSpooferBrowser.exe"
+TAG_PREFIX = "browser-v"
 CHECK_EVERY_S = 6 * 3600
 ALLOWED_HOSTS = ("github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com")
 USER_AGENT = f"iPhone-Location-Spoofer/{__version__}"
 
 
 def parse_version(text: str) -> tuple[int, ...]:
-    """'v1.1.23' -> (1, 1, 23). Anything after the numbers (e.g. '-dev') is ignored."""
-    m = re.match(r"^v?(\d+(?:\.\d+)*)", (text or "").strip())
+    """'browser-v1.1.23' / 'v1.1.23' -> (1, 1, 23). Anything after the numbers (e.g. '-dev') is ignored."""
+    text = (text or "").strip()
+    if text.startswith(TAG_PREFIX):
+        text = text[len(TAG_PREFIX):]
+    m = re.match(r"^v?(\d+(?:\.\d+)*)", text)
     if not m:
         return ()
     return tuple(int(x) for x in m.group(1).split("."))
@@ -56,6 +61,20 @@ def is_newer(candidate: str, current: str) -> bool:
         return False
     n = max(len(c), len(cur))
     return c + (0,) * (n - len(c)) > cur + (0,) * (n - len(cur))
+
+
+def pick_release(releases: list, channel: str = "stable") -> Optional[dict]:
+    """Newest browser release for the channel: stable ignores pre-releases (test builds)."""
+    best = None
+    for rel in releases or []:
+        tag = rel.get("tag_name") or ""
+        if not tag.startswith(TAG_PREFIX) or rel.get("draft"):
+            continue
+        if rel.get("prerelease") and channel != "dev":
+            continue
+        if best is None or is_newer(tag, best["tag_name"]):
+            best = rel
+    return best
 
 
 def sha256_file(path: Path) -> str:
@@ -91,6 +110,7 @@ class Updater:
     ):
         self.exe = Path(exe_path or sys.executable).resolve()
         self._transport = transport
+        self.channel_getter = lambda: "stable"  # "stable" or "dev"; the server wires it to the user's setting
         self.current = current
         self.enabled = is_frozen() if enabled is None else enabled
         self.state = "idle" if self.enabled else "disabled"
@@ -212,17 +232,18 @@ class Updater:
                     timeout=30, follow_redirects=True, headers={"User-Agent": USER_AGENT}, transport=self._transport
                 ) as client:
                     r = await client.get(
-                        f"https://api.github.com/repos/{REPO}/releases/latest",
+                        f"https://api.github.com/repos/{REPO}/releases",
+                        params={"per_page": 40},
                         headers={"Accept": "application/vnd.github+json"},
                     )
-                    if r.status_code == 404:
-                        self.state = "up_to_date"
-                        self.checked_at = time.time()
-                        return self.status()
                     r.raise_for_status()
-                    rel = r.json()
+                    rel = pick_release(r.json(), self.channel_getter())
+                    self.checked_at = time.time()
+                    if rel is None:
+                        self.state = "up_to_date"
+                        return self.status()
                     tag = rel.get("tag_name", "")
-                    self.latest = tag.lstrip("v")
+                    self.latest = tag[len(TAG_PREFIX):] if tag.startswith(TAG_PREFIX) else tag.lstrip("v")
                     self.notes = (rel.get("body") or "")[:2000]
                     self.checked_at = time.time()
                     if not is_newer(tag, self.current):

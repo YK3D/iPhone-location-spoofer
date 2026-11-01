@@ -240,6 +240,8 @@ async def status():
     d = s.driver
     return {
         "version": __version__,
+        "app": "browser",
+        "features": {"cli_driver": True, "tunnel_helper": True},
         "driver": s.driver_key,
         "drivers": [{"key": k, "label": v.label, "live": v.live} for k, v in s.drivers.items()],
         "device": d.info.to_dict() if d.info else None,
@@ -465,7 +467,7 @@ async def player_load(tid: str):
 
 
 @app.post("/api/player/{action}")
-async def player_action(action: Literal["play", "pause", "resume", "stop"]):
+async def player_action(action: Literal["play", "pause", "resume", "stop", "unload"]):
     p = S().player
     await getattr(p, action)()
     return p.status()

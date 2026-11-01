@@ -591,6 +591,7 @@ async fn player_action(State(app): State<App>, Path(action): Path<String>) -> R 
         "pause" => app.player.pause().await,
         "resume" => app.player.resume().await.map_err(dev)?,
         "stop" => app.player.stop().await,
+        "unload" => app.player.unload().await,
         _ => return Err(ApiError(404, "unknown action".into())),
     }
     Ok(Json(app.player.status()))
@@ -639,8 +640,13 @@ async fn update_status(State(app): State<App>) -> R {
     Ok(Json(s))
 }
 
+pub fn update_channel(app: &AppState) -> String {
+    app.store.load()["settings"]["update_channel"].as_str().unwrap_or("stable").to_string()
+}
+
 async fn update_check(State(app): State<App>) -> R {
-    Ok(Json(app.updater.check().await))
+    let channel = update_channel(&app);
+    Ok(Json(app.updater.check(&channel).await))
 }
 
 async fn update_install(State(app): State<App>) -> R {

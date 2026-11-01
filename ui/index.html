@@ -1,148 +1,174 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="system">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Location Spoofer</title>
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/icon-32.png" sizes="32x32" type="image/png">
   <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <div id="app">
-  <aside id="sidebar">
+  <aside id="sidebar" aria-label="Controls">
     <header class="brand">
-      <h1>Location Spoofer</h1>
-      <span class="row">
-        <span id="version" class="muted small"></span>
-        <button id="btn-tutorial" class="icon small" title="Setup guide" aria-label="Open the setup guide">?</button>
-        <button id="btn-settings" class="icon small" title="Settings" aria-label="Open settings">⚙</button>
-      </span>
+      <img src="/static/icon.svg" alt="" class="logo" width="28" height="28">
+      <div class="brand-text">
+        <h1>Location Spoofer</h1>
+        <span class="brand-sub"><span id="version" class="muted small"></span><span id="conn-chip" class="chip" title="Device connection">Not connected</span></span>
+      </div>
+      <div class="brand-actions">
+        <button id="btn-tutorial" class="icon-btn" title="Setup guide" aria-label="Open the setup guide">?</button>
+        <button id="btn-shortcuts" class="icon-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">⌨</button>
+        <button id="btn-settings" class="icon-btn" title="Settings" aria-label="Open settings">⚙</button>
+        <button id="btn-hide-sidebar" class="icon-btn" title="Hide the side menu" aria-label="Hide the side menu">«</button>
+      </div>
     </header>
     <div id="update-banner" class="card banner" hidden>
       <span id="update-text" class="grow"></span>
-      <button id="btn-update-install" class="primary small" hidden>Restart now</button>
+      <button id="btn-update-install" class="primary" hidden>Restart now</button>
     </div>
 
     <!-- ============ DEVICE ============ -->
-    <section class="card" id="device-card">
-      <div class="row">
-        <label class="grow">Connection
-          <select id="driver">
-            <option value="pmd3">Direct (recommended)</option>
-            <option value="cli">Guide commands (CLI fallback)</option>
-            <option value="mock">Simulator (no iPhone)</option>
-          </select>
-        </label>
-        <button class="info" type="button" data-tip="Direct talks to the iPhone over USB and keeps one connection open, which smooth routes, pause/resume and the joystick need. Simulator moves a pretend phone so you can try everything without an iPhone.">i</button>
-      </div>
-      <div class="row">
-        <label class="grow">Device
-          <select id="device-select"><option value="">First connected iPhone</option></select>
-        </label>
-        <button id="btn-refresh" class="icon" title="Look for devices" aria-label="Look for devices">⟳</button>
-      </div>
-      <div class="row">
-        <button id="btn-connect" class="primary grow">Connect</button>
-        <button id="btn-disconnect" class="grow" hidden>Disconnect</button>
-      </div>
-      <div id="device-status" class="status">Not connected</div>
-      <details id="device-tools">
-        <summary>Device tools</summary>
-        <div class="tool-list">
-          <div class="tool"><button id="btn-reveal">Reveal Developer Mode</button>
-            <button class="info" type="button" data-tip="iOS hides the Developer Mode switch until a computer asks for it. Press this with the iPhone plugged in and unlocked, then open Settings › Privacy & Security › Developer Mode on the phone, turn it on and restart. Needed once per phone.">i</button></div>
-          <div class="tool"><button id="btn-mount">Mount developer image</button>
-            <button class="info" type="button" data-tip="Location simulation lives in Apple's Developer Disk Image. Connecting normally mounts it for you; press this if setting a location fails with a 'service not available' error. The first time it downloads about 20 MB.">i</button></div>
-          <div class="tool"><button id="btn-tunneld">Start tunnel helper (admin)</button>
-            <button class="info" type="button" data-tip="Only for iOS 17.0 to 17.3. Those versions need a background tunnel that requires administrator rights. A new window opens after Windows asks for permission; keep it open while you use the app. iOS 17.4 and newer, and iOS 16 and older, do not need it.">i</button></div>
-          <div class="tool"><button id="btn-update-check">Check for updates</button>
-            <button class="info" type="button" data-tip="Looks for a newer version of this app on GitHub. Updates download in the background and install when you press Restart now, or the next time you open the app. Microsoft Store copies are updated by the Store instead.">i</button></div>
+    <details class="card section" id="sec-device" open>
+      <summary><span class="sec-title">📱 Device</span><span id="dev-summary" class="sec-sub"></span></summary>
+      <div class="sec-body">
+        <div class="field-row">
+          <label class="grow">Connection
+            <select id="driver">
+              <option value="pmd3">Direct (recommended)</option>
+              <option value="cli">Guide commands (CLI fallback)</option>
+              <option value="mock">Simulator (no iPhone)</option>
+            </select>
+          </label>
+          <button class="info" type="button" data-tip="Direct talks to the iPhone over USB and keeps one connection open, which smooth routes, pause/resume and the joystick need. Guide commands (browser version only) runs the commands from the written guide: slower, but a fallback if Direct fails. Simulator moves a pretend phone so you can try everything without an iPhone.">i</button>
         </div>
-      </details>
-      <div class="row">
-        <button id="btn-clear" class="danger grow">Stop spoofing — back to real location</button>
-        <button class="info" type="button" data-tip="Tells the iPhone to stop using the simulated location and go back to real GPS. If the location still looks wrong afterwards, restart the iPhone.">i</button>
+        <div class="field-row">
+          <label class="grow">Device
+            <select id="device-select"><option value="">First connected iPhone</option></select>
+          </label>
+          <button id="btn-refresh" class="square" title="Look for devices" aria-label="Look for devices">⟳</button>
+        </div>
+        <div class="btn-row">
+          <button id="btn-connect" class="primary" data-action="connect">Connect</button>
+          <button id="btn-disconnect" hidden data-action="connect">Disconnect</button>
+        </div>
+        <div id="device-status" class="status">Not connected</div>
+        <details class="sub" id="device-tools">
+          <summary>Device tools</summary>
+          <div class="tool-list">
+            <div class="tool"><button id="btn-reveal">Reveal Developer Mode</button>
+              <button class="info" type="button" data-tip="iOS hides the Developer Mode switch until a computer asks for it. Press this with the iPhone plugged in and unlocked, then open Settings › Privacy & Security › Developer Mode on the phone, turn it on and restart. Needed once per phone.">i</button></div>
+            <div class="tool"><button id="btn-mount">Mount developer image</button>
+              <button class="info" type="button" data-tip="Location simulation lives in Apple's Developer Disk Image. Connecting normally mounts it for you; press this if setting a location fails with a 'service not available' error. The first time it downloads about 20 MB.">i</button></div>
+            <div class="tool"><button id="btn-tunneld">Start tunnel helper (admin)</button>
+              <button class="info" type="button" data-tip="Only for iOS 17.0 to 17.3 in the browser version. Those versions need a background tunnel that requires administrator rights. A new window opens after Windows asks for permission; keep it open while you use the app.">i</button></div>
+            <div class="tool"><button id="btn-update-check">Check for updates</button>
+              <button class="info" type="button" data-tip="Looks for a newer version of this app on GitHub. Updates download in the background and install when you press Restart now, or the next time you open the app.">i</button></div>
+          </div>
+        </details>
+        <div class="field-row">
+          <button id="btn-clear" class="danger grow" data-action="clear">Stop spoofing — back to real location</button>
+          <button class="info" type="button" data-tip="Tells the iPhone to stop using the simulated location and go back to real GPS, then shows this computer's approximate real location on the map (the iPhone doesn't share its own GPS over USB). If the phone still looks wrong, restart it.">i</button>
+        </div>
       </div>
-    </section>
+    </details>
 
     <!-- ============ TABS ============ -->
     <nav class="tabs" role="tablist">
-      <button data-tab="teleport" class="active">Teleport</button>
-      <button data-tab="route">Route</button>
-      <button data-tab="gpx">GPX</button>
-      <button data-tab="joystick">Joystick</button>
-      <button data-tab="saved">Saved</button>
+      <button data-tab="teleport" class="active" role="tab"><span class="tab-ico">📍</span><span>Teleport</span></button>
+      <button data-tab="route" role="tab"><span class="tab-ico">🛣️</span><span>Route</span></button>
+      <button data-tab="gpx" role="tab"><span class="tab-ico">📄</span><span>GPX</span></button>
+      <button data-tab="joystick" role="tab"><span class="tab-ico">🕹️</span><span>Joystick</span></button>
+      <button data-tab="saved" role="tab"><span class="tab-ico">⭐</span><span>Saved</span></button>
     </nav>
 
     <!-- Teleport -->
-    <section class="tab-panel card" id="tab-teleport">
-      <p class="hint">Click the map, search for a place, paste a Google Maps link, or type coordinates.</p>
-      <label>Search place
-        <input id="search" type="search" placeholder="e.g. Eiffel Tower — press Enter">
-      </label>
-      <ul id="search-results" class="results"></ul>
-      <label>Google Maps link
-        <div class="row">
-          <input id="gmaps-link" class="grow" placeholder="https://maps.app.goo.gl/…  or  google.com/maps/…">
-          <button id="btn-gmaps-link">Open</button>
+    <div class="tab-panel" id="tab-teleport">
+      <details class="card section" id="sec-find" open>
+        <summary><span class="sec-title">Find a place</span></summary>
+        <div class="sec-body">
+          <p class="hint">Click the map, search, paste a Google Maps link, or type coordinates. Right-click the map to jump there instantly.</p>
+          <label>Search place
+            <input id="search" type="search" placeholder="e.g. Eiffel Tower — press Enter">
+          </label>
+          <ul id="search-results" class="results"></ul>
+          <label>Google Maps link
+            <span class="field-row"><input id="gmaps-link" class="grow" placeholder="https://maps.app.goo.gl/…  or  google.com/maps/…">
+              <button id="btn-gmaps-link" class="fixed">Open</button></span>
+          </label>
+          <label>Coordinates
+            <span class="field-row"><input id="coords" class="grow" placeholder="48.8584, 2.2945  or  48°51'30&quot;N 2°17'40&quot;E">
+              <button id="btn-coords" class="fixed">Show</button></span>
+          </label>
         </div>
-      </label>
-      <label>Coordinates
-        <div class="row">
-          <input id="coords" class="grow" placeholder="48.8584, 2.2945  or  48°51'30&quot;N 2°17'40&quot;E">
-          <button id="btn-coords">Show</button>
+      </details>
+      <details class="card section" id="sec-picked" open>
+        <summary><span class="sec-title">Picked point</span><span id="picked-sub" class="sec-sub"></span></summary>
+        <div class="sec-body">
+          <div id="picked" class="picked muted">No point picked yet</div>
+          <div class="btn-row">
+            <button id="btn-teleport" class="primary" disabled data-action="teleport">Teleport here</button>
+            <button id="btn-fav" disabled>☆ Save</button>
+            <button id="btn-copy" disabled>Copy</button>
+          </div>
+          <div class="btn-row">
+            <button id="btn-pick-to-route" disabled>Add as route checkpoint</button>
+            <button id="btn-locate" data-action="locate">Show my real location</button>
+          </div>
+          <div id="jump-info" class="hint"></div>
         </div>
-      </label>
-      <div id="picked" class="picked muted">No point picked</div>
-      <div class="row">
-        <button id="btn-teleport" class="primary grow" disabled>Teleport here</button>
-        <button id="btn-fav" title="Save to favourites" disabled>☆ Save</button>
-        <button id="btn-copy" title="Copy coordinates" disabled>Copy</button>
-      </div>
-      <button id="btn-pick-to-route" class="full" disabled>Add as route checkpoint</button>
-      <div id="jump-info" class="hint"></div>
-    </section>
+      </details>
+    </div>
 
     <!-- Route -->
-    <section class="tab-panel card" id="tab-route" hidden>
-      <p class="hint">Click the map to add checkpoints, or paste a Google Maps directions link. Drag markers to move them.</p>
-      <div class="row">
-        <input id="route-link" class="grow" placeholder="Paste a Google Maps directions link (optional)">
-        <button id="btn-route-link">Import</button>
-      </div>
-      <div class="grid2">
-        <label>Routing service
-          <select id="provider">
-            <option value="osrm">OpenStreetMap (free)</option>
-            <option value="google">Google Maps (API key)</option>
-          </select>
-        </label>
-        <label>New legs follow
-          <select id="default-mode">
-            <option value="foot">Footpaths</option>
-            <option value="bike">Cycle paths</option>
-            <option value="car">Roads (car)</option>
-            <option value="sea">Sea lanes</option>
-            <option value="straight">Straight line</option>
-          </select>
-        </label>
-        <label>Default speed (km/h)
-          <input id="default-speed" type="number" min="0.1" step="0.1" value="5">
-        </label>
-        <label>Acceleration / braking (m/s²)
-          <span class="row"><input id="accel" type="number" min="0.01" step="0.1" value="1" title="Acceleration">
-          <input id="decel" type="number" min="0.01" step="0.1" value="1" title="Braking"></span>
-        </label>
-      </div>
-      <div class="presets" id="speed-presets"></div>
-      <div class="row wrap checks">
-        <label class="check"><input id="start-rest" type="checkbox" checked> Start from standstill</label>
-        <label class="check"><input id="stop-end" type="checkbox" checked> Stop at the end</label>
-        <label class="check"><input id="closed" type="checkbox"> Return to start</label>
-      </div>
-      <details id="experimental">
-        <summary>Road-aware driving <span class="tag">experimental</span></summary>
-        <div class="exp">
+    <div class="tab-panel" id="tab-route" hidden>
+      <details class="card section" id="sec-route-import">
+        <summary><span class="sec-title">Import from Google Maps</span></summary>
+        <div class="sec-body">
+          <span class="field-row"><input id="route-link" class="grow" placeholder="Paste a Google Maps directions link">
+            <button id="btn-route-link" class="fixed">Import</button></span>
+        </div>
+      </details>
+      <details class="card section" id="sec-route-settings" open>
+        <summary><span class="sec-title">Routing & speed</span><span id="route-settings-sub" class="sec-sub"></span></summary>
+        <div class="sec-body">
+          <div class="grid2">
+            <label>Routing service
+              <select id="provider">
+                <option value="osrm">OpenStreetMap (free)</option>
+                <option value="google">Google Maps (API key)</option>
+              </select>
+            </label>
+            <label>New legs follow
+              <select id="default-mode">
+                <option value="foot">Footpaths</option>
+                <option value="bike">Cycle paths</option>
+                <option value="car">Roads (car)</option>
+                <option value="sea">Sea lanes</option>
+                <option value="straight">Straight line</option>
+              </select>
+            </label>
+            <label>Default speed (km/h)
+              <input id="default-speed" type="number" min="0.1" step="0.1" value="5">
+            </label>
+            <label>Accel / braking (m/s²)
+              <span class="grid2 tight"><input id="accel" type="number" min="0.01" step="0.1" value="1" title="Acceleration" aria-label="Acceleration">
+              <input id="decel" type="number" min="0.01" step="0.1" value="1" title="Braking" aria-label="Braking"></span>
+            </label>
+          </div>
+          <div class="presets" id="speed-presets"></div>
+          <div class="checks">
+            <label class="check"><input id="start-rest" type="checkbox" checked> Start from standstill</label>
+            <label class="check"><input id="stop-end" type="checkbox" checked> Stop at the end</label>
+            <label class="check"><input id="closed" type="checkbox"> Return to start</label>
+          </div>
+        </div>
+      </details>
+      <details class="card section" id="experimental">
+        <summary><span class="sec-title">Road-aware driving</span><span class="tag">experimental</span></summary>
+        <div class="sec-body exp">
           <label class="check"><input id="road-aware" type="checkbox"> Follow each road's typical speed
             <button class="info" type="button" data-tip="Uses the speed the routing service expects on every stretch of road (motorway vs side street), instead of one fixed speed. Your leg speeds become an upper limit. Best with 'Roads (car)'.">i</button></label>
           <label class="check"><input id="road-data" type="checkbox"> Use public speed limits
@@ -155,120 +181,156 @@
             <input id="speed-factor" type="range" min="0.6" max="1.4" step="0.05" value="1"></label>
         </div>
       </details>
-
-      <ol id="waypoints" class="waypoints"></ol>
-      <div class="row wrap">
-        <button id="btn-build" class="primary grow">Build route</button>
-        <button id="btn-reverse" title="Reverse checkpoint order">⇅ Reverse</button>
-        <button id="btn-clear-route" title="Remove all checkpoints">Clear</button>
-      </div>
-      <details>
-        <summary>Generate a random wander</summary>
-        <div class="grid2">
-          <label>Radius (m) <input id="wander-radius" type="number" value="500" min="20"></label>
-          <label>Checkpoints <input id="wander-count" type="number" value="6" min="2" max="50"></label>
+      <details class="card section" id="sec-checkpoints" open>
+        <summary><span class="sec-title">Checkpoints</span><span id="wp-count" class="sec-sub"></span></summary>
+        <div class="sec-body">
+          <p class="hint">Click the map to add checkpoints. Drag markers to move them.</p>
+          <ol id="waypoints" class="waypoints"></ol>
+          <div class="btn-row">
+            <button id="btn-build" class="primary" data-action="build">Build route</button>
+            <button id="btn-reverse" title="Reverse checkpoint order">⇅ Reverse</button>
+            <button id="btn-clear-route" title="Remove all checkpoints and unload the route">Clear</button>
+          </div>
         </div>
-        <p class="hint">Uses the picked point (Teleport tab) or the map centre as the start.</p>
-        <button id="btn-wander" class="full">Generate</button>
       </details>
-      <div id="route-result"></div>
-    </section>
+      <details class="card section" id="sec-wander">
+        <summary><span class="sec-title">Random wander</span></summary>
+        <div class="sec-body">
+          <div class="grid2">
+            <label>Radius (m) <input id="wander-radius" type="number" value="500" min="20"></label>
+            <label>Checkpoints <input id="wander-count" type="number" value="6" min="2" max="50"></label>
+          </div>
+          <p class="hint">Starts at the picked point (Teleport tab) or the map centre.</p>
+          <div class="btn-row"><button id="btn-wander">Generate</button></div>
+        </div>
+      </details>
+      <details class="card section" id="sec-route-result" open hidden>
+        <summary><span class="sec-title">Route summary</span><span id="route-result-sub" class="sec-sub"></span></summary>
+        <div class="sec-body" id="route-result"></div>
+      </details>
+    </div>
 
     <!-- GPX -->
-    <section class="tab-panel card" id="tab-gpx" hidden>
-      <div id="gpx-drop" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a GPX file">
-        <strong id="gpx-drop-title">Drop a .gpx file here</strong>
-        <span id="gpx-drop-sub" class="muted small">or click to choose one</span>
-      </div>
-      <input id="gpx-file" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
-      <p id="gpx-error" class="error" hidden></p>
-      <div id="gpx-panel" hidden>
-        <label>Track
-          <select id="gpx-track"></select>
-        </label>
-        <p id="gpx-info" class="hint"></p>
-        <label class="check"><input id="gpx-use-times" type="checkbox" checked> Use the file's timestamps</label>
-        <div class="grid2">
-          <label>Speed (km/h) <input id="gpx-speed" type="number" value="5" min="0.1" step="0.1"></label>
-          <label class="check end"><input id="gpx-reverse" type="checkbox"> Play in reverse</label>
+    <div class="tab-panel" id="tab-gpx" hidden>
+      <details class="card section" id="sec-gpx" open>
+        <summary><span class="sec-title">GPX file</span><span id="gpx-sub" class="sec-sub"></span></summary>
+        <div class="sec-body">
+          <div id="gpx-drop" class="dropzone" tabindex="0" role="button" aria-label="Choose or drop a GPX file">
+            <strong id="gpx-drop-title">Drop a .gpx file here</strong>
+            <span id="gpx-drop-sub" class="muted small">or click to choose one</span>
+          </div>
+          <input id="gpx-file" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" hidden>
+          <p id="gpx-error" class="error" hidden></p>
+          <div id="gpx-panel" class="stack" hidden>
+            <label>Track
+              <select id="gpx-track"></select>
+            </label>
+            <p id="gpx-info" class="hint"></p>
+            <label class="check"><input id="gpx-use-times" type="checkbox" checked> Use the file's timestamps</label>
+            <div class="grid2">
+              <label>Speed (km/h) <input id="gpx-speed" type="number" value="5" min="0.1" step="0.1"></label>
+              <label class="check end"><input id="gpx-reverse" type="checkbox"> Play in reverse</label>
+            </div>
+            <div class="btn-row">
+              <button id="btn-gpx-load" class="primary">Use this track</button>
+              <button id="btn-gpx-to-route">Edit as checkpoints</button>
+              <button id="btn-gpx-remove">Remove file</button>
+            </div>
+            <div id="gpx-result"></div>
+          </div>
         </div>
-        <div class="row wrap">
-          <button id="btn-gpx-load" class="primary grow">Use this track</button>
-          <button id="btn-gpx-to-route" title="Turn the track into editable checkpoints">Edit as checkpoints</button>
-        </div>
-        <div id="gpx-result"></div>
-      </div>
-    </section>
+      </details>
+    </div>
 
     <!-- Joystick -->
-    <section class="tab-panel card" id="tab-joystick" hidden>
-      <p class="hint">Move live with the pad or W A S D / arrow keys. Needs a starting point (teleport first) and the Direct connection.</p>
-      <label>Speed (km/h) <input id="joy-speed" type="number" value="5" min="0.1" step="0.5"></label>
-      <div class="presets" id="joy-presets"></div>
-      <div class="dpad" id="dpad">
-        <button data-b="315" aria-label="North-west">↖</button><button data-b="0" aria-label="North">↑</button><button data-b="45" aria-label="North-east">↗</button>
-        <button data-b="270" aria-label="West">←</button><button id="joy-stop" class="stop" aria-label="Stop joystick">■</button><button data-b="90" aria-label="East">→</button>
-        <button data-b="225" aria-label="South-west">↙</button><button data-b="180" aria-label="South">↓</button><button data-b="135" aria-label="South-east">↘</button>
-      </div>
-      <div id="joy-info" class="hint"></div>
-    </section>
+    <div class="tab-panel" id="tab-joystick" hidden>
+      <details class="card section" id="sec-joy" open>
+        <summary><span class="sec-title">Joystick</span></summary>
+        <div class="sec-body">
+          <p class="hint">Move live with the pad or W A S D / arrow keys while this tab is open. Needs a starting point (teleport first) and the Direct or Simulator connection.</p>
+          <label>Speed (km/h) <input id="joy-speed" type="number" value="5" min="0.1" step="0.5"></label>
+          <div class="presets" id="joy-presets"></div>
+          <div class="dpad" id="dpad">
+            <button data-b="315" aria-label="North-west">↖</button><button data-b="0" aria-label="North">↑</button><button data-b="45" aria-label="North-east">↗</button>
+            <button data-b="270" aria-label="West">←</button><button id="joy-stop" class="stop" aria-label="Stop joystick">■</button><button data-b="90" aria-label="East">→</button>
+            <button data-b="225" aria-label="South-west">↙</button><button data-b="180" aria-label="South">↓</button><button data-b="135" aria-label="South-east">↘</button>
+          </div>
+          <div id="joy-info" class="hint"></div>
+        </div>
+      </details>
+    </div>
 
     <!-- Saved -->
-    <section class="tab-panel card" id="tab-saved" hidden>
-      <h3>Favourite places</h3>
-      <ul id="fav-list" class="list"></ul>
-      <h3>Saved routes</h3>
-      <div class="row"><input id="route-name" class="grow" placeholder="Route name"><button id="btn-save-route">Save current</button></div>
-      <ul id="route-list" class="list"></ul>
-      <h3>Backup</h3>
-      <div class="row wrap">
-        <button id="btn-export-data">Export all (JSON)</button>
-        <label class="button">Import JSON<input id="import-data" type="file" accept=".json" hidden></label>
-      </div>
-    </section>
+    <div class="tab-panel" id="tab-saved" hidden>
+      <details class="card section" id="sec-favs" open>
+        <summary><span class="sec-title">Favourite places</span><span id="fav-count" class="sec-sub"></span></summary>
+        <div class="sec-body"><ul id="fav-list" class="list"></ul></div>
+      </details>
+      <details class="card section" id="sec-routes" open>
+        <summary><span class="sec-title">Saved routes</span><span id="route-count" class="sec-sub"></span></summary>
+        <div class="sec-body">
+          <span class="field-row"><input id="route-name" class="grow" placeholder="Route name"><button id="btn-save-route" class="fixed">Save current</button></span>
+          <ul id="route-list" class="list"></ul>
+        </div>
+      </details>
+      <details class="card section" id="sec-backup">
+        <summary><span class="sec-title">Backup</span></summary>
+        <div class="sec-body">
+          <div class="btn-row">
+            <button id="btn-export-data">Export all (JSON)</button>
+            <label class="button">Import JSON<input id="import-data" type="file" accept=".json" hidden></label>
+          </div>
+        </div>
+      </details>
+    </div>
 
     <!-- ============ PLAYER ============ -->
     <section class="card player" id="player">
-      <div class="row between">
+      <div class="player-head">
         <strong id="player-name">No route loaded</strong>
         <span id="player-state" class="badge">idle</span>
       </div>
-      <input id="seek" type="range" min="0" max="0" step="0.1" value="0" disabled aria-label="Position in route">
-      <div class="row between muted small">
-        <span id="player-time">0:00 / 0:00</span>
-        <span id="player-dist">0 m</span>
-        <span id="player-speed">0 km/h</span>
-      </div>
-      <div class="row">
-        <button id="btn-play" class="primary grow" disabled>▶ Play on device</button>
-        <button id="btn-pause" class="grow" disabled>❚❚ Pause</button>
-        <button id="btn-stop" class="grow" disabled>■ Stop</button>
-      </div>
-      <details>
-        <summary>Playback options</summary>
-        <div class="grid2">
-          <label>Time speed
-            <select id="multiplier">
-              <option>0.25</option><option>0.5</option><option selected>1</option><option>2</option>
-              <option>5</option><option>10</option><option>30</option>
-            </select>
-          </label>
-          <label>When finished
-            <select id="loop">
-              <option value="once">Stop</option>
-              <option value="loop">Loop from start</option>
-              <option value="pingpong">Go back and forth</option>
-            </select>
-          </label>
-          <label>GPS jitter (m) <input id="jitter" type="number" value="0" min="0" max="100" step="0.5"></label>
-          <label>Update every (s) <input id="tick" type="number" value="1" min="0.2" max="10" step="0.1"></label>
+      <div id="player-body">
+        <input id="seek" type="range" min="0" max="0" step="0.1" value="0" disabled aria-label="Position in route">
+        <div class="player-stats muted small">
+          <span id="player-time">0:00 / 0:00</span>
+          <span id="player-dist">0 m</span>
+          <span id="player-speed">—</span>
         </div>
-        <p class="hint">Time speed &gt; 1 makes the device move faster than the speeds you set.</p>
-      </details>
+        <div class="btn-row">
+          <button id="btn-play" class="primary" disabled data-action="playpause">▶ Play</button>
+          <button id="btn-pause" disabled data-action="playpause">❚❚ Pause</button>
+          <button id="btn-stop" disabled data-action="stop">■ Stop</button>
+        </div>
+        <details class="sub">
+          <summary>Playback options</summary>
+          <div class="grid2">
+            <label>Time speed
+              <select id="multiplier">
+                <option>0.25</option><option>0.5</option><option selected>1</option><option>2</option>
+                <option>5</option><option>10</option><option>30</option>
+              </select>
+            </label>
+            <label>When finished
+              <select id="loop">
+                <option value="once">Stop</option>
+                <option value="loop">Loop from start</option>
+                <option value="pingpong">Go back and forth</option>
+              </select>
+            </label>
+            <label>GPS jitter (m) <input id="jitter" type="number" value="0" min="0" max="100" step="0.5"></label>
+            <label>Update every (s) <input id="tick" type="number" value="1" min="0.2" max="10" step="0.1"></label>
+          </div>
+          <p class="hint">Time speed &gt; 1 makes the device move faster than the speeds you set.</p>
+        </details>
+      </div>
+      <p id="player-empty" class="hint">Build a route or load a GPX track to play it on the device.</p>
     </section>
     <div id="toast" role="status" aria-live="polite"></div>
   </aside>
+  <div id="resizer" role="separator" aria-orientation="vertical" aria-label="Resize the side menu" tabindex="0" title="Drag to resize · double-click to reset"></div>
   <main id="map">
+    <button id="btn-show-sidebar" class="map-btn" title="Show the side menu" aria-label="Show the side menu" hidden>☰</button>
     <div id="speed-legend" class="legend" hidden>
       <span class="muted small">Speed</span>
       <span id="legend-min" class="small">0</span>
@@ -280,40 +342,85 @@
 </div>
 
 <!-- ============ SETTINGS ============ -->
-<dialog id="settings-dialog" class="modal">
+<dialog id="settings-dialog" class="modal wide">
   <form method="dialog" class="modal-body">
-    <h2>Settings</h2>
-    <label>Google Maps API key <span class="muted">(optional)</span>
-      <span class="row"><input id="google-key" class="grow" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
-      <button id="btn-key-show" type="button" class="small">Show</button></span>
-    </label>
-    <p class="hint">
-      Lets routes come from Google Maps. Create a key in Google Cloud and enable <b>Routes API</b> and
-      <b>Map Tiles API</b>. Google bills per request after the free tier. Google routes are shown on Google's
-      own map (their terms require it) and cannot be exported as GPX. The key is stored only on this computer.
-    </p>
-    <div class="row">
-      <button id="btn-key-test" type="button">Test key</button>
-      <span id="key-status" class="small muted"></span>
-    </div>
-    <div class="row between">
-      <button id="btn-tutorial-again" type="button">Show setup guide again</button>
-      <button value="close" class="primary">Done</button>
-    </div>
+    <div class="modal-head"><h2>Settings</h2><button value="close" class="icon-btn" aria-label="Close">✕</button></div>
+    <nav class="seg" id="settings-tabs">
+      <button type="button" data-pane="appearance" class="active">Appearance</button>
+      <button type="button" data-pane="keys">Shortcuts</button>
+      <button type="button" data-pane="google">Google Maps</button>
+      <button type="button" data-pane="updates">Updates</button>
+      <button type="button" data-pane="about">About</button>
+    </nav>
+    <section class="pane" data-pane="appearance">
+      <h3>Theme</h3>
+      <div id="theme-grid" class="theme-grid"></div>
+      <label class="check"><input id="pref-night-map" type="checkbox"> Darken the map in dark themes (OpenStreetMap layers)</label>
+      <label class="check"><input id="pref-compact" type="checkbox"> Compact layout</label>
+    </section>
+    <section class="pane" data-pane="keys" hidden>
+      <p class="hint">Single-key shortcuts work whenever you are not typing in a box. Click a key to change it, then press the new letter or number. W A S D also move the joystick while the Joystick tab is open.</p>
+      <div id="shortcut-list" class="shortcut-list"></div>
+      <div class="btn-row"><button id="btn-shortcuts-reset" type="button">Restore default shortcuts</button></div>
+    </section>
+    <section class="pane" data-pane="google" hidden>
+      <label>Google Maps API key <span class="muted">(optional)</span>
+        <span class="field-row"><input id="google-key" class="grow" type="password" autocomplete="off" spellcheck="false" placeholder="AIza…">
+        <button id="btn-key-show" type="button" class="fixed">Show</button></span>
+      </label>
+      <p class="hint">Lets routes come from Google Maps. Create a key in Google Cloud and enable <b>Routes API</b> and
+        <b>Map Tiles API</b>. Google bills per request after its free tier. Google routes are shown on Google's own map
+        (Google's terms require it) and cannot be exported as GPX. The key is stored only on this computer.</p>
+      <div class="field-row"><button id="btn-key-test" type="button" class="fixed">Test key</button><span id="key-status" class="small muted"></span></div>
+    </section>
+    <section class="pane" data-pane="updates" hidden>
+      <label>Update channel
+        <select id="pref-channel">
+          <option value="stable">Stable releases (recommended)</option>
+          <option value="dev">Test builds (newest features, may have bugs)</option>
+        </select>
+      </label>
+      <p class="hint">The app checks GitHub when it starts and every few hours, downloads updates in the background and verifies their SHA-256 checksum.</p>
+      <div class="btn-row"><button id="btn-update-check2" type="button">Check for updates now</button></div>
+    </section>
+    <section class="pane" data-pane="about" hidden>
+      <div class="about">
+        <img src="/static/icon.svg" alt="" width="56" height="56">
+        <div><strong>Location Spoofer</strong><br><span id="about-version" class="muted"></span></div>
+      </div>
+      <p class="hint">Not affiliated with, endorsed by or sponsored by Apple Inc. or Google LLC. iPhone is a trademark of Apple Inc.</p>
+      <div class="link-list">
+        <a href="https://github.com/YK3D/iPhone-location-spoofer/blob/main/TERMS.md" target="_blank" rel="noopener">Terms of Use</a>
+        <a href="https://github.com/YK3D/iPhone-location-spoofer/blob/main/PRIVACY.md" target="_blank" rel="noopener">Privacy Policy</a>
+        <a href="https://github.com/YK3D/iPhone-location-spoofer/blob/main/THIRD_PARTY_NOTICES.md" target="_blank" rel="noopener">Licences</a>
+        <a href="https://github.com/YK3D/iPhone-location-spoofer" target="_blank" rel="noopener">Source code</a>
+      </div>
+      <div class="btn-row"><button id="btn-tutorial-again" type="button">Show setup guide again</button></div>
+    </section>
   </form>
+</dialog>
+
+<!-- ============ SHORTCUT HELP ============ -->
+<dialog id="shortcut-help" class="modal">
+  <div class="modal-body">
+    <div class="modal-head"><h2>Keyboard shortcuts</h2><button id="btn-shortcut-help-close" class="icon-btn" aria-label="Close">✕</button></div>
+    <div id="shortcut-help-list" class="shortcut-list readonly"></div>
+    <div class="btn-row"><button id="btn-shortcut-customize" type="button">Customize…</button></div>
+  </div>
 </dialog>
 
 <!-- ============ TUTORIAL ============ -->
 <dialog id="tutorial" class="modal">
   <div class="modal-body">
-    <div class="row between">
+    <div class="modal-head">
       <span id="tut-step" class="muted small"></span>
-      <button id="tut-skip" type="button" class="small">Skip</button>
+      <button id="tut-skip" type="button" class="link-btn">Skip</button>
     </div>
+    <div class="tut-progress"><span id="tut-bar"></span></div>
     <h2 id="tut-title"></h2>
     <div id="tut-body" class="tut-body"></div>
-    <div id="tut-action" class="row"></div>
-    <div class="row between">
+    <div id="tut-action" class="btn-row"></div>
+    <div class="btn-row">
       <button id="tut-back" type="button">Back</button>
       <button id="tut-next" type="button" class="primary">Next</button>
     </div>
