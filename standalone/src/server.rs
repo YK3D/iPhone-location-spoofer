@@ -132,6 +132,7 @@ pub fn router(app: App) -> Router {
         .route("/api/google/tile-session", post(google_tile_session))
         .route("/api/google/copyright", get(google_copyright))
         .route("/api/store", get(store_get).put(store_put))
+        .route("/api/diagnostics", get(diagnostics))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .with_state(app)
 }
@@ -166,7 +167,7 @@ async fn status(State(app): State<App>) -> R {
         "app": "standalone",
         "driver": d.kind.key(),
         "drivers": [{"key": "pmd3", "label": "Direct", "live": true}, {"key": "mock", "label": "Simulator (no iPhone)", "live": true}],
-        "features": {"cli_driver": false, "tunnel_helper": false},
+        "features": {"cli_driver": false, "tunnel_helper": false, "device_service": true},
         "device": d.info(),
         "live": true,
         "player": app.player.status(),
@@ -179,9 +180,20 @@ struct DriverQ {
     driver: Option<String>,
 }
 
+fn service_mode(app: &AppState) -> crate::device::muxsvc::Mode {
+    crate::device::muxsvc::Mode::parse(app.store.load()["settings"]["device_service"].as_str().unwrap_or("auto"))
+}
+
+async fn diagnostics() -> R {
+    let d = tokio::task::spawn_blocking(crate::device::muxsvc::diagnostics).await.map_err(|e| ApiError(500, e.to_string()))?;
+    Ok(Json(d))
+}
+
 async fn devices(State(app): State<App>, Query(q): Query<DriverQ>) -> R {
     let kind = DriverKind::parse(q.driver.as_deref().unwrap_or("pmd3")).ok_or(bad("unknown driver"))?;
-    let list = app.devices.lock().await.list_devices(kind).await.map_err(dev)?;
+    let mut d = app.devices.lock().await;
+    d.service_mode = service_mode(&app);
+    let list = d.list_devices(kind).await.map_err(dev)?;
     Ok(Json(json!({"devices": list})))
 }
 
@@ -194,7 +206,9 @@ struct ConnectIn {
 async fn connect(State(app): State<App>, Json(b): Json<ConnectIn>) -> R {
     let kind = DriverKind::parse(b.driver.as_deref().unwrap_or("pmd3")).ok_or(bad("unknown driver"))?;
     app.player.stop().await;
-    let info = app.devices.lock().await.connect(kind, b.udid.filter(|s| !s.is_empty())).await.map_err(dev)?;
+    let mut d = app.devices.lock().await;
+    d.service_mode = service_mode(&app);
+    let info = d.connect(kind, b.udid.filter(|s| !s.is_empty())).await.map_err(dev)?;
     Ok(Json(json!({"device": info})))
 }
 

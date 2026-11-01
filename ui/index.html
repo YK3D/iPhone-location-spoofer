@@ -58,6 +58,17 @@
         <details class="sub" id="device-tools">
           <summary>Device tools</summary>
           <div class="tool-list">
+            <div class="tool" id="tool-service" hidden>
+              <label class="grow">Device service <span class="tag">experimental</span>
+                <select id="pref-device-service">
+                  <option value="auto">Automatic (Apple's if installed, otherwise built-in)</option>
+                  <option value="apple">Apple's service only (Apple Devices app)</option>
+                  <option value="builtin">Built-in service (no Apple Devices app)</option>
+                </select>
+              </label>
+              <button class="info" type="button" data-tip="How the app reaches the iPhone. Apple's service comes with the Apple Devices app. The built-in service (netmuxd, bundled with test builds) replaces it and only needs Apple's USB driver, which Windows Update installs when an iPhone is plugged in. Reconnect after changing this.">i</button></div>
+            <div class="tool" id="tool-diagnostics" hidden><button id="btn-diagnostics">Run device diagnostics</button>
+              <button class="info" type="button" data-tip="Shows which Apple software, drivers and device services are installed and running on this computer. Useful when the iPhone isn't found, and for reporting test results.">i</button></div>
             <div class="tool"><button id="btn-reveal">Reveal Developer Mode</button>
               <button class="info" type="button" data-tip="iOS hides the Developer Mode switch until a computer asks for it. Press this with the iPhone plugged in and unlocked, then open Settings › Privacy & Security › Developer Mode on the phone, turn it on and restart. Needed once per phone.">i</button></div>
             <div class="tool"><button id="btn-mount">Mount developer image</button>
@@ -424,6 +435,15 @@
       <button id="tut-back" type="button">Back</button>
       <button id="tut-next" type="button" class="primary">Next</button>
     </div>
+  </div>
+</dialog>
+<!-- ============ DIAGNOSTICS ============ -->
+<dialog id="diag-dialog" class="modal wide">
+  <div class="modal-body">
+    <div class="modal-head"><h2>Device diagnostics</h2><button id="btn-diag-close" class="icon-btn" aria-label="Close">✕</button></div>
+    <div id="diag-summary" class="stack"></div>
+    <details class="sub"><summary>Technical details</summary><pre id="diag-raw" class="diag-raw"></pre></details>
+    <div class="btn-row"><button id="btn-diag-copy" type="button">Copy report</button><button id="btn-diag-rerun" type="button">Run again</button></div>
   </div>
 </dialog>
 <div id="tooltip" role="tooltip" hidden></div>

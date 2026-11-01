@@ -319,6 +319,8 @@ dialog.modal::backdrop { background: rgba(0,0,0,.45); }
 .shortcut-list button.keycap.listening { border-color: var(--accent); background: var(--accent-soft); animation: pulse 1s infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 4px var(--accent-soft); } }
 .about { display: flex; gap: 12px; align-items: center; }
+.diag-raw { max-height: 240px; overflow: auto; background: var(--panel-2); border: 1px solid var(--border); border-radius: 7px; padding: 8px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; }
+.diag-row { display: grid; grid-template-columns: 22px 1fr; gap: 6px; font-size: 13px; align-items: start; }
 .link-list { display: flex; flex-wrap: wrap; gap: 6px 14px; }
 .link-list a { color: var(--accent); }
 .tut-body p { margin: 0 0 8px; line-height: 1.5; }

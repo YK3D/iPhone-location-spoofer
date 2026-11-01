@@ -43,7 +43,11 @@ pub struct IdeviceDriver {
 pub fn friendly(e: &IdeviceError) -> String {
     match e {
         IdeviceError::Socket(io) if matches!(io.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound) => {
-            "Cannot reach the Apple device service. On Windows, install the Apple Devices app (or iTunes) and keep it open.".into()
+            if super::muxsvc::helper_path().is_some() {
+                "Cannot reach a device service. Install the Apple Devices app, or set Device tools › Device service to \"Built-in (experimental)\".".into()
+            } else {
+                "Cannot reach the Apple device service. On Windows, install the Apple Devices app (or iTunes) and keep it open.".into()
+            }
         }
         IdeviceError::PairingDialogResponsePending => "Tap Trust on the iPhone, enter the passcode, then try again.".into(),
         IdeviceError::UserDeniedPairing => "The iPhone refused to trust this computer. Unplug, plug back in and tap Trust.".into(),
@@ -56,7 +60,7 @@ pub fn friendly(e: &IdeviceError) -> String {
 }
 
 fn addr() -> UsbmuxdAddr {
-    UsbmuxdAddr::from_env_var().unwrap_or_else(|_| UsbmuxdAddr::default())
+    super::muxsvc::current_addr()
 }
 
 async fn usbmux() -> Result<UsbmuxdConnection, String> {

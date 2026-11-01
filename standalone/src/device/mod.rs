@@ -2,6 +2,7 @@
 
 pub mod idev;
 pub mod mock;
+pub mod muxsvc;
 
 use serde::Serialize;
 
@@ -45,12 +46,23 @@ pub struct DeviceManager {
     pub kind: DriverKind,
     pub idev: idev::IdeviceDriver,
     pub mock: mock::MockDriver,
+    /// Which device service to use (experimental "no Apple Devices app" support).
+    pub service_mode: muxsvc::Mode,
 }
 
 impl Default for DeviceManager {
     fn default() -> Self {
-        Self { kind: DriverKind::Idevice, idev: idev::IdeviceDriver::default(), mock: mock::MockDriver::default() }
+        Self {
+            kind: DriverKind::Idevice,
+            idev: idev::IdeviceDriver::default(),
+            mock: mock::MockDriver::default(),
+            service_mode: muxsvc::Mode::Auto,
+        }
     }
+}
+
+async fn ensure_service(mode: muxsvc::Mode) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || muxsvc::ensure(mode)).await.map_err(|e| e.to_string())?
 }
 
 impl DeviceManager {
@@ -65,7 +77,10 @@ impl DeviceManager {
     }
     pub async fn list_devices(&self, kind: DriverKind) -> Result<Vec<serde_json::Value>, String> {
         match kind {
-            DriverKind::Idevice => idev::list_devices().await,
+            DriverKind::Idevice => {
+                ensure_service(self.service_mode).await?;
+                idev::list_devices().await
+            }
             DriverKind::Mock => Ok(self.mock.list_devices()),
         }
     }
@@ -75,7 +90,16 @@ impl DeviceManager {
             self.kind = kind;
         }
         match kind {
-            DriverKind::Idevice => self.idev.connect(udid).await,
+            DriverKind::Idevice => {
+                let note = ensure_service(self.service_mode).await?;
+                let mut info = self.idev.connect(udid).await?;
+                if let Some(n) = note {
+                    info.notes.insert(0, n.clone());
+                    info.transport = format!("{} · built-in device service", info.transport);
+                    self.idev.info = Some(info.clone());
+                }
+                Ok(info)
+            }
             DriverKind::Mock => Ok(self.mock.connect()),
         }
     }
