@@ -104,6 +104,8 @@ fn start_helper(port: u16) -> Result<(), String> {
     cmd.args(["--host", "127.0.0.1", "--port", &port.to_string(), "--disable-mdns"])
         .arg("--plist-storage")
         .arg(&storage)
+        // netmuxd logs only errors by default; "info" makes netmuxd.log useful in test reports.
+        .env("RUST_LOG", std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(log2);

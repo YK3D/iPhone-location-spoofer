@@ -11,6 +11,8 @@ Windows needs two Apple components to talk to an iPhone:
 
 The test build includes **netmuxd**, an open-source replacement for part 2 (LGPL-2.1, shipped as a separate program next to the app). If it works, only part 1 is needed.
 
+netmuxd talks to the iPhone through Apple's USB driver. Its own documentation expects that driver to come from Apple's software, so the key question is whether the driver Windows Update installs is enough on its own. Test A answers that.
+
 The test checks:
 
 * whether Windows installs a suitable Apple USB driver on its own;

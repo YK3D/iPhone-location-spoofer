@@ -75,11 +75,13 @@ jobs:
             commit $env:NETMUXD_REV
           It was built with: cargo build --release --locked --no-default-features
           You may replace netmuxd.exe with your own build of that or a modified version.
+          Note: "netmuxd.exe --about" prints "MIT License"; that text is out of date. The licence
+          that applies is LGPL-2.1-only, as stated in netmuxd's Cargo.toml and LICENSE file.
           "@ | Set-Content "$d\NETMUXD-SOURCE.txt"
           Copy-Item docs\testing\no-apple-devices.md "$d\TESTING.md"
           Copy-Item LICENSE "$d\LICENSE.txt"
           Copy-Item THIRD_PARTY_NOTICES.md "$d\THIRD_PARTY_NOTICES.md"
-          Get-ChildItem $d | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content "$d\SHA256SUMS.txt"
+          @(Get-ChildItem $d -File) | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content "$d\SHA256SUMS.txt"
       - uses: actions/upload-artifact@v4
         with:
           name: LocationSpoofer-no-apple-devices-test-${{ github.run_number }}
