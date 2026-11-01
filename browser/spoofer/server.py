@@ -36,7 +36,15 @@ from .store import Store
 from .updater import Updater
 
 log = logging.getLogger(__name__)
-STATIC = Path(__file__).parent / "static"
+def _find_ui() -> Path:
+    """The shared UI: bundled next to this module in the exe, or ui/ at the repository root."""
+    for cand in (Path(__file__).parent / "static", Path(__file__).resolve().parents[2] / "ui"):
+        if (cand / "index.html").is_file():
+            return cand
+    return Path(__file__).parent / "static"
+
+
+STATIC = _find_ui()
 MAX_UPLOAD = 20 * 1024 * 1024
 PREVIEW_POINTS = 4000
 

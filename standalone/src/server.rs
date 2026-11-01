@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(RustEmbed)]
-#[folder = "ui/"]
+#[folder = "../ui/"]
 struct Ui;
 
 pub struct StoredTimeline {

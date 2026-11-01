@@ -101,7 +101,7 @@ def main() -> int:
         "--workpath", str(ROOT / "build"),
         "--specpath", str(ROOT / "build"),
         "--paths", str(ROOT),
-        "--add-data", f"{ROOT / 'spoofer' / 'static'}{sep}spoofer/static",
+        "--add-data", f"{ROOT.parent / 'ui'}{sep}spoofer/static",
     ]
     pyi_args.append("--onedir" if args.onedir else "--onefile")
     for pkg in COLLECT_ALL:
