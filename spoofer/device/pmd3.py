@@ -39,7 +39,7 @@ def _friendly(e: BaseException) -> str:
         "UserDeniedPairingError": "The iPhone refused to trust this computer. Unplug, plug back in and tap Trust.",
         "DeveloperModeIsNotEnabledError": "Developer Mode is off. Use 'Reveal Developer Mode', then turn it on in Settings > Privacy & Security.",
         "DeveloperModeError": "Developer Mode is off. Use 'Reveal Developer Mode', then turn it on in Settings > Privacy & Security.",
-        "TunneldConnectionError": "This iOS version (17.0-17.3) needs tunneld. Run 'start_tunneld.bat' as administrator, then connect again.",
+        "TunneldConnectionError": "This iOS version (17.0-17.3) needs tunneld. Use Device tools > Start tunnel helper (admin), then connect again.",
         "InvalidServiceError": "The developer service is not available. Make sure Developer Mode is on and the Developer Disk Image is mounted.",
     }
     return hints.get(name, f"{name}: {msg}")
@@ -153,7 +153,7 @@ class Pmd3Driver(DeviceDriver):
             rsds = await get_tunneld_devices()
         except Exception as e:
             raise DeviceError(
-                "This iOS version needs tunneld. Run start_tunneld.bat as administrator, keep it open, then connect again."
+                "This iOS version needs tunneld. Use Device tools > Start tunnel helper (admin), keep its window open, then connect again."
             ) from e
         match = None
         for r in rsds:

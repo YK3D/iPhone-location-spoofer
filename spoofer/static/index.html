@@ -15,6 +15,10 @@
       <h1>Location Spoofer</h1>
       <span id="version" class="muted"></span>
     </header>
+    <div id="update-banner" class="card banner" hidden>
+      <span id="update-text" class="grow"></span>
+      <button id="btn-update-install" class="primary small" hidden>Restart now</button>
+    </div>
 
     <!-- ============ DEVICE ============ -->
     <section class="card" id="device-card">
@@ -43,6 +47,8 @@
         <div class="row wrap">
           <button id="btn-reveal">Reveal Developer Mode</button>
           <button id="btn-mount">Mount developer image</button>
+          <button id="btn-tunneld" title="Only needed for iOS 17.0 to 17.3">Start tunnel helper (admin)</button>
+          <button id="btn-update-check">Check for updates</button>
         </div>
       </details>
       <button id="btn-clear" class="danger full">Stop spoofing — back to real location</button>

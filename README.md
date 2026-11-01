@@ -22,14 +22,29 @@ A local desktop app (it runs in your browser) for setting your iPhone's location
 
 ## Install and run
 
-### Windows (matches the guide)
+### Windows: the .exe (recommended)
 
-1. Do Part 1 of the guide once: install the **Apple Devices** app and **Python 3.12** (tick *Add python.exe to PATH*).
-2. Do Part 2 once: connect the iPhone, tap **Trust** and switch on **Developer Mode**. The app's *Device tools → Reveal Developer Mode* button does the same as the guide's `amfi reveal-developer-mode` command.
-3. Double-click **`run_windows.bat`**. The first run creates a private `.venv` folder and installs the requirements (a few minutes). The app then opens at <http://127.0.0.1:8765/>.
-4. Keep the Apple Devices app open and the iPhone unlocked. Pick **Direct** and press **Connect**.
+1. Install the **Apple Devices** app from the Microsoft Store (Part 1, Step 1 of the guide). You do **not** need Python.
+2. Download **`LocationSpoofer.exe`** from the [latest release](https://github.com/YK3D/iPhone-location-spoofer/releases/latest). Put it in a folder you own, such as your Desktop or `Documents`, not `Program Files`, so it can update itself.
+3. Double-click it. The first start takes 10 to 20 seconds while it unpacks. A console window opens (this is the app; closing it quits) and the map opens in your browser.
+4. Connect the iPhone, tap **Trust**, and turn on Developer Mode with *Device tools → Reveal Developer Mode* (Part 2 of the guide). Then pick **Direct** and press **Connect**.
 
-**iOS 17.0–17.3 only:** right-click **`start_tunneld.bat`**, choose *Run as administrator* and leave that window open while you use the app. iOS 17.4 and newer, and iOS 16 and older, do not need it.
+**iOS 17.0–17.3 only:** press *Device tools → Start tunnel helper (admin)*, accept the Windows prompt and leave the new window open. iOS 17.4 and newer, and iOS 16 and older, do not need it.
+
+Windows SmartScreen may warn that the app is from an unknown publisher, because the exe is not code-signed. Choose *More info → Run anyway*.
+
+### Automatic updates
+
+* Every push to `main` that changes code runs the tests, builds a new exe on GitHub Actions, checks that the exe starts and contains everything it needs, then publishes it as the latest [release](https://github.com/YK3D/iPhone-location-spoofer/releases) with a SHA-256 checksum.
+* The exe checks for a new release when it starts and every 6 hours after that. It downloads the update in the background and checks the SHA-256.
+* A banner then offers **Restart now**. If you ignore it, the update installs the next time you open the app. Your favourites and routes are kept.
+* To turn update checks off, start the app with `LocationSpoofer.exe --no-update`. *Device tools → Check for updates* checks on demand.
+
+### Windows from source (the guide's Python setup)
+
+1. Install Python 3.12 (Part 1 of the guide).
+2. Double-click **`run_windows.bat`**. The first run creates a private `.venv` folder and installs the requirements.
+3. To update, run `git pull`. Source copies do not update themselves.
 
 ### macOS / Linux
 
@@ -42,7 +57,8 @@ Linux also needs `usbmuxd` installed and running.
 ### Command-line options
 
 ```bash
-python -m spoofer --port 8765 --no-browser --host 127.0.0.1
+python -m spoofer --port 8765 --no-browser --host 127.0.0.1 --no-update
+LocationSpoofer.exe --version
 ```
 
 ## Connection methods
@@ -70,6 +86,8 @@ If a checkpoint's speed cannot be reached with your acceleration settings, the r
 * **Route-finding needs internet** (OSRM and place search). Straight and sea legs work offline. The public OSRM and Nominatim servers are free community services with fair-use limits. Set `SPOOFER_OSRM_CAR`, `SPOOFER_OSRM_BIKE`, `SPOOFER_OSRM_FOOT` or `SPOOFER_NOMINATIM` to use your own servers.
 * **Sea routes** follow a coarse global shipping-lane network. They are good for ocean crossings but not for harbours or small lakes; use straight legs there.
 * **What happens after you stop.** iOS may keep showing the simulated location after the app stops sending it. Always use **Stop spoofing** when you finish.
+* **How far the update check reaches.** The checksum proves the download arrived intact from this repository's release. It does **not** prove who wrote the code: anyone who can push to `main` can ship code to every installed copy. Protect the branch (and your GitHub account with 2FA) accordingly. The exe is not code-signed.
+* **Size and start time.** The single-file exe is about 90 MB and unpacks to a temporary folder on each start. The *Guide commands* connection method starts a second copy of the exe for each command, which is slow; use *Direct*.
 * **Server address.** The app only listens on `127.0.0.1` by default. If you expose it with `--host 0.0.0.0`, anyone on your network can move your phone.
 
 ## Development
@@ -77,6 +95,10 @@ If a checkpoint's speed cannot be reached with your acceleration settings, the r
 ```bash
 pip install -r requirements-dev.txt
 python -m pytest -q
+# build the exe locally (on Windows for a .exe)
+pip install pyinstaller==6.22.3
+python packaging/build_exe.py --version 1.1.0
+dist/LocationSpoofer --self-test
 ```
 
 Project layout:
@@ -89,7 +111,10 @@ spoofer/
   player.py       playback, loop/ping-pong, jitter, joystick
   device/         pmd3 (direct API), cli (guide commands), mock (simulator)
   server.py       FastAPI app and JSON API
+  updater.py      self-update from GitHub Releases (exe build only)
   static/         Leaflet map UI (no build step)
+packaging/        PyInstaller build script for the exe
+.github/workflows release.yml: test, build, self-test and publish on every push to main
 tests/            pytest suite
 ```
 

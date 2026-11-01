@@ -23,6 +23,7 @@ from .gpx_io import parse_gpx, safe_filename, write_gpx
 from .player import Player
 from .profile import Leg, ProfileSettings, Timeline, Waypoint, build_timeline, timeline_from_timed_points
 from .store import Store
+from .updater import Updater
 
 log = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
@@ -38,6 +39,7 @@ class AppState:
         self.player = Player(lambda: self.driver)
         self.timelines: "OrderedDict[str, tuple[Timeline, str, list]]" = OrderedDict()
         self.store = Store()
+        self.updater = Updater()  # replaced by __main__ with the real one; disabled from source
 
     @property
     def driver(self) -> DeviceDriver:
@@ -59,7 +61,11 @@ class AppState:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+
+    upd_task = asyncio.create_task(app.state.s.updater.run_periodically())
     yield
+    upd_task.cancel()
     try:
         await app.state.s.player.stop()
         for d in app.state.s.drivers.values():
@@ -195,6 +201,7 @@ async def status():
         "device": d.info.to_dict() if d.info else None,
         "live": d.live,
         "player": s.player.status(),
+        "update": s.updater.status(),
     }
 
 
@@ -389,6 +396,52 @@ async def player_options(body: PlayerOptionsIn):
 async def joystick(body: JoystickIn):
     await S().player.joystick(body.moving, body.bearing, body.speed_kmh)
     return S().player.status()
+
+
+# ---------------------------------------------------------------- updates / helpers
+@app.get("/api/update")
+async def update_status():
+    u = S().updater
+    return {**u.status(), "staged": u.staged_version() if u.enabled else None}
+
+
+@app.post("/api/update/check")
+async def update_check():
+    return await S().updater.check()
+
+
+@app.post("/api/update/install")
+async def update_install():
+    import asyncio
+
+    u = S().updater
+    if not u.enabled:
+        raise HTTPException(400, "Updates only work in the LocationSpoofer.exe build. From source, run: git pull")
+    if not u.staged_version():
+        raise HTTPException(409, "No downloaded update is ready. Press 'Check for updates' first.")
+    await S().player.stop()
+    if not u.swap_in_staged():
+        raise HTTPException(500, u.error or "Could not install the update")
+    app.state.restart_requested = True
+    server = getattr(app.state, "server", None)
+
+    async def stop_soon():
+        await asyncio.sleep(0.5)  # let this response reach the browser
+        if server is not None:
+            server.should_exit = True
+
+    asyncio.create_task(stop_soon())
+    return {"restarting": True}
+
+
+@app.post("/api/tunneld/start")
+async def tunneld_start():
+    from .helpers import start_tunneld_elevated
+
+    try:
+        return {"message": start_tunneld_elevated()}
+    except RuntimeError as e:
+        raise DeviceError(str(e)) from e
 
 
 # ---------------------------------------------------------------- storage

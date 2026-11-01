@@ -25,7 +25,9 @@ IS_WINDOWS = sys.platform.startswith("win")
 
 
 def _base_cmd() -> list[str]:
-    return [sys.executable, "-m", "pymobiledevice3"]
+    from ..helpers import pmd3_command
+
+    return pmd3_command()
 
 
 def _env() -> dict[str, str]:

@@ -811,6 +811,39 @@ $("import-data").onchange = guard(async (e) => {
   e.target.value = "";
 });
 
+// ------------------------------------------------------------------ updates
+$("btn-update-check").onclick = guard(async () => {
+  const u = await api("/api/update/check", { body: {} });
+  if (!u.enabled) toast("Automatic updates only work in LocationSpoofer.exe. From source, run: git pull");
+  else if (u.state === "up_to_date") toast(`You have the latest version (${u.current}).`);
+  else if (u.state === "error") toast(`Update check failed: ${u.error}`, true);
+  await poll();
+});
+$("btn-update-install").onclick = guard(async () => {
+  await api("/api/update/install", { body: {} });
+  state.restarting = true;
+  $("update-text").textContent = "Restarting with the new version… this page reloads by itself.";
+  $("btn-update-install").hidden = true;
+});
+$("btn-tunneld").onclick = guard(async () => toast((await api("/api/tunneld/start", { body: {} })).message));
+
+function renderUpdate(st) {
+  const u = st.update;
+  const banner = $("update-banner");
+  if (state.restarting) {
+    if (state.bootVersion && st.version !== state.bootVersion) location.reload();
+    return;
+  }
+  const show = u && u.enabled && ["downloading", "ready", "available"].includes(u.state);
+  banner.hidden = !show;
+  if (!show) return;
+  $("btn-update-install").hidden = u.state !== "ready";
+  $("update-text").textContent =
+    u.state === "ready" ? `Version ${u.latest} is downloaded. It installs on next start, or now:`
+    : u.state === "downloading" ? `Downloading version ${u.latest}… ${Math.round(u.progress * 100)}%`
+    : `Version ${u.latest} is available.`;
+}
+
 // ------------------------------------------------------------------ status polling
 let pollTimer;
 async function poll() {
@@ -819,12 +852,16 @@ async function poll() {
     const st = await api("/api/status");
     state.status = st;
     $("version").textContent = `v${st.version}`;
+    if (!state.bootVersion) state.bootVersion = st.version;
+    renderUpdate(st);
     renderDevice(st);
     renderPlayer(st);
     if (state.tab === "teleport") updateJumpInfo();
   } catch (e) {
     $("device-status").className = "status err";
-    $("device-status").textContent = "Lost contact with the app server. Is its window still open?";
+    $("device-status").textContent = state.restarting
+      ? "Restarting…"
+      : "Lost contact with the app server. Is its window still open?";
   }
   const active = state.status && ["playing", "joystick"].includes(state.status.player.state);
   pollTimer = setTimeout(poll, active ? 500 : 2000);
