@@ -14,14 +14,24 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import __version__, geo, routing
+import asyncio
+
+from . import __version__, geo, gmaps_links, google_api, routing
 from .device.base import DeviceDriver, DeviceError
 from .device.cli import CliDriver
 from .device.mock import MockDriver
 from .device.pmd3 import Pmd3Driver
 from .gpx_io import parse_gpx, safe_filename, write_gpx
 from .player import Player
-from .profile import Leg, ProfileSettings, Timeline, Waypoint, build_timeline, timeline_from_timed_points
+from .profile import (
+    Leg,
+    ProfileSettings,
+    Timeline,
+    Waypoint,
+    build_matching_eta,
+    build_timeline,
+    timeline_from_timed_points,
+)
 from .store import Store
 from .updater import Updater
 
@@ -37,7 +47,7 @@ class AppState:
         self.drivers: dict[str, DeviceDriver] = {d.key: d for d in (Pmd3Driver(), CliDriver(), MockDriver())}
         self.driver_key = "pmd3"
         self.player = Player(lambda: self.driver)
-        self.timelines: "OrderedDict[str, tuple[Timeline, str, list]]" = OrderedDict()
+        self.timelines: "OrderedDict[str, tuple[Timeline, str, list, bool]]" = OrderedDict()
         self.store = Store()
         self.updater = Updater()  # replaced by __main__ with the real one; disabled from source
 
@@ -45,14 +55,18 @@ class AppState:
     def driver(self) -> DeviceDriver:
         return self.drivers[self.driver_key]
 
-    def keep_timeline(self, tl: Timeline, name: str, waypoints: list) -> str:
+    def keep_timeline(self, tl: Timeline, name: str, waypoints: list, exportable: bool = True) -> str:
         tid = uuid.uuid4().hex[:12]
-        self.timelines[tid] = (tl, name, waypoints)
+        self.timelines[tid] = (tl, name, waypoints, exportable)
         while len(self.timelines) > 20:
             self.timelines.popitem(last=False)
         return tid
 
-    def get_timeline(self, tid: str) -> tuple[Timeline, str, list]:
+    def google_key(self) -> Optional[str]:
+        key = (self.store.load().get("settings") or {}).get("google_api_key")
+        return key.strip() if isinstance(key, str) and key.strip() else None
+
+    def get_timeline(self, tid: str) -> tuple[Timeline, str, list, bool]:
         try:
             return self.timelines[tid]
         except KeyError:
@@ -89,6 +103,11 @@ async def _device_error(_: Request, exc: DeviceError):
 
 @app.exception_handler(routing.RoutingError)
 async def _routing_error(_: Request, exc: routing.RoutingError):
+    return JSONResponse({"detail": str(exc)}, status_code=502)
+
+
+@app.exception_handler(google_api.GoogleError)
+async def _google_error(_: Request, exc: google_api.GoogleError):
     return JSONResponse({"detail": str(exc)}, status_code=502)
 
 
@@ -132,6 +151,13 @@ class SettingsIn(BaseModel):
     decel_ms2: float = Field(1.0, gt=0, le=100)
     start_from_rest: bool = True
     stop_at_end: bool = True
+    # experimental road-aware driving
+    road_aware: bool = False
+    road_data: bool = False  # also fetch public speed limits (OpenStreetMap Overpass)
+    match_eta: bool = True  # tune the driving-style factor towards the routing service's ETA
+    speed_factor: float = Field(1.0, gt=0.1, le=3)
+    corner_slowdown: bool = False
+    lateral_accel_ms2: float = Field(2.0, gt=0.1, le=10)
 
     def to_profile(self) -> ProfileSettings:
         return ProfileSettings(
@@ -140,6 +166,10 @@ class SettingsIn(BaseModel):
             decel_ms2=self.decel_ms2,
             start_from_rest=self.start_from_rest,
             stop_at_end=self.stop_at_end,
+            road_aware=self.road_aware,
+            speed_factor=self.speed_factor,
+            corner_slowdown=self.corner_slowdown or self.road_aware,
+            lateral_accel_ms2=self.lateral_accel_ms2,
         )
 
 
@@ -149,6 +179,7 @@ class RouteIn(BaseModel):
     legs: list[LegIn]
     settings: SettingsIn = SettingsIn()
     closed: bool = False  # add a final leg back to the start
+    provider: Literal["osrm", "google"] = "osrm"
 
 
 class TrackIn(BaseModel):
@@ -178,13 +209,18 @@ class JoystickIn(BaseModel):
 
 
 # ---------------------------------------------------------------- helpers
-def timeline_payload(tid: str, tl: Timeline, legs_geometry: list[list[list[float]]] | None = None) -> dict:
+def timeline_payload(
+    tid: str, tl: Timeline, legs_geometry: list[list[list[float]]] | None = None, **extra
+) -> dict:
     interval = max(1.0, tl.duration / PREVIEW_POINTS)
     samples = tl.sample(interval)
+    summary = tl.summary()
+    summary.update(extra.pop("summary_extra", {}))
     return {
         "id": tid,
-        "summary": tl.summary(),
+        "summary": summary,
         "legs": legs_geometry,
+        **extra,
         "preview": [[round(p.t, 2), round(p.lat, 7), round(p.lon, 7), round(p.speed_ms * 3.6, 2)] for p in samples],
     }
 
@@ -273,7 +309,9 @@ async def build_route(body: RouteIn):
     wps = list(body.waypoints)
     legs_in = list(body.legs)
     if body.closed:
-        wps.append(wps[0].model_copy())
+        first = wps[0]
+        # the return checkpoint is the start's location only (not its wait time or speed)
+        wps.append(WaypointIn(lat=first.lat, lon=first.lon, name=(first.name or "Start") + " (return)"))
         if len(legs_in) == len(body.waypoints) - 1:
             legs_in.append(legs_in[-1].model_copy() if legs_in else LegIn())
     if len(legs_in) != len(wps) - 1:
@@ -281,23 +319,60 @@ async def build_route(body: RouteIn):
     for w in wps:
         geo.validate_latlon(w.lat, w.lon)
 
+    settings = body.settings
+    key = S().google_key() if body.provider == "google" else None
+    if body.provider == "google" and not key:
+        raise HTTPException(400, "Google routing needs your Google Maps API key (Settings).")
+
     legs: list[Leg] = []
     geometry: list[list[list[float]]] = []
+    providers: list[str] = []
+    notes: list[str] = []
+    features: dict = {"uturns": 0, "offnet_m": 0.0, "highway_segments": 0, "restricted_segments": 0}
+    ref_total = 0.0
+    ref_complete = True
+    exportable = True
     for i, li in enumerate(legs_in):
         a, b = (wps[i].lat, wps[i].lon), (wps[i + 1].lat, wps[i + 1].lon)
         try:
-            pts = await routing.route(a, b, li.mode)
+            res = await routing.route(
+                a, b, li.mode, provider=body.provider, google_key=key,
+                road_data=settings.road_aware and settings.road_data,
+            )
         except routing.RoutingError as e:
             raise routing.RoutingError(f"Leg {i + 1} ({li.mode}): {e}") from e
-        legs.append(Leg(points=pts, cruise_kmh=li.cruise_kmh, ramp=li.ramp))
-        geometry.append([[round(p[0], 7), round(p[1], 7)] for p in pts])
+        legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones))
+        geometry.append([[round(p[0], 7), round(p[1], 7)] for p in res.points])
+        providers.append(res.provider)
+        notes.extend(f"Leg {i + 1}: {n}" for n in res.notes)
+        for k, v in res.features.items():
+            features[k] = features.get(k, 0) + v
+        exportable = exportable and res.exportable
+        if res.ref_duration_s:
+            ref_total += res.ref_duration_s
+        elif li.mode != "straight" or len(legs_in) == 1:
+            ref_complete = False
 
-    tl = build_timeline(
-        [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s) for w in wps], legs, body.settings.to_profile()
-    )
+    waypoints = [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s) for w in wps]
+    prof = settings.to_profile()
+    factor = prof.speed_factor
+    if settings.road_aware and settings.match_eta and ref_complete and ref_total > 0:
+        tl, factor = build_matching_eta(waypoints, legs, prof, ref_total)
+    else:
+        tl = build_timeline(waypoints, legs, prof)
     names = [(w.lat, w.lon, w.name or f"Checkpoint {i + 1}") for i, w in enumerate(wps)]
-    tid = S().keep_timeline(tl, body.name, names)
-    return timeline_payload(tid, tl, geometry)
+    tid = S().keep_timeline(tl, body.name, names, exportable)
+    extra = {
+        "reference_eta_s": round(ref_total, 1) if ref_complete and ref_total > 0 else None,
+        "reference_source": "Google" if "google" in providers else ("OSRM" if "osrm" in providers else None),
+        "speed_factor": round(factor, 3),
+        "features": {k: (round(v, 1) if isinstance(v, float) else v) for k, v in features.items()},
+        "notes": notes,
+        "road_aware": settings.road_aware,
+    }
+    return timeline_payload(
+        tid, tl, geometry, providers=providers, exportable=exportable, summary_extra=extra
+    )
 
 
 @app.post("/api/gpx/import")
@@ -346,14 +421,22 @@ async def gpx_timeline(body: TrackIn):
         leg = Leg(points=[(p[0], p[1]) for p in pts], cruise_kmh=body.cruise_kmh)
         tl = build_timeline(ends, [leg], body.settings.to_profile())
     tid = S().keep_timeline(tl, body.name, [])
-    return timeline_payload(tid, tl, [[[round(p[0], 7), round(p[1], 7)] for p in pts]])
+    return timeline_payload(
+        tid, tl, [[[round(p[0], 7), round(p[1], 7)] for p in pts]], providers=["gpx"], exportable=True
+    )
 
 
 @app.get("/api/gpx/export/{tid}")
 async def gpx_export(tid: str, interval: float = 1.0):
     if not 0.2 <= interval <= 60:
         raise HTTPException(400, "interval must be 0.2-60 s")
-    tl, name, wps = S().get_timeline(tid)
+    tl, name, wps, exportable = S().get_timeline(tid)
+    if not exportable:
+        raise HTTPException(
+            403,
+            "Routes from Google cannot be saved as GPX (Google's terms restrict storing Routes API "
+            "content). Switch the route to OpenStreetMap routing to export it.",
+        )
     if tl.duration / interval > 1_000_000:
         raise HTTPException(400, "That would be more than a million points; use a larger interval.")
     text = write_gpx(tl.sample(interval), name=name, waypoints=wps)
@@ -368,7 +451,7 @@ async def gpx_export(tid: str, interval: float = 1.0):
 # ---------------------------------------------------------------- player
 @app.post("/api/player/load/{tid}")
 async def player_load(tid: str):
-    tl, name, _ = S().get_timeline(tid)
+    tl, name, _, _ = S().get_timeline(tid)
     await S().player.load(tl, name)
     return S().player.status()
 
@@ -442,6 +525,64 @@ async def tunneld_start():
         return {"message": start_tunneld_elevated()}
     except RuntimeError as e:
         raise DeviceError(str(e)) from e
+
+
+# ---------------------------------------------------------------- Google Maps links / API
+class LinkIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/api/links/parse")
+async def parse_link(body: LinkIn):
+    try:
+        parsed = await gmaps_links.parse_any(body.text)
+    except gmaps_links.LinkError as e:
+        raise HTTPException(400, str(e)) from e
+    # Place names need coordinates: geocode them (Nominatim allows 1 request per second).
+    unresolved = [st for st in parsed.stops if st.lat is None]
+    for i, st in enumerate(unresolved):
+        if i:
+            await asyncio.sleep(1.1)
+        results = await routing.geocode(st.query, limit=1)
+        if not results:
+            raise HTTPException(404, f"Could not find '{st.query}' on the map")
+        st.lat, st.lon = results[0]["lat"], results[0]["lon"]
+        st.name = st.name or results[0]["name"]
+    for st in parsed.stops:
+        geo.validate_latlon(st.lat, st.lon)  # type: ignore[arg-type]
+    return parsed.to_dict()
+
+
+@app.get("/api/google/status")
+async def google_status():
+    return {"configured": S().google_key() is not None}
+
+
+class TileSessionIn(BaseModel):
+    map_type: Literal["roadmap", "satellite", "terrain"] = "roadmap"
+    language: str = "en-US"
+    region: str = "US"
+
+
+@app.post("/api/google/tile-session")
+async def google_tile_session(body: TileSessionIn):
+    key = S().google_key()
+    if not key:
+        raise HTTPException(400, "Add your Google Maps API key in Settings first.")
+    sess = await google_api.create_tile_session(routing.client(), key, body.map_type, body.language, body.region)
+    # The browser loads tiles straight from Google, so it needs the key (the user's own key,
+    # on their own computer). Restrict the key to the Map Tiles and Routes APIs in Google Cloud.
+    return {"session": sess.get("session"), "expiry": sess.get("expiry"), "key": key,
+            "tile_size": sess.get("tileWidth", 256)}
+
+
+@app.get("/api/google/copyright")
+async def google_copyright(session: str, zoom: int, north: float, south: float, east: float, west: float):
+    key = S().google_key()
+    if not key:
+        return {"copyright": ""}
+    text = await google_api.viewport_copyright(routing.client(), key, session, zoom, north, south, east, west)
+    return {"copyright": text}
 
 
 # ---------------------------------------------------------------- storage

@@ -1,10 +1,12 @@
-name: Build and release LocationSpoofer.exe
+name: Build and release LocationSpoofer.exe (browser version)
 
-# Every push to main that changes code runs the tests, builds the Windows exe, self-tests it and
-# publishes it as the latest GitHub Release. Installed copies of the exe pick it up automatically.
+# Every push to the browser-version branches that changes code runs the tests, builds the Windows
+# exe, self-tests it and publishes it as the latest GitHub Release (tag v<version>). Installed
+# copies of the exe pick it up automatically. The Rust standalone app publishes separate,
+# non-"latest" releases (tag standalone-v<version>), so the two never update into each other.
 on:
   push:
-    branches: [main]
+    branches: [main, Browser-application]
     paths-ignore:
       - "**.md"
       - "docs/**"
@@ -33,7 +35,7 @@ jobs:
     needs: test
     runs-on: windows-latest
     env:
-      VERSION: 1.1.${{ github.run_number }}
+      VERSION: 1.2.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

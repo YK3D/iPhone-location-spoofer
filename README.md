@@ -1,4 +1,7 @@
-# iPhone Location Spoofer
+# iPhone Location Spoofer — browser version
+
+> This is the **Browser application** branch (Python, the app's window is your web browser).
+> The **Standalone application** branch is a Rust rewrite that runs as a native Windows app.
 
 A local desktop app (it runs in your browser) for setting your iPhone's location from a Windows, macOS or Linux computer over a USB cable. It sends the location through [pymobiledevice3](https://github.com/doronz88/pymobiledevice3), the same tool used in the step-by-step guide *"Changing Your iPhone Location from a Windows Laptop"*. The app replaces typing commands with a map.
 
@@ -18,6 +21,10 @@ A local desktop app (it runs in your browser) for setting your iPhone's location
 | **GPX export** | Saves any route as a timed GPX file (0.5–10 s between points). The file plays with `pymobiledevice3 … simulate-location play`. |
 | **Player** | Play, pause, resume, stop and seek. Time speed runs from 0.25× to 30×. When a route ends it can stop, loop, or go back and forth (ping-pong). Optional GPS jitter and a configurable update interval. A live marker and trail show the spoofed position. |
 | **Joystick** | Walk or drive live with W A S D, the arrow keys or the on-screen pad, at any speed. |
+| **Google Maps** | Paste any Google Maps link (place, pin, search, `maps.app.goo.gl` short link or a directions link with stops) to jump there or import the stops as a route. With your own API key (⚙ Settings), routes can come from the **Google Routes API**; they are then shown on Google's own map tiles, as Google's terms require, and cannot be exported as GPX. |
+| **Road-aware driving (experimental)** | Follows each road's typical speed from the routing service, optionally capped by public **OpenStreetMap speed limits** (Overpass). It slows down for sharp bends, roundabouts and **U-turns** (from turn radius) and for private, gated or unmapped access roads. It can tune the driving style so the trip time lands near the **Google Maps / OSRM ETA**, shown side by side as a reference. |
+| **Speed colours** | The route line is coloured by speed (blue = slow, red = fast) with a legend; hover a stretch to see its speed range. |
+| **Help built in** | A first-run setup guide (reopen with **?**) and grey **(i)** buttons that explain every device tool and option. |
 | **Extras** | Random-wander generator (random checkpoints with short pauses), return-to-start loops, and speed presets (walk, jog, cycle, car, highway, boat, train, plane). A jump-distance warning shows the real travel time for a teleport. Favourites, saved routes, JSON backup and restore, and a Simulator mode for trying everything without an iPhone. |
 
 ## Install and run
@@ -61,6 +68,14 @@ python -m spoofer --port 8765 --no-browser --host 127.0.0.1 --no-update
 LocationSpoofer.exe --version
 ```
 
+## Google Maps API key (optional)
+
+1. In [Google Cloud Console](https://console.cloud.google.com/), create a project and an API key.
+2. Enable **Routes API** and **Map Tiles API** for the project. Google bills per request after its monthly free usage.
+3. Restrict the key to those two APIs. Paste it in **⚙ Settings** and press **Test key**.
+
+Without a key, routing uses the free OpenStreetMap services and Google Maps *links* still work.
+
 ## Connection methods
 
 | Method | How it works | Use it when |
@@ -84,6 +99,7 @@ If a checkpoint's speed cannot be reached with your acceleration settings, the r
 
 * **Not yet tested against a physical iPhone.** The geometry, GPX and API code has automated tests (`pytest`), and the Simulator mode and full UI were exercised in a browser. The Direct driver was written against the pymobiledevice3 11.49 API, which changed a lot between major versions; hence the `<12` pin and the CLI fallback.
 * **Route-finding needs internet** (OSRM and place search). Straight and sea legs work offline. The public OSRM and Nominatim servers are free community services with fair-use limits. Set `SPOOFER_OSRM_CAR`, `SPOOFER_OSRM_BIKE`, `SPOOFER_OSRM_FOOT` or `SPOOFER_NOMINATIM` to use your own servers.
+* **Road-aware driving is experimental.** Typical road speeds and ETAs come from the routing service; speed limits come from OpenStreetMap, which is incomplete in many areas. The public Overpass server is often busy, and when it fails the route is still built without speed limits. Google's own speed-limit data needs a special Asset Tracking licence and is not used.
 * **Sea routes** follow a coarse global shipping-lane network. They are good for ocean crossings but not for harbours or small lakes; use straight legs there.
 * **What happens after you stop.** iOS may keep showing the simulated location after the app stops sending it. Always use **Stop spoofing** when you finish.
 * **How far the update check reaches.** The checksum proves the download arrived intact from this repository's release. It does **not** prove who wrote the code: anyone who can push to `main` can ship code to every installed copy. Protect the branch (and your GitHub account with 2FA) accordingly. The exe is not code-signed.
@@ -106,7 +122,10 @@ Project layout:
 ```
 spoofer/
   profile.py      speed-profile engine (accel/decel, checkpoints, waits)
-  routing.py      OSRM, searoute and straight-line routing; place search
+  routing.py      OSRM, Google, searoute and straight-line routing; place search
+  google_api.py   Google Routes API, Map Tiles sessions, polyline decoding
+  gmaps_links.py  Google Maps link parsing (incl. short links and directions)
+  road_speed.py   OpenStreetMap speed limits / road classes (Overpass)
   gpx_io.py       GPX parsing (defusedxml) and writing
   player.py       playback, loop/ping-pong, jitter, joystick
   device/         pmd3 (direct API), cli (guide commands), mock (simulator)

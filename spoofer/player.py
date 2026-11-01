@@ -203,6 +203,11 @@ class Player:
             self.state = "joystick"
             self._task = asyncio.create_task(self._run_joystick())
 
+    def effective_tick(self) -> float:
+        """Seconds between location updates. At high time speeds the interval shrinks (down to
+        0.25 s) so each update still moves the device about as far as at 1x, instead of jumping."""
+        return max(0.25, self.tick_s / max(1.0, self.multiplier)) if self.multiplier > 1 else self.tick_s
+
     # ------------------------------------------------------------------ internals
     def _require_driver(self, connected: bool = True) -> None:
         if connected and not self.driver.connected:
@@ -255,7 +260,7 @@ class Player:
                     self.t = 0.0
                 else:
                     self.direction = -self.direction
-            await asyncio.sleep(self.tick_s)
+            await asyncio.sleep(self.effective_tick())
             now = loop.time()
             dt = (now - last) * self.multiplier
             last = now

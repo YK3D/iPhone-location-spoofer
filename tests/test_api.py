@@ -136,3 +136,44 @@ def test_store_roundtrip(client):
 def test_parse_coords_endpoint(client):
     assert client.post("/api/parse-coords", json={"text": "1.5, 2.5"}).json() == {"lat": 1.5, "lon": 2.5}
     assert client.post("/api/parse-coords", json={"text": "x"}).status_code == 400
+
+
+def test_route_google_without_key_and_link_parse(client):
+    body = dict(ROUTE, provider="google")
+    r = client.post("/api/route/build", json=body)
+    assert r.status_code == 400 and "API key" in r.json()["detail"]
+    r = client.post("/api/links/parse", json={"text": "https://www.google.com/maps/@48.85,2.29,15z"})
+    assert r.status_code == 200 and r.json()["stops"][0]["lat"] == 48.85
+    r = client.post("/api/links/parse", json={"text": "https://example.com/x"})
+    assert r.status_code == 400
+    assert client.get("/api/google/status").json() == {"configured": False}
+    client.put("/api/store", json={"favorites": [], "routes": [], "settings": {"google_api_key": " KEY "}})
+    assert client.get("/api/google/status").json() == {"configured": True}
+
+
+def test_road_aware_build_reports_extras(client):
+    body = dict(ROUTE, settings=dict(ROUTE["settings"], road_aware=True, corner_slowdown=True))
+    r = client.post("/api/route/build", json=body)
+    assert r.status_code == 200, r.text
+    s = r.json()["summary"]
+    assert "moving_time_s" in s and s["road_aware"] is True and s["reference_eta_s"] is None
+    assert r.json()["exportable"] is True
+
+
+def test_google_routes_not_exportable(client):
+    from spoofer.profile import Leg, ProfileSettings, Waypoint, build_timeline
+
+    a, b = (51.5, -0.12), (51.501, -0.12)
+    tl = build_timeline([Waypoint(*a), Waypoint(*b)], [Leg([a, b])], ProfileSettings())
+    tid = client.app.state.s.keep_timeline(tl, "g", [], exportable=False)
+    r = client.get(f"/api/gpx/export/{tid}")
+    assert r.status_code == 403 and "Google" in r.json()["detail"]
+
+
+def test_closed_route_return_point_has_no_dwell(client):
+    body = dict(ROUTE, closed=True)
+    body["waypoints"] = [dict(ROUTE["waypoints"][0], dwell_s=30)] + ROUTE["waypoints"][1:]
+    r = client.post("/api/route/build", json=body)
+    times = r.json()["summary"]["waypoint_times_s"]
+    # total duration ends at arrival back at the start: no extra 30 s wait at the end
+    assert r.json()["summary"]["duration_s"] == pytest.approx(times[-1], abs=0.2)

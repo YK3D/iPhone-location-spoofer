@@ -52,6 +52,9 @@ class Leg:
     points: list[geo.LatLon]  # routed geometry, first/last should be the waypoints
     cruise_kmh: Optional[float] = None  # None -> settings.default_cruise_kmh
     ramp: str = "accel"  # "accel" | "linear"
+    # Road-aware mode: typical speed (m/s, None = unknown) up to each distance along the leg,
+    # as reported by the routing service / speed-limit data. Sorted by distance.
+    zones: Optional[list[tuple[float, Optional[float]]]] = None
 
 
 @dataclass
@@ -62,6 +65,12 @@ class ProfileSettings:
     start_from_rest: bool = True  # first waypoint speed 0 unless it pins one
     stop_at_end: bool = True  # last waypoint speed 0 unless it pins one
     max_step_m: float = 2.0
+    # --- experimental road-aware driving ---
+    road_aware: bool = False  # follow per-road typical speeds / limits from the routing data
+    speed_factor: float = 1.0  # multiply road speeds (driving style); tuned by ETA matching
+    corner_slowdown: bool = False  # slow down for sharp turns, roundabouts and U-turns
+    lateral_accel_ms2: float = 2.0  # comfortable cornering acceleration (car ~2, bike ~1.5)
+    min_corner_kmh: float = 8.0  # never plan a turn slower than this (U-turns)
 
 
 @dataclass
@@ -93,6 +102,8 @@ class Timeline:
     segments: list[Segment]
     waypoint_times: list[float] = field(default_factory=list)  # arrival time per waypoint
     warnings: list[str] = field(default_factory=list)
+    dwell_total: float = 0.0  # seconds spent waiting at checkpoints
+    corners_slowed: int = 0
 
     def __post_init__(self) -> None:
         self._t0s = [s.t0 for s in self.segments]
@@ -161,6 +172,8 @@ class Timeline:
             "max_speed_kmh": round(self.max_speed * 3.6, 2),
             "avg_speed_kmh": round(self.distance / self.duration * 3.6, 2) if self.duration > 0 else 0.0,
             "waypoint_times_s": [round(t, 1) for t in self.waypoint_times],
+            "moving_time_s": round(self.duration - self.dwell_total, 1),
+            "corners_slowed": self.corners_slowed,
             "warnings": self.warnings,
         }
 
@@ -218,10 +231,14 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
     # --- 2. speed caps per node ---------------------------------------------------------------
     inf = float("inf")
     cap = [inf] * n
-    for k in range(n - 1):  # each step limited by its leg's cruise speed (both ends)
-        c = cruises[node_leg[k]]
+    step_cap = _step_caps(legs, cruises, node_leg, wp_node, cum, settings)
+    for k in range(n - 1):  # each step limited by its leg's speed (both ends)
+        c = step_cap[k]
         cap[k] = min(cap[k], c)
         cap[k + 1] = min(cap[k + 1], c)
+    corners = 0
+    if settings.corner_slowdown:
+        corners = _apply_corner_caps(nodes, cum, cap, settings)
 
     pinned: dict[int, float] = {}
     for i, wp in enumerate(waypoints):
@@ -310,7 +327,74 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
     if not segments:  # all waypoints on the same spot and no dwell
         segments.append(Segment(0.0, 0.0, nodes[0], nodes[0], 0.0, 0.0, 0.0, 0.0))
 
-    return Timeline(segments, [node_arrival[k] for k in wp_node], warnings)
+    tl = Timeline(segments, [node_arrival[k] for k in wp_node], warnings)
+    tl.dwell_total = sum(dwell_at.values())
+    tl.corners_slowed = corners
+    return tl
+
+
+def _step_caps(legs, cruises, node_leg, wp_node, cum, settings: ProfileSettings) -> list[float]:
+    """Speed limit of every step: the leg's cruise speed, or in road-aware mode the road's
+    typical speed from the routing data (times the driving-style factor)."""
+    n_steps = len(cum) - 1
+    out = [0.0] * n_steps
+    for k in range(n_steps):
+        li = node_leg[k]
+        leg = legs[li]
+        c = cruises[li]
+        if settings.road_aware and leg.zones:
+            s_mid = (cum[k] + cum[k + 1]) / 2 - cum[wp_node[li]]
+            v = _zone_speed(leg.zones, s_mid)
+            if v:
+                road = v * settings.speed_factor
+                # An explicit cruise speed on the leg still acts as the driver's own limit.
+                c = min(road, c) if leg.cruise_kmh is not None else road
+        out[k] = max(c, MIN_MOVING_SPEED * 2)
+    return out
+
+
+def _zone_speed(zones: list[tuple[float, Optional[float]]], s: float) -> Optional[float]:
+    ends = [z[0] for z in zones]
+    i = bisect.bisect_left(ends, s)
+    if i >= len(zones):
+        i = len(zones) - 1
+    return zones[i][1]
+
+
+def _apply_corner_caps(nodes, cum, cap, settings: ProfileSettings, look_m: float = 15.0) -> int:
+    """Cap the speed at bends: the heading change between the path 15 m before and 15 m after a
+    node gives a turn radius R ~ L / angle, and a comfortable lateral acceleration a gives
+    v = sqrt(a * R). U-turns (angle ~ 180 deg) end up near min_corner_kmh."""
+    n = len(nodes)
+    if n < 3:
+        return 0
+    a_lat = max(0.2, settings.lateral_accel_ms2)
+    v_min = settings.min_corner_kmh / 3.6
+    count = 0
+    in_corner = False
+    for k in range(1, n - 1):
+        j = bisect.bisect_right(cum, cum[k] - look_m) - 1
+        m = bisect.bisect_left(cum, cum[k] + look_m)
+        if j < 0 or m >= n or j == k or m == k:
+            in_corner = False
+            continue
+        if cum[k] - cum[j] < 1.0 or cum[m] - cum[k] < 1.0:
+            continue
+        b1 = geo.bearing_deg(nodes[j], nodes[k])
+        b2 = geo.bearing_deg(nodes[k], nodes[m])
+        theta = math.radians(abs((b2 - b1 + 180.0) % 360.0 - 180.0))
+        if theta < math.radians(20):
+            in_corner = False
+            continue
+        span = ((cum[k] - cum[j]) + (cum[m] - cum[k])) / 2
+        radius = span / theta
+        v = max(v_min, math.sqrt(a_lat * radius))
+        if v < cap[k]:
+            cap[k] = v
+            if not in_corner:
+                count += 1
+            in_corner = True
+    return count
 
 
 def timeline_from_timed_points(points: Sequence[tuple[float, float, float]]) -> Timeline:
@@ -358,3 +442,40 @@ def _leg_points(wa: Waypoint, wb: Waypoint, leg: Leg) -> list[geo.LatLon]:
     else:
         pts[-1] = b
     return pts  # type: ignore[return-value]
+
+
+def build_matching_eta(
+    waypoints: Sequence[Waypoint],
+    legs: Sequence[Leg],
+    settings: ProfileSettings,
+    reference_moving_s: float,
+    tolerance: float = 0.03,
+    max_iter: int = 6,
+    factor_range: tuple[float, float] = (0.6, 1.6),
+) -> tuple[Timeline, float]:
+    """Road-aware timeline whose moving time lands near a routing service's ETA.
+
+    The ETA is a reference, not a target to hit exactly: the driving-style factor is tuned within
+    factor_range, so a route that cannot plausibly match (e.g. heavy traffic in Google's ETA)
+    stays at the nearest plausible speed. Returns the timeline and the factor used.
+    """
+    if reference_moving_s <= 0 or not settings.road_aware:
+        return build_timeline(waypoints, legs, settings), settings.speed_factor
+    from dataclasses import replace
+
+    lo, hi = factor_range
+    factor = min(max(settings.speed_factor, lo), hi)
+    tl = build_timeline(waypoints, legs, replace(settings, speed_factor=factor))
+    for _ in range(max_iter):
+        moving = tl.duration - tl.dwell_total
+        if moving <= 0:
+            break
+        ratio = moving / reference_moving_s
+        if abs(ratio - 1) <= tolerance:
+            break
+        new = min(max(factor * ratio, lo), hi)
+        if abs(new - factor) < 1e-3:
+            break
+        factor = new
+        tl = build_timeline(waypoints, legs, replace(settings, speed_factor=factor))
+    return tl, factor
