@@ -1,0 +1,71 @@
+name: Build and release standalone app (Rust)
+
+# Every code push to the Standalone-application branch runs the Rust tests, builds the Windows
+# exe, runs its self-test and publishes a GitHub Release tagged standalone-v<version>.
+# These releases are never marked "latest", so the browser version's auto-updater (which reads
+# the latest release) and this app's updater (which only reads standalone-v* tags) stay separate.
+on:
+  push:
+    branches: [Standalone-application]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-standalone
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview libraries (for the gui feature)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    env:
+      VERSION: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        env:
+          SPOOFER_VERSION: ${{ env.VERSION }}
+        run: cargo build --release --locked
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath target\release\location-spoofer.exe -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Write-Error "self-test failed ($($p.ExitCode))"; exit 1 }
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item target\release\location-spoofer.exe dist\LocationSpooferStandalone.exe
+          $h = (Get-FileHash dist\LocationSpooferStandalone.exe -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("dist\LocationSpooferStandalone.exe.sha256", "$h  LocationSpooferStandalone.exe")
+          Write-Host "SHA-256: $h"
+      - name: Publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          {
+            echo "Standalone (Rust) build of ${GITHUB_SHA::7}. Requires Windows 10/11 with the WebView2 runtime (built into Windows 11)."
+            echo
+            echo "${COMMIT_MSG:-Manual build}"
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 dist/LocationSpooferStandalone.exe.sha256)\`"
+          } > notes.md
+          gh release create "standalone-v$VERSION" dist/LocationSpooferStandalone.exe dist/LocationSpooferStandalone.exe.sha256 \
+            --title "Location Spoofer standalone $VERSION" --notes-file notes.md --target "$GITHUB_SHA" --latest=false
