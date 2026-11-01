@@ -1,0 +1,360 @@
+"""Speed-profile engine.
+
+Turns a routed path plus speed checkpoints into a timeline: where the device is at every
+moment, with uniform (constant) acceleration and deceleration between speeds.
+
+Model
+-----
+* The route is a list of *legs*; leg i runs from waypoint i to waypoint i+1 along its
+  routed geometry (road, sea lane, straight line, ...).
+* Every leg has a cruise speed (its speed limit) and a ramp mode:
+    - ``"accel"``: speed changes at the configured acceleration / deceleration rate
+      (m/s^2). The device accelerates as early and brakes as late as possible, holding
+      cruise speed in between (a trapezoidal profile, triangular if the leg is short).
+    - ``"linear"``: speed changes uniformly over the *whole* leg, from the speed at its
+      first waypoint to the speed at its last waypoint (one constant acceleration for the
+      entire leg), ignoring the acceleration settings.
+* A waypoint may pin an exact speed (a *speed checkpoint*), or a dwell time (a stop:
+  speed 0 there, then wait). Unpinned waypoints are passed at whatever speed the
+  surrounding limits allow.
+
+The solver densifies the path, caps the speed at every node, then runs a forward pass
+(acceleration limit) and a backward pass (deceleration limit) - the standard
+motion-planning approach that yields the fastest profile obeying every limit. Inside each
+small step the acceleration is constant, so v^2 changes linearly with distance and the
+position at any time has a closed form.
+"""
+
+from __future__ import annotations
+
+import bisect
+import math
+from dataclasses import dataclass, field
+from typing import Optional, Sequence
+
+from . import geo
+
+KMH = 1 / 3.6  # km/h -> m/s
+MIN_MOVING_SPEED = 0.05  # m/s; below this on both ends of a step the step never finishes
+MAX_NODES = 60_000
+
+
+@dataclass
+class Waypoint:
+    lat: float
+    lon: float
+    speed_kmh: Optional[float] = None  # exact speed when passing this point
+    dwell_s: float = 0.0  # stop here (speed 0) for this many seconds
+
+
+@dataclass
+class Leg:
+    points: list[geo.LatLon]  # routed geometry, first/last should be the waypoints
+    cruise_kmh: Optional[float] = None  # None -> settings.default_cruise_kmh
+    ramp: str = "accel"  # "accel" | "linear"
+
+
+@dataclass
+class ProfileSettings:
+    default_cruise_kmh: float = 5.0
+    accel_ms2: float = 1.0
+    decel_ms2: float = 1.0
+    start_from_rest: bool = True  # first waypoint speed 0 unless it pins one
+    stop_at_end: bool = True  # last waypoint speed 0 unless it pins one
+    max_step_m: float = 2.0
+
+
+@dataclass
+class Segment:
+    """One piece of the timeline with constant acceleration (or standing still)."""
+
+    t0: float
+    t1: float
+    p0: geo.LatLon
+    p1: geo.LatLon
+    v0: float  # m/s at t0
+    v1: float  # m/s at t1
+    ds: float  # metres
+    s0: float  # cumulative distance at p0
+
+
+@dataclass
+class TimelinePoint:
+    t: float
+    lat: float
+    lon: float
+    speed_ms: float
+    course: float
+    distance_m: float
+
+
+@dataclass
+class Timeline:
+    segments: list[Segment]
+    waypoint_times: list[float] = field(default_factory=list)  # arrival time per waypoint
+    warnings: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._t0s = [s.t0 for s in self.segments]
+
+    @property
+    def duration(self) -> float:
+        return self.segments[-1].t1 if self.segments else 0.0
+
+    @property
+    def distance(self) -> float:
+        if not self.segments:
+            return 0.0
+        last = self.segments[-1]
+        return last.s0 + last.ds
+
+    @property
+    def max_speed(self) -> float:
+        return max((max(s.v0, s.v1) for s in self.segments), default=0.0)
+
+    def at(self, t: float) -> TimelinePoint:
+        """State at time t (clamped to the timeline)."""
+        if not self.segments:
+            raise ValueError("Empty timeline")
+        t = min(max(t, 0.0), self.duration)
+        i = max(0, bisect.bisect_right(self._t0s, t) - 1)
+        seg = self.segments[i]
+        tau = t - seg.t0
+        if seg.ds <= 0 or seg.t1 <= seg.t0:
+            s, v = 0.0, seg.v0 if seg.ds > 0 else 0.0
+        else:
+            dur = seg.t1 - seg.t0
+            a = (seg.v1 - seg.v0) / dur
+            s = seg.v0 * tau + 0.5 * a * tau * tau
+            v = seg.v0 + a * tau
+            s = min(max(s, 0.0), seg.ds)
+        f = s / seg.ds if seg.ds > 0 else 0.0
+        lat, lon = geo.interpolate(seg.p0, seg.p1, f)
+        course = geo.bearing_deg(seg.p0, seg.p1) if seg.ds > 0 else self._last_course(i)
+        return TimelinePoint(t, lat, lon, max(v, 0.0), course, seg.s0 + s)
+
+    def _last_course(self, i: int) -> float:
+        for j in range(i, -1, -1):
+            if self.segments[j].ds > 0:
+                return geo.bearing_deg(self.segments[j].p0, self.segments[j].p1)
+        for seg in self.segments[i:]:
+            if seg.ds > 0:
+                return geo.bearing_deg(seg.p0, seg.p1)
+        return 0.0
+
+    def sample(self, interval_s: float = 1.0, start: float = 0.0) -> list[TimelinePoint]:
+        """Points every interval_s seconds from start to the end (end always included)."""
+        if interval_s <= 0:
+            raise ValueError("Sample interval must be positive")
+        out: list[TimelinePoint] = []
+        n = int(math.floor((self.duration - start) / interval_s + 1e-9))
+        for k in range(n + 1):
+            out.append(self.at(start + k * interval_s))
+        if not out or out[-1].t < self.duration - 1e-6:
+            out.append(self.at(self.duration))
+        return out
+
+    def summary(self) -> dict:
+        return {
+            "distance_m": round(self.distance, 1),
+            "duration_s": round(self.duration, 1),
+            "max_speed_kmh": round(self.max_speed * 3.6, 2),
+            "avg_speed_kmh": round(self.distance / self.duration * 3.6, 2) if self.duration > 0 else 0.0,
+            "waypoint_times_s": [round(t, 1) for t in self.waypoint_times],
+            "warnings": self.warnings,
+        }
+
+
+def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings: ProfileSettings) -> Timeline:
+    """Solve the speed profile for a multi-leg route."""
+    if len(waypoints) < 2:
+        raise ValueError("A route needs at least two waypoints")
+    if len(legs) != len(waypoints) - 1:
+        raise ValueError("There must be exactly one leg between each pair of waypoints")
+    if settings.accel_ms2 <= 0 or settings.decel_ms2 <= 0:
+        raise ValueError("Acceleration and deceleration must be greater than 0")
+    for i, wp in enumerate(waypoints):
+        geo.validate_latlon(wp.lat, wp.lon)
+        if wp.speed_kmh is not None and wp.speed_kmh < 0:
+            raise ValueError(f"Waypoint {i + 1}: speed cannot be negative")
+        if wp.dwell_s < 0:
+            raise ValueError(f"Waypoint {i + 1}: wait time cannot be negative")
+
+    cruises: list[float] = []
+    for i, leg in enumerate(legs):
+        c = settings.default_cruise_kmh if leg.cruise_kmh is None else leg.cruise_kmh
+        if c <= 0:
+            raise ValueError(f"Leg {i + 1}: cruise speed must be greater than 0")
+        if leg.ramp not in ("accel", "linear"):
+            raise ValueError(f"Leg {i + 1}: unknown ramp mode {leg.ramp!r}")
+        cruises.append(c * KMH)
+
+    # --- 1. densify every leg into nodes ---------------------------------------------------
+    total_len = sum(geo.polyline_length(_leg_points(wp_a, wp_b, leg)) for wp_a, wp_b, leg in _legs_with_ends(waypoints, legs))
+    step = max(settings.max_step_m, total_len / MAX_NODES)
+
+    nodes: list[geo.LatLon] = []
+    node_leg: list[int] = []  # leg index of the step that *starts* at this node
+    wp_node: list[int] = []
+    for i, (wa, wb, leg) in enumerate(_legs_with_ends(waypoints, legs)):
+        pts = geo.densify(_leg_points(wa, wb, leg), step)
+        if i == 0:
+            wp_node.append(0)
+            nodes.append(pts[0])
+            node_leg.append(0)
+        else:
+            node_leg[-1] = i
+        for p in pts[1:]:
+            nodes.append(p)
+            node_leg.append(i)
+        wp_node.append(len(nodes) - 1)
+
+    n = len(nodes)
+    ds = [geo.haversine_m(nodes[k], nodes[k + 1]) for k in range(n - 1)]
+    cum = [0.0]
+    for d in ds:
+        cum.append(cum[-1] + d)
+
+    # --- 2. speed caps per node ---------------------------------------------------------------
+    inf = float("inf")
+    cap = [inf] * n
+    for k in range(n - 1):  # each step limited by its leg's cruise speed (both ends)
+        c = cruises[node_leg[k]]
+        cap[k] = min(cap[k], c)
+        cap[k + 1] = min(cap[k + 1], c)
+
+    pinned: dict[int, float] = {}
+    for i, wp in enumerate(waypoints):
+        k = wp_node[i]
+        if wp.dwell_s > 0:
+            pinned[k] = 0.0
+        elif wp.speed_kmh is not None:
+            pinned[k] = wp.speed_kmh * KMH
+        elif i == 0 and settings.start_from_rest:
+            pinned[k] = 0.0
+        elif i == len(waypoints) - 1 and settings.stop_at_end:
+            pinned[k] = 0.0
+    for k, v in pinned.items():
+        cap[k] = v  # an explicit checkpoint may exceed the cruise limit on purpose
+
+    # Per-step acceleration limits; linear-ramp legs follow their own curve instead.
+    acc = [settings.accel_ms2] * (n - 1)
+    dec = [settings.decel_ms2] * (n - 1)
+    warnings: list[str] = []
+    for i, leg in enumerate(legs):
+        if leg.ramp != "linear":
+            continue
+        ka, kb = wp_node[i], wp_node[i + 1]
+        # Unpinned ends take the cap already there (the lower of the adjacent cruise speeds).
+        v0 = pinned.get(ka, cap[ka])
+        v1 = pinned.get(kb, cap[kb])
+        length = cum[kb] - cum[ka]
+        if length <= 0:
+            continue
+        if v0 <= MIN_MOVING_SPEED and v1 <= MIN_MOVING_SPEED:
+            raise ValueError(
+                f"Leg {i + 1} uses a linear ramp but its speed is 0 at both ends, so it would never move. "
+                "Give one end a speed or use the acceleration ramp."
+            )
+        for k in range(ka, kb + 1):
+            f = (cum[k] - cum[ka]) / length
+            cap[k] = math.sqrt(max(v0 * v0 + (v1 * v1 - v0 * v0) * f, 0.0))
+        for k in range(ka, kb):
+            acc[k] = inf
+            dec[k] = inf
+
+    # --- 3. forward / backward passes ------------------------------------------------------------
+    v = cap[:]
+    v[0] = min(v[0], cap[0])
+    for k in range(n - 1):
+        lim = math.sqrt(v[k] * v[k] + 2 * acc[k] * ds[k]) if acc[k] != inf else inf
+        v[k + 1] = min(v[k + 1], lim)
+    for k in range(n - 2, -1, -1):
+        lim = math.sqrt(v[k + 1] * v[k + 1] + 2 * dec[k] * ds[k]) if dec[k] != inf else inf
+        v[k] = min(v[k], lim)
+
+    for k, want in pinned.items():
+        if want - v[k] > 0.5 * KMH:
+            wi = wp_node.index(k)
+            warnings.append(
+                f"Waypoint {wi + 1}: requested {want * 3.6:.1f} km/h but only {v[k] * 3.6:.1f} km/h is "
+                "reachable with the current acceleration/deceleration. Raise them or move the waypoint."
+            )
+
+    # --- 4. integrate time ----------------------------------------------------------------------
+    dwell_at = {wp_node[i]: wp.dwell_s for i, wp in enumerate(waypoints) if wp.dwell_s > 0}
+    segments: list[Segment] = []
+    t = 0.0
+    node_arrival = [0.0] * n
+    for k in range(n):
+        node_arrival[k] = t
+        d = dwell_at.get(k, 0.0)
+        if d > 0:
+            segments.append(Segment(t, t + d, nodes[k], nodes[k], 0.0, 0.0, 0.0, cum[k]))
+            t += d
+        if k == n - 1:
+            break
+        if ds[k] <= 0:
+            continue
+        vs = v[k] + v[k + 1]
+        if vs < MIN_MOVING_SPEED:
+            leg_i = node_leg[k]
+            raise ValueError(
+                f"Leg {leg_i + 1}: the speed drops to 0 and never recovers (two stops in a row with no "
+                "speed in between). Give a waypoint between them a speed."
+            )
+        dt = 2 * ds[k] / vs
+        segments.append(Segment(t, t + dt, nodes[k], nodes[k + 1], v[k], v[k + 1], ds[k], cum[k]))
+        t += dt
+
+    if not segments:  # all waypoints on the same spot and no dwell
+        segments.append(Segment(0.0, 0.0, nodes[0], nodes[0], 0.0, 0.0, 0.0, 0.0))
+
+    return Timeline(segments, [node_arrival[k] for k in wp_node], warnings)
+
+
+def timeline_from_timed_points(points: Sequence[tuple[float, float, float]]) -> Timeline:
+    """Timeline that follows (t_seconds, lat, lon) points exactly, constant speed between them."""
+    if len(points) < 1:
+        raise ValueError("No points")
+    pts = sorted(points, key=lambda p: p[0])
+    t_base = pts[0][0]
+    segments: list[Segment] = []
+    s0 = 0.0
+    for (ta, la, oa), (tb, lb, ob) in zip(pts, pts[1:]):
+        a, b = (la, oa), (lb, ob)
+        d = geo.haversine_m(a, b)
+        dur = tb - ta
+        if dur <= 0:
+            # Same timestamp: jump (rare in real files). Model as an instant move.
+            segments.append(Segment(ta - t_base, ta - t_base, a, b, 0.0, 0.0, d, s0))
+        else:
+            sp = d / dur
+            segments.append(Segment(ta - t_base, tb - t_base, a, b, sp, sp, d, s0))
+        s0 += d
+    if not segments:
+        p = (pts[0][1], pts[0][2])
+        segments.append(Segment(0.0, 0.0, p, p, 0.0, 0.0, 0.0, 0.0))
+    return Timeline(segments)
+
+
+def _legs_with_ends(waypoints: Sequence[Waypoint], legs: Sequence[Leg]):
+    for i, leg in enumerate(legs):
+        yield waypoints[i], waypoints[i + 1], leg
+
+
+def _leg_points(wa: Waypoint, wb: Waypoint, leg: Leg) -> list[geo.LatLon]:
+    """Leg geometry, guaranteed to start and end exactly at its waypoints."""
+    a, b = (wa.lat, wa.lon), (wb.lat, wb.lon)
+    pts = [tuple(p) for p in leg.points] if leg.points else []
+    if not pts:
+        return [a, b]
+    if geo.haversine_m(pts[0], a) > 0.01:
+        pts.insert(0, a)
+    else:
+        pts[0] = a
+    if geo.haversine_m(pts[-1], b) > 0.01:
+        pts.append(b)
+    else:
+        pts[-1] = b
+    return pts  # type: ignore[return-value]

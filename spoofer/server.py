@@ -1,0 +1,411 @@
+"""Local web server: serves the map UI and the JSON API it uses."""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from collections import OrderedDict
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Literal, Optional
+
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from . import __version__, geo, routing
+from .device.base import DeviceDriver, DeviceError
+from .device.cli import CliDriver
+from .device.mock import MockDriver
+from .device.pmd3 import Pmd3Driver
+from .gpx_io import parse_gpx, safe_filename, write_gpx
+from .player import Player
+from .profile import Leg, ProfileSettings, Timeline, Waypoint, build_timeline, timeline_from_timed_points
+from .store import Store
+
+log = logging.getLogger(__name__)
+STATIC = Path(__file__).parent / "static"
+MAX_UPLOAD = 20 * 1024 * 1024
+PREVIEW_POINTS = 4000
+
+
+# ---------------------------------------------------------------- state
+class AppState:
+    def __init__(self) -> None:
+        self.drivers: dict[str, DeviceDriver] = {d.key: d for d in (Pmd3Driver(), CliDriver(), MockDriver())}
+        self.driver_key = "pmd3"
+        self.player = Player(lambda: self.driver)
+        self.timelines: "OrderedDict[str, tuple[Timeline, str, list]]" = OrderedDict()
+        self.store = Store()
+
+    @property
+    def driver(self) -> DeviceDriver:
+        return self.drivers[self.driver_key]
+
+    def keep_timeline(self, tl: Timeline, name: str, waypoints: list) -> str:
+        tid = uuid.uuid4().hex[:12]
+        self.timelines[tid] = (tl, name, waypoints)
+        while len(self.timelines) > 20:
+            self.timelines.popitem(last=False)
+        return tid
+
+    def get_timeline(self, tid: str) -> tuple[Timeline, str, list]:
+        try:
+            return self.timelines[tid]
+        except KeyError:
+            raise HTTPException(404, "That route is no longer in memory. Build it again.") from None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    try:
+        await app.state.s.player.stop()
+        for d in app.state.s.drivers.values():
+            await d.disconnect()
+    finally:
+        await routing.close()
+
+
+app = FastAPI(title="iPhone Location Spoofer", version=__version__, lifespan=lifespan)
+app.state.s = AppState()
+
+
+def S() -> AppState:
+    return app.state.s
+
+
+@app.exception_handler(DeviceError)
+async def _device_error(_: Request, exc: DeviceError):
+    return JSONResponse({"detail": str(exc)}, status_code=409)
+
+
+@app.exception_handler(routing.RoutingError)
+async def _routing_error(_: Request, exc: routing.RoutingError):
+    return JSONResponse({"detail": str(exc)}, status_code=502)
+
+
+@app.exception_handler(ValueError)
+async def _value_error(_: Request, exc: ValueError):
+    return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+# ---------------------------------------------------------------- models
+class LatLonIn(BaseModel):
+    lat: float
+    lon: float
+
+
+class TextIn(BaseModel):
+    text: str
+
+
+class ConnectIn(BaseModel):
+    driver: Literal["pmd3", "cli", "mock"] = "pmd3"
+    udid: Optional[str] = None
+
+
+class WaypointIn(BaseModel):
+    lat: float
+    lon: float
+    name: Optional[str] = None
+    speed_kmh: Optional[float] = Field(None, ge=0, le=5000)
+    dwell_s: float = Field(0, ge=0, le=86400)
+
+
+class LegIn(BaseModel):
+    mode: Literal["car", "bike", "foot", "sea", "straight"] = "foot"
+    cruise_kmh: Optional[float] = Field(None, gt=0, le=5000)
+    ramp: Literal["accel", "linear"] = "accel"
+
+
+class SettingsIn(BaseModel):
+    default_cruise_kmh: float = Field(5.0, gt=0, le=5000)
+    accel_ms2: float = Field(1.0, gt=0, le=100)
+    decel_ms2: float = Field(1.0, gt=0, le=100)
+    start_from_rest: bool = True
+    stop_at_end: bool = True
+
+    def to_profile(self) -> ProfileSettings:
+        return ProfileSettings(
+            default_cruise_kmh=self.default_cruise_kmh,
+            accel_ms2=self.accel_ms2,
+            decel_ms2=self.decel_ms2,
+            start_from_rest=self.start_from_rest,
+            stop_at_end=self.stop_at_end,
+        )
+
+
+class RouteIn(BaseModel):
+    name: str = "Route"
+    waypoints: list[WaypointIn] = Field(min_length=2, max_length=500)
+    legs: list[LegIn]
+    settings: SettingsIn = SettingsIn()
+    closed: bool = False  # add a final leg back to the start
+
+
+class TrackIn(BaseModel):
+    name: str = "Imported track"
+    points: list[tuple[float, float, Optional[float]]] = Field(min_length=1, max_length=500_000)
+    use_times: bool = True
+    reverse: bool = False
+    cruise_kmh: float = Field(5.0, gt=0, le=5000)
+    settings: SettingsIn = SettingsIn()
+
+
+class PlayerOptionsIn(BaseModel):
+    multiplier: Optional[float] = None
+    loop: Optional[Literal["once", "loop", "pingpong"]] = None
+    jitter_m: Optional[float] = None
+    tick_s: Optional[float] = None
+
+
+class SeekIn(BaseModel):
+    t: float
+
+
+class JoystickIn(BaseModel):
+    moving: bool
+    bearing: Optional[float] = None
+    speed_kmh: Optional[float] = None
+
+
+# ---------------------------------------------------------------- helpers
+def timeline_payload(tid: str, tl: Timeline, legs_geometry: list[list[list[float]]] | None = None) -> dict:
+    interval = max(1.0, tl.duration / PREVIEW_POINTS)
+    samples = tl.sample(interval)
+    return {
+        "id": tid,
+        "summary": tl.summary(),
+        "legs": legs_geometry,
+        "preview": [[round(p.t, 2), round(p.lat, 7), round(p.lon, 7), round(p.speed_ms * 3.6, 2)] for p in samples],
+    }
+
+
+# ---------------------------------------------------------------- device
+@app.get("/api/status")
+async def status():
+    s = S()
+    d = s.driver
+    return {
+        "version": __version__,
+        "driver": s.driver_key,
+        "drivers": [{"key": k, "label": v.label, "live": v.live} for k, v in s.drivers.items()],
+        "device": d.info.to_dict() if d.info else None,
+        "live": d.live,
+        "player": s.player.status(),
+    }
+
+
+@app.get("/api/devices")
+async def devices(driver: Literal["pmd3", "cli", "mock"] = "pmd3"):
+    return {"devices": await S().drivers[driver].list_devices()}
+
+
+@app.post("/api/connect")
+async def connect(body: ConnectIn):
+    s = S()
+    await s.player.stop()
+    if body.driver != s.driver_key:
+        await s.driver.disconnect()
+        s.driver_key = body.driver
+    info = await s.driver.connect(body.udid or None)
+    return {"device": info.to_dict()}
+
+
+@app.post("/api/disconnect")
+async def disconnect():
+    s = S()
+    await s.player.stop()
+    await s.driver.disconnect()
+    return {"ok": True}
+
+
+@app.post("/api/device/reveal-developer-mode")
+async def reveal_dev_mode():
+    return {"message": await S().driver.reveal_developer_mode()}
+
+
+@app.post("/api/device/mount")
+async def mount():
+    return {"message": await S().driver.mount_developer_image()}
+
+
+# ---------------------------------------------------------------- location
+@app.post("/api/location/set")
+async def set_location(body: LatLonIn):
+    return await S().player.teleport(body.lat, body.lon)
+
+
+@app.post("/api/location/clear")
+async def clear_location():
+    await S().player.clear()
+    return {"ok": True}
+
+
+@app.post("/api/parse-coords")
+async def parse_coords(body: TextIn):
+    lat, lon = geo.parse_coordinates(body.text)
+    return {"lat": lat, "lon": lon}
+
+
+@app.get("/api/geocode")
+async def geocode(q: str):
+    return {"results": await routing.geocode(q)}
+
+
+@app.get("/api/reverse")
+async def reverse(lat: float, lon: float):
+    return {"name": await routing.reverse_geocode(lat, lon)}
+
+
+# ---------------------------------------------------------------- routes
+@app.post("/api/route/build")
+async def build_route(body: RouteIn):
+    wps = list(body.waypoints)
+    legs_in = list(body.legs)
+    if body.closed:
+        wps.append(wps[0].model_copy())
+        if len(legs_in) == len(body.waypoints) - 1:
+            legs_in.append(legs_in[-1].model_copy() if legs_in else LegIn())
+    if len(legs_in) != len(wps) - 1:
+        raise HTTPException(400, f"Expected {len(wps) - 1} legs, got {len(legs_in)}")
+    for w in wps:
+        geo.validate_latlon(w.lat, w.lon)
+
+    legs: list[Leg] = []
+    geometry: list[list[list[float]]] = []
+    for i, li in enumerate(legs_in):
+        a, b = (wps[i].lat, wps[i].lon), (wps[i + 1].lat, wps[i + 1].lon)
+        try:
+            pts = await routing.route(a, b, li.mode)
+        except routing.RoutingError as e:
+            raise routing.RoutingError(f"Leg {i + 1} ({li.mode}): {e}") from e
+        legs.append(Leg(points=pts, cruise_kmh=li.cruise_kmh, ramp=li.ramp))
+        geometry.append([[round(p[0], 7), round(p[1], 7)] for p in pts])
+
+    tl = build_timeline(
+        [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s) for w in wps], legs, body.settings.to_profile()
+    )
+    names = [(w.lat, w.lon, w.name or f"Checkpoint {i + 1}") for i, w in enumerate(wps)]
+    tid = S().keep_timeline(tl, body.name, names)
+    return timeline_payload(tid, tl, geometry)
+
+
+@app.post("/api/gpx/import")
+async def gpx_import(file: UploadFile = File(...)):
+    data = await file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, "GPX file is larger than 20 MB")
+    tracks = parse_gpx(data)
+    out = []
+    for tr in tracks:
+        t0 = next((p.time for p in tr.points if p.time is not None), None)
+        out.append(
+            {
+                "name": tr.name,
+                "kind": tr.kind,
+                "timed": tr.timed,
+                "points": [
+                    [p.lat, p.lon, (p.time - t0).total_seconds() if (p.time and t0) else None] for p in tr.points
+                ],
+                "names": [p.name for p in tr.points],
+            }
+        )
+    return {"filename": file.filename, "tracks": out}
+
+
+@app.post("/api/gpx/timeline")
+async def gpx_timeline(body: TrackIn):
+    pts = list(body.points)
+    for lat, lon, _ in pts:
+        geo.validate_latlon(lat, lon)
+    timed = len(pts) > 1 and all(p[2] is not None for p in pts)
+    if body.reverse:
+        if timed:
+            end = max(p[2] for p in pts)  # type: ignore[type-var]
+            pts = [(lat, lon, end - t) for lat, lon, t in reversed(pts)]  # type: ignore[operator]
+        else:
+            pts = list(reversed(pts))
+    if body.use_times and timed:
+        if any(b[2] < a[2] for a, b in zip(pts, pts[1:])):  # type: ignore[operator]
+            raise ValueError("The GPX timestamps are not in order; untick 'Use the file's timestamps'.")
+        tl = timeline_from_timed_points([(t, lat, lon) for lat, lon, t in pts])  # type: ignore[misc]
+    else:
+        if len(pts) < 2:
+            raise ValueError("Need at least two points to make a route")
+        ends = [Waypoint(pts[0][0], pts[0][1]), Waypoint(pts[-1][0], pts[-1][1])]
+        leg = Leg(points=[(p[0], p[1]) for p in pts], cruise_kmh=body.cruise_kmh)
+        tl = build_timeline(ends, [leg], body.settings.to_profile())
+    tid = S().keep_timeline(tl, body.name, [])
+    return timeline_payload(tid, tl, [[[round(p[0], 7), round(p[1], 7)] for p in pts]])
+
+
+@app.get("/api/gpx/export/{tid}")
+async def gpx_export(tid: str, interval: float = 1.0):
+    if not 0.2 <= interval <= 60:
+        raise HTTPException(400, "interval must be 0.2-60 s")
+    tl, name, wps = S().get_timeline(tid)
+    if tl.duration / interval > 1_000_000:
+        raise HTTPException(400, "That would be more than a million points; use a larger interval.")
+    text = write_gpx(tl.sample(interval), name=name, waypoints=wps)
+    fname = safe_filename(name) + ".gpx"
+    return Response(
+        text,
+        media_type="application/gpx+xml",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ---------------------------------------------------------------- player
+@app.post("/api/player/load/{tid}")
+async def player_load(tid: str):
+    tl, name, _ = S().get_timeline(tid)
+    await S().player.load(tl, name)
+    return S().player.status()
+
+
+@app.post("/api/player/{action}")
+async def player_action(action: Literal["play", "pause", "resume", "stop"]):
+    p = S().player
+    await getattr(p, action)()
+    return p.status()
+
+
+@app.post("/api/player-seek")
+async def player_seek(body: SeekIn):
+    await S().player.seek(body.t)
+    return S().player.status()
+
+
+@app.post("/api/player-options")
+async def player_options(body: PlayerOptionsIn):
+    await S().player.set_options(body.multiplier, body.loop, body.jitter_m, body.tick_s)
+    return S().player.status()
+
+
+@app.post("/api/joystick")
+async def joystick(body: JoystickIn):
+    await S().player.joystick(body.moving, body.bearing, body.speed_kmh)
+    return S().player.status()
+
+
+# ---------------------------------------------------------------- storage
+@app.get("/api/store")
+async def store_get():
+    return S().store.load()
+
+
+@app.put("/api/store")
+async def store_put(body: dict):
+    return S().store.save(body)
+
+
+# ---------------------------------------------------------------- UI
+@app.get("/")
+async def index():
+    return FileResponse(STATIC / "index.html")
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
