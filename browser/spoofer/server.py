@@ -97,6 +97,22 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="iPhone Location Spoofer", version=__version__, lifespan=lifespan)
+
+
+_LOCAL_HOSTS = ("127.0.0.1", "localhost")
+
+
+def _is_local_request(host: str, origin: str) -> bool:
+    """Only the app's own page may use the API: blocks other websites and DNS rebinding."""
+    host_ok = any(host == h or host.startswith(h + ":") for h in _LOCAL_HOSTS)
+    return host_ok and (not origin or origin == f"http://{host}")
+
+
+@app.middleware("http")
+async def _local_only(request: Request, call_next):
+    if not _is_local_request(request.headers.get("host", ""), request.headers.get("origin", "")):
+        return Response("forbidden", status_code=403)
+    return await call_next(request)
 app.state.s = AppState()
 
 

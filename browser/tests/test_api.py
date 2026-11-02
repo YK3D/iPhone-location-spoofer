@@ -12,7 +12,7 @@ def client(tmp_path, monkeypatch):
 
     server.app.state.s = server.AppState()
     server.app.state.s.store = Store(tmp_path / "data.json")
-    with TestClient(server.app) as c:
+    with TestClient(server.app, base_url="http://127.0.0.1:8765") as c:
         yield c
 
 
@@ -177,3 +177,13 @@ def test_closed_route_return_point_has_no_dwell(client):
     times = r.json()["summary"]["waypoint_times_s"]
     # total duration ends at arrival back at the start: no extra 30 s wait at the end
     assert r.json()["summary"]["duration_s"] == pytest.approx(times[-1], abs=0.2)
+
+
+def test_rejects_other_sites():
+    from spoofer.server import _is_local_request
+
+    assert _is_local_request("127.0.0.1:8765", "")
+    assert _is_local_request("localhost:8765", "http://localhost:8765")
+    assert not _is_local_request("127.0.0.1:8765", "https://evil.example")
+    assert not _is_local_request("evil.example:8765", "")
+    assert not _is_local_request("127.0.0.1.evil.example", "")

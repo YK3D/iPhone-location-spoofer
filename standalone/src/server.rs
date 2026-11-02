@@ -132,8 +132,38 @@ pub fn router(app: App) -> Router {
         .route("/api/google/tile-session", post(google_tile_session))
         .route("/api/google/copyright", get(google_copyright))
         .route("/api/store", get(store_get).put(store_put))
+        .route("/api/app/quit", post(app_quit))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
+        .layer(axum::middleware::from_fn(local_only))
         .with_state(app)
+}
+
+/// Only answer the app's own window: blocks other websites (cross-site requests) and
+/// DNS-rebinding pages from using the local API.
+async fn local_only(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let ok = {
+        let h = req.headers();
+        let get = |n: header::HeaderName| h.get(n).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let host = get(header::HOST);
+        let origin = get(header::ORIGIN);
+        let host_ok = ["127.0.0.1", "localhost"]
+            .iter()
+            .any(|n| host == *n || host.strip_prefix(n).is_some_and(|r| r.starts_with(':')));
+        host_ok && (origin.is_empty() || origin == format!("http://{host}"))
+    };
+    if !ok {
+        return (StatusCode::FORBIDDEN, "forbidden").into_response();
+    }
+    next.run(req).await
+}
+
+/// Lets a newer copy of the app close an older one that still holds the port.
+async fn app_quit() -> R {
+    tokio::spawn(async {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        std::process::exit(0);
+    });
+    Ok(Json(json!({"ok": true})))
 }
 
 async fn index() -> Response {

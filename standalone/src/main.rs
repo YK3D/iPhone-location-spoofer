@@ -94,13 +94,28 @@ fn main() {
 
     // Single instance: if our app already listens on the port, just open another window on it.
     let existing = format!("http://127.0.0.1:{}/", args.port);
-    let (url, server_task) = match rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", args.port))) {
+    // A different version (for example an old copy still running in the background) is asked
+    // to quit; if it can't, this copy runs on its own port instead of showing the old one.
+    let bind = |port: u16| rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", port)));
+    let (url, server_task) = match bind(args.port) {
         Ok(listener) => start_server(&rt, listener, upd),
-        Err(_) if rt.block_on(is_our_app(&existing)) => (existing, None),
-        Err(_) => {
-            let listener = rt.block_on(tokio::net::TcpListener::bind(("127.0.0.1", 0))).expect("bind");
-            start_server(&rt, listener, upd)
-        }
+        Err(_) => match rt.block_on(running_version(&existing)) {
+            Some(v) if v == updater::current_version() => (existing, None),
+            Some(_) => {
+                rt.block_on(ask_to_quit(&existing));
+                let mut listener = None;
+                for _ in 0..25 {
+                    if let Ok(l) = bind(args.port) {
+                        listener = Some(l);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
+                let listener = listener.unwrap_or_else(|| bind(0).expect("bind"));
+                start_server(&rt, listener, upd)
+            }
+            None => start_server(&rt, bind(0).expect("bind"), upd),
+        },
     };
     tracing::info!("Location Spoofer running at {url}");
 
@@ -155,12 +170,15 @@ fn start_server(rt: &tokio::runtime::Runtime, listener: tokio::net::TcpListener,
     (format!("http://{addr}/"), Some(app))
 }
 
-async fn is_our_app(url: &str) -> bool {
-    let r = reqwest::Client::new().get(format!("{url}api/status")).timeout(std::time::Duration::from_secs(2)).send().await;
-    match r {
-        Ok(r) => r.json::<serde_json::Value>().await.map(|v| v["app"] == "standalone").unwrap_or(false),
-        Err(_) => false,
-    }
+/// The version of the Location Spoofer already listening at `url`, if it is one.
+async fn running_version(url: &str) -> Option<String> {
+    let r = reqwest::Client::new().get(format!("{url}api/status")).timeout(std::time::Duration::from_secs(2)).send().await.ok()?;
+    let v: serde_json::Value = r.json().await.ok()?;
+    (v["app"] == "standalone").then(|| v["version"].as_str().unwrap_or("").to_string())
+}
+
+async fn ask_to_quit(url: &str) {
+    let _ = reqwest::Client::new().post(format!("{url}api/app/quit")).timeout(std::time::Duration::from_secs(2)).send().await;
 }
 
 /// Exercise the build end to end without a phone; CI refuses to publish a build that fails.
@@ -282,12 +300,18 @@ mod gui {
             *control_flow = ControlFlow::Wait;
             let _keep = (&webview, &rt);
             match event {
-                Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => *control_flow = ControlFlow::Exit,
+                // Exit right away: waiting for background work to wind down could leave an
+                // invisible process holding the port.
+                Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                    *control_flow = ControlFlow::Exit;
+                    std::process::exit(0);
+                }
                 Event::UserEvent(UserEvent::Restart) => {
                     if let Some(app) = &app {
                         app.updater.relaunch(raw_args.clone());
                     }
                     *control_flow = ControlFlow::Exit;
+                    std::process::exit(0);
                 }
                 _ => {}
             }

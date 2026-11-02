@@ -20,6 +20,8 @@ Test builds from the `dev` branch are marked as pre-releases.
 ### Fixed
 - After clearing a route, the player at the bottom kept showing the old route. Clearing now unloads it, and the player hides its controls until something is loaded.
 - Removing a GPX file now also unloads its track from the player.
+- Opening a new version of the standalone app could show an older copy that was still running in the background (for example, always showing v0.1.1). A new version now closes an older running copy, or runs on its own if it can't; closing the window always ends the app.
+- The local server now only answers the app itself, so other websites open in your browser can't send it commands or read your settings (both editions).
 
 ### Changed
 - Both editions now live in one repository and share one interface. The standalone app is the recommended edition.

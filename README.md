@@ -81,6 +81,7 @@ Both editions have the same interface and features. They update themselves from 
 | "Developer Mode is off" | Device tools › Reveal Developer Mode, then turn it on in Settings on the iPhone |
 | Location doesn't change in an app | Check Apple Maps first, then fully close and reopen the app |
 | Location stays wrong after you finish | Press **Stop spoofing**, or restart the iPhone |
+| The app shows an older version number | An older copy is still running in the background. Close every Location Spoofer window, end any **location-spoofer** or **LocationSpooferStandalone** task in Task Manager, then open the new file. Version 0.2.4 and newer close older copies by themselves |
 
 ## Updates and test builds
 
