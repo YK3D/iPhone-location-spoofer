@@ -17,6 +17,25 @@ const el = (tag, props = {}, ...kids) => {
   return e;
 };
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+// An icon from the sprite in index.html (monochrome, follows the text colour).
+function svgIcon(name, cls = "ico") {
+  const s = document.createElementNS(SVG_NS, "svg");
+  s.setAttribute("class", cls);
+  s.setAttribute("aria-hidden", "true");
+  const u = document.createElementNS(SVG_NS, "use");
+  u.setAttribute("href", `#i-${name}`);
+  s.append(u);
+  return s;
+}
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+function errorText(data, status) {
+  let msg = data && data.detail !== undefined ? data.detail : data;
+  if (Array.isArray(msg)) msg = msg.map((d) => `${(d.loc || []).slice(1).join(".")}: ${d.msg}`).join("; ");
+  return typeof msg === "string" && msg ? msg : `Request failed (HTTP ${status})`;
+}
+
 async function api(path, opts = {}) {
   const init = { method: opts.method || (opts.body !== undefined ? "POST" : "GET"), headers: {} };
   if (opts.body instanceof FormData) init.body = opts.body;
@@ -27,12 +46,39 @@ async function api(path, opts = {}) {
   const r = await fetch(path, init);
   const ct = r.headers.get("content-type") || "";
   const data = ct.includes("json") ? await r.json() : await r.text();
-  if (!r.ok) {
-    let msg = data && data.detail !== undefined ? data.detail : data;
-    if (Array.isArray(msg)) msg = msg.map((d) => `${(d.loc || []).slice(1).join(".")}: ${d.msg}`).join("; ");
-    throw new Error(typeof msg === "string" && msg ? msg : `Request failed (HTTP ${r.status})`);
-  }
+  if (!r.ok) throw new Error(errorText(data, r.status));
   return data;
+}
+
+// POST that streams NDJSON progress lines ({type: "progress" | "result" | "error"}); returns the result.
+// A plain JSON answer (a validation error, or a server without streaming) is handled like api().
+async function apiStream(path, body, onProgress) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const ct = r.headers.get("content-type") || "";
+  if (!ct.includes("ndjson") || !r.body) {
+    const data = ct.includes("json") ? await r.json() : await r.text();
+    if (!r.ok) throw new Error(errorText(data, r.status));
+    return data;
+  }
+  const reader = r.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "", result = null;
+  const handle = (line) => {
+    if (!line.trim()) return;
+    const ev = JSON.parse(line);
+    if (ev.type === "progress") onProgress(ev);
+    else if (ev.type === "result") result = ev.data;
+    else if (ev.type === "error") throw new Error(ev.detail || `Request failed (HTTP ${ev.status})`);
+  };
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) >= 0) { handle(buf.slice(0, nl)); buf = buf.slice(nl + 1); }
+    if (done) { handle(buf + dec.decode()); break; }
+  }
+  if (!result) throw new Error("The route build stopped before it finished. Try again.");
+  return result;
 }
 
 let toastTimer;
@@ -127,10 +173,13 @@ const layerControl = L.control.layers(baseLayers).addTo(map);
 L.control.scale().addTo(map);
 
 const routeLayer = L.layerGroup().addTo(map);
+const wpLineLayer = L.layerGroup().addTo(map);
 const wpLayer = L.layerGroup().addTo(map);
 const gpxLayer = L.layerGroup().addTo(map);
 let pickMarker = null, deviceMarker = null, previewMarker = null, trailLine = null, realMarker = null, realCircle = null;
-const icon = (cls, html = "") => L.divIcon({ className: cls, html, iconSize: null });
+// Leaflet only centres a marker on its point when it knows the icon size (iconSize/iconAnchor);
+// without them the icon's top-left corner sat on the point, half an icon off the route.
+const icon = (cls, html = "", size = 14) => L.divIcon({ className: cls, html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
 
 map.on("click", (e) => {
   const lon = wrapLon(e.latlng.lng);
@@ -330,7 +379,7 @@ async function refreshDevices(userAsked = false) {
   try {
     const { devices } = await api(`/api/devices?driver=${driver}`);
     for (const d of devices) {
-      const label = `${d.name || "iPhone"}${d.ios_version ? ` (iOS ${d.ios_version})` : ""} — ${d.connection || ""}${d.error ? " ⚠" : ""}`;
+      const label = `${d.name || "iPhone"}${d.ios_version ? ` (iOS ${d.ios_version})` : ""} — ${d.connection || ""}${d.error ? " (needs attention)" : ""}`;
       sel.append(el("option", { value: d.udid, textContent: label, title: d.error || d.udid }));
     }
     if (keep && [...sel.options].some((o) => o.value === keep)) sel.value = keep;
@@ -379,7 +428,7 @@ function renderDevice(st) {
   $("btn-disconnect").hidden = !d;
   if (d) {
     box.className = "status ok";
-    box.textContent = `● ${d.name}${d.ios_version ? ` · iOS ${d.ios_version}` : ""} · ${d.transport}`;
+    box.textContent = `${d.name}${d.ios_version ? ` · iOS ${d.ios_version}` : ""} · ${d.transport}`;
     $("driver").value = st.driver;
     chip.className = "chip ok"; chip.textContent = d.name;
     $("dev-summary").textContent = `Connected · ${d.name}`;
@@ -405,7 +454,7 @@ function showRealLocation(afterStop = false) {
       const ll = [pos.coords.latitude, pos.coords.longitude];
       if (realMarker) { map.removeLayer(realMarker); map.removeLayer(realCircle); }
       realCircle = L.circle(ll, { radius: Math.min(pos.coords.accuracy || 50, 5000), color: "#1a73e8", weight: 1, fillOpacity: 0.12, interactive: false }).addTo(map);
-      realMarker = L.marker(ll, { icon: icon("real-icon"), zIndexOffset: 900, title: "Your real location" }).addTo(map)
+      realMarker = L.marker(ll, { icon: icon("real-icon", "", 18), zIndexOffset: 900, title: "Your real location" }).addTo(map)
         .bindPopup(`<b>Your real location</b><br>Approximate position of this computer (±${Math.round(pos.coords.accuracy || 0)} m). The iPhone doesn't share its own GPS over USB.`);
       map.setView(ll, Math.max(map.getZoom(), 15));
       if (afterStop) realMarker.openPopup();
@@ -422,7 +471,7 @@ $("btn-locate").onclick = guard(() => showRealLocation(false));
 // ------------------------------------------------------------------ teleport
 function setPicked(lat, lon, pan = true) {
   state.picked = [lat, lon];
-  if (!pickMarker) pickMarker = L.marker([lat, lon], { icon: icon("pick-icon"), draggable: true })
+  if (!pickMarker) pickMarker = L.marker([lat, lon], { icon: icon("pick-icon", "", 14), draggable: true })
     .on("dragend", (e) => { const p = e.target.getLatLng(); setPicked(p.lat, wrapLon(p.lng), false); })
     .addTo(map);
   else pickMarker.setLatLng([lat, lon]);
@@ -520,12 +569,14 @@ $("route-link").addEventListener("keydown", (e) => { if (e.key === "Enter") $("b
 // ------------------------------------------------------------------ route builder
 function defaultLeg() { return { mode: $("default-mode").value, cruise_kmh: null, ramp: "accel" }; }
 function addWaypoint(lat, lon, extra = {}) {
-  state.waypoints.push({ id: nextId++, lat, lon, name: "", speed_kmh: null, dwell_s: 0, leg: defaultLeg(), ...extra });
+  const w = { id: nextId++, lat, lon, name: "", speed_kmh: null, dwell_s: 0, leg: defaultLeg(), ...extra };
+  state.waypoints.push(w);
   invalidateBuilt();
-  renderWaypoints();
+  renderWaypoints({ appear: w.id });
 }
 // A route changed: the built route (and the player) no longer match it.
 function invalidateBuilt() {
+  state.routeRev = (state.routeRev || 0) + 1;
   if (state.builtSource !== "route") return;
   const hadRoute = !!state.built;
   routeLayer.clearLayers();
@@ -533,7 +584,9 @@ function invalidateBuilt() {
   $("sec-route-result").hidden = true;
   $("speed-legend").hidden = true;
   state.built = null;
+  state.options = null;
   stopPreview();
+  drawCheckpointLine();
   const p = state.status && state.status.player;
   if (hadRoute && state.loaded === "route" && p && !["playing", "joystick"].includes(p.state)) unloadPlayer();
 }
@@ -543,23 +596,138 @@ async function unloadPlayer() {
   clearTrail();
   await poll();
 }
-function renderWaypoints() {
-  const list = $("waypoints");
-  list.replaceChildren();
-  wpLayer.clearLayers();
+// Restart a CSS animation class on an element (press / settle / appear effects).
+function flash(elm, cls) {
+  if (!elm) return;
+  elm.classList.remove(cls);
+  void elm.offsetWidth;
+  elm.classList.add(cls);
+  elm.addEventListener("animationend", () => elm.classList.remove(cls), { once: true });
+}
+
+// ---- checkpoint markers: kept by id, so a dropped marker can finish its settle animation
+const wpMarkers = new Map();
+const wpById = (id) => state.waypoints.find((x) => x.id === id);
+function wireMarker(m, id) {
+  const elm = () => m.getElement();
+  m.on("add", () => {
+    const e = elm();
+    e.addEventListener("pointerdown", (ev) => { if (ev.button === 0) e.classList.add("pressed"); });
+  });
+  m.on("dragstart", () => { const e = elm(); e.classList.remove("pressed"); e.classList.add("lifted"); });
+  m.on("drag", () => { if (!state.built) drawCheckpointLine(id, m.getLatLng()); });
+  m.on("dragend", () => {
+    const e = elm();
+    e.classList.remove("lifted");
+    flash(e, "settle");
+    const w = wpById(id);
+    if (!w) return;
+    const p = m.getLatLng();
+    w.lat = p.lat; w.lon = wrapLon(p.lng);
+    if (w.lon !== p.lng) m.setLatLng([w.lat, w.lon]);
+    invalidateBuilt();
+    renderWaypoints();
+  });
+}
+window.addEventListener("pointerup", () => document.querySelectorAll(".wp-icon.pressed").forEach((e) => e.classList.remove("pressed")));
+function syncMarkers(appearId) {
+  const seen = new Set();
+  state.waypoints.forEach((w, i) => {
+    seen.add(w.id);
+    const label = String(i + 1);
+    const title = w.name || `Checkpoint ${i + 1}`;
+    let m = wpMarkers.get(w.id);
+    if (!m) {
+      m = L.marker([w.lat, w.lon], { draggable: true, autoPan: true, title, riseOnHover: true,
+        icon: icon("wp-icon", `<div class="wp-pin">${label}</div>`, 24) });
+      wireMarker(m, w.id);
+      m.addTo(wpLayer);
+      wpMarkers.set(w.id, m);
+      if (appearId === w.id) flash(m.getElement(), "appear");
+      return;
+    }
+    const ll = m.getLatLng();
+    if (ll.lat !== w.lat || ll.lng !== w.lon) m.setLatLng([w.lat, w.lon]);
+    const e = m.getElement();
+    const pin = e && e.querySelector(".wp-pin");
+    if (pin && pin.textContent !== label) pin.textContent = label;
+    if (e) e.title = title;
+  });
+  for (const [id, m] of wpMarkers) if (!seen.has(id)) { wpLayer.removeLayer(m); wpMarkers.delete(id); }
+}
+function markerHot(id, on) {
+  const m = wpMarkers.get(id);
+  if (m && m.getElement()) m.getElement().classList.toggle("hot", on);
+}
+// Dashed straight lines between checkpoints, shown until a route is built.
+function drawCheckpointLine(movingId, movingLatLng) {
+  wpLineLayer.clearLayers();
+  if (state.built && state.builtSource === "route") return;
+  const pts = state.waypoints.map((w) => (w.id === movingId && movingLatLng ? [movingLatLng.lat, movingLatLng.lng] : [w.lat, w.lon]));
+  if ($("closed").checked && pts.length > 1) pts.push(pts[0]);
+  if (pts.length > 1) L.polyline(pts, { color: "#6b7280", weight: 2, dashArray: "4 6", interactive: false }).addTo(wpLineLayer);
+}
+
+// ---- checkpoint list
+const wpList = $("waypoints");
+function captureRects() {
+  const m = new Map();
+  wpList.querySelectorAll(":scope > li.wp").forEach((li) => m.set(li.dataset.id, li.getBoundingClientRect()));
+  return m;
+}
+// FLIP: rows start where they were drawn before the change and glide to their new place.
+function playFlip(first, settleId) {
+  const moved = [];
+  wpList.querySelectorAll(":scope > li.wp").forEach((li) => {
+    const a = first.get(li.dataset.id);
+    if (!a) return;
+    const dy = a.top - li.getBoundingClientRect().top;
+    if (Math.abs(dy) < 0.5) return;
+    li.style.transition = "none";
+    li.style.translate = `0 ${dy}px`;
+    moved.push(li);
+  });
+  if (settleId != null) flash(wpList.querySelector(`:scope > li.wp[data-id="${settleId}"]`), "settle");
+  if (!moved.length) return;
+  void wpList.offsetHeight;
+  for (const li of moved) {
+    li.style.transition = "";
+    li.classList.add("shift");
+    li.style.translate = "";
+    li.addEventListener("transitionend", () => li.classList.remove("shift"), { once: true });
+  }
+}
+function moveWaypoint(from, to) {
+  if (from === to || to < 0 || to >= state.waypoints.length) return;
+  const [w] = state.waypoints.splice(from, 1);
+  state.waypoints.splice(to, 0, w);
+  invalidateBuilt();
+  renderWaypoints({ flip: true, settle: w.id });
+}
+function removeWaypoint(id) {
+  const i = state.waypoints.findIndex((x) => x.id === id);
+  if (i < 0) return;
+  state.waypoints.splice(i, 1);
+  invalidateBuilt();
+  renderWaypoints({ flip: true });
+}
+function renderWaypoints(opts = {}) {
+  const first = opts.flip ? captureRects() : null;
+  const focusedGrip = document.activeElement && document.activeElement.classList.contains("wp-grip")
+    ? document.activeElement.closest("li.wp").dataset.id : null;
+  wpList.replaceChildren();
   const n = state.waypoints.length;
   const closed = $("closed").checked;
   $("wp-count").textContent = n ? `${n} checkpoint${n > 1 ? "s" : ""}` : "";
-  if (!n) list.append(el("li", { class: "hint", textContent: "No checkpoints yet — click the map." }));
+  if (!n) wpList.append(el("li", { class: "hint", textContent: "No checkpoints yet — click the map." }));
   state.waypoints.forEach((w, i) => {
     const change = (fn) => (e) => { fn(e.target); invalidateBuilt(); };
-    const move = (j) => () => { [state.waypoints[j], state.waypoints[i]] = [state.waypoints[i], state.waypoints[j]]; invalidateBuilt(); renderWaypoints(); };
-    const head = el("div", { class: "wp-head" },
-      el("span", { class: "wp-num", textContent: i + 1 }),
+    const grip = el("button", { type: "button", class: "wp-grip", title: "Drag to reorder (or focus and press the arrow keys)",
+      "aria-label": `Move checkpoint ${i + 1}. Use the up and down arrow keys.` }, svgIcon("grip"));
+    const num = el("span", { class: "wp-num", textContent: i + 1, title: "Drag to reorder" });
+    const head = el("div", { class: "wp-head" }, grip, num,
       el("input", { value: w.name, placeholder: fmtLL(w.lat, w.lon), title: "Name", "aria-label": "Checkpoint name", oninput: (e) => (w.name = e.target.value) }),
-      el("button", { textContent: "↑", title: "Move up", disabled: i === 0, onclick: move(i - 1) }),
-      el("button", { textContent: "↓", title: "Move down", disabled: i === n - 1, onclick: move(i + 1) }),
-      el("button", { textContent: "✕", title: "Remove", onclick: () => { state.waypoints.splice(i, 1); invalidateBuilt(); renderWaypoints(); } }),
+      el("button", { type: "button", class: "wp-del", title: "Remove", "aria-label": `Remove checkpoint ${i + 1}`, onclick: () => removeWaypoint(w.id) }, svgIcon("x")),
     );
     const fields = el("div", { class: "wp-fields" },
       el("label", {}, "Speed here (km/h)",
@@ -570,7 +738,7 @@ function renderWaypoints() {
         el("input", { type: "number", min: 0, step: 1, value: w.dwell_s || "", placeholder: "0", title: "Stop and wait this long",
           onchange: change((t) => (w.dwell_s = Math.max(0, +t.value || 0))) })),
     );
-    const li = el("li", { class: "wp" }, head, fields);
+    const li = el("li", { class: "wp", dataset: { id: w.id } }, head, fields);
     if (i < n - 1 || (closed && n > 1)) {
       const modeSel = el("select", { title: "How this leg is routed", "aria-label": "Leg routing", onchange: change((t) => { w.leg.mode = t.value; }) },
         ...Object.entries(MODE_LABEL).map(([k, v]) => el("option", { value: k, textContent: v, selected: w.leg.mode === k })));
@@ -583,24 +751,117 @@ function renderWaypoints() {
         el("option", { value: "linear", textContent: "Even ramp", selected: w.leg.ramp === "linear" }));
       li.append(el("div", { class: "leg", title: `Leg ${i + 1} → ${i + 2 > n ? 1 : i + 2}` }, modeSel, cruise, ramp));
     }
-    list.append(li);
-    L.marker([w.lat, w.lon], { draggable: true, icon: icon("wp-icon", String(i + 1)), title: w.name || `Checkpoint ${i + 1}` })
-      .on("dragend", (e) => { const p = e.target.getLatLng(); w.lat = p.lat; w.lon = wrapLon(p.lng); invalidateBuilt(); renderWaypoints(); })
-      .addTo(wpLayer);
+    for (const h of [grip, num]) h.addEventListener("pointerdown", (e) => startSort(e, li, h));
+    grip.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      e.preventDefault();
+      const at = state.waypoints.findIndex((x) => x.id === w.id);
+      moveWaypoint(at, at + (e.key === "ArrowUp" ? -1 : 1));
+    });
+    li.addEventListener("mouseenter", () => markerHot(w.id, true));
+    li.addEventListener("mouseleave", () => markerHot(w.id, false));
+    if (opts.appear === w.id) flash(li, "settle");
+    wpList.append(li);
   });
-  if (!state.built || state.builtSource !== "route") {
-    const pts = state.waypoints.map((w) => [w.lat, w.lon]);
-    if (closed && pts.length > 1) pts.push(pts[0]);
-    if (pts.length > 1) L.polyline(pts, { color: "#888", weight: 2, dashArray: "4 6", interactive: false }).addTo(wpLayer);
-  }
+  if (first) playFlip(first, opts.settle);
+  if (focusedGrip) { const g = wpList.querySelector(`li.wp[data-id="${focusedGrip}"] .wp-grip`); if (g) g.focus(); }
+  syncMarkers(opts.appear);
+  drawCheckpointLine();
   renderRouteSettingsSub();
 }
+
+// ---- drag to reorder: rows slide out of the way while you drag, then everything glides into place
+let sortDrag = null;
+function startSort(e, li, handle) {
+  if (e.button !== 0 || sortDrag || state.waypoints.length < 2) return;
+  e.preventDefault();
+  handle.setPointerCapture(e.pointerId);
+  const sidebar = $("sidebar");
+  const scroller = sidebar.scrollHeight > sidebar.clientHeight + 1 ? sidebar : document.scrollingElement;
+  const items = [...wpList.querySelectorAll(":scope > li.wp")];
+  li.classList.add("pressed");
+  sortDrag = { li, handle, items, index: items.indexOf(li), target: items.indexOf(li), pointerId: e.pointerId,
+    startY: e.clientY, y: e.clientY, scroller, startScroll: scroller.scrollTop, started: false, raf: 0 };
+  handle.addEventListener("pointermove", onSortMove);
+  handle.addEventListener("pointerup", onSortEnd);
+  handle.addEventListener("pointercancel", onSortEnd);
+  handle.addEventListener("lostpointercapture", onSortEnd);
+}
+function onSortMove(e) {
+  const d = sortDrag;
+  if (!d || e.pointerId !== d.pointerId) return;
+  d.y = e.clientY;
+  if (d.started || Math.abs(d.y - d.startY) < 4) return;
+  d.started = true;
+  const top = d.scroller.scrollTop;
+  d.rects = d.items.map((it) => { const r = it.getBoundingClientRect(); return { top: r.top + top, h: r.height }; });
+  d.li.classList.remove("pressed");
+  d.li.classList.add("dragging");
+  wpList.classList.add("sorting");
+  d.items.forEach((it) => { if (it !== d.li) it.classList.add("shift"); });
+  d.raf = requestAnimationFrame(sortFrame);
+}
+function sortFrame() {
+  const d = sortDrag;
+  if (!d || !d.started) return;
+  // scroll the side menu when the row is dragged close to its visible top or bottom edge
+  const tabs = document.querySelector(".tabs").getBoundingClientRect();
+  const player = $("player").getBoundingClientRect();
+  const view = d.scroller === document.scrollingElement ? { top: 0, bottom: innerHeight } : d.scroller.getBoundingClientRect();
+  const topEdge = Math.max(view.top, tabs.bottom);
+  const bottomEdge = player.top > topEdge && player.top < view.bottom ? player.top : view.bottom;
+  const zone = 44;
+  let v = 0;
+  if (d.y < topEdge + zone) v = -Math.ceil(((topEdge + zone - d.y) / zone) * 12);
+  else if (d.y > bottomEdge - zone) v = Math.ceil(((d.y - bottomEdge + zone) / zone) * 12);
+  if (v) d.scroller.scrollTop += v;
+  const me = d.rects[d.index];
+  const firstRow = d.rects[0], lastRow = d.rects[d.rects.length - 1];
+  const raw = d.y - d.startY + (d.scroller.scrollTop - d.startScroll);
+  const dy = Math.max(firstRow.top - me.top - 10, Math.min(lastRow.top + lastRow.h - me.top - me.h + 10, raw));
+  d.li.style.translate = `0 ${dy}px`;
+  const center = me.top + me.h / 2 + dy;
+  let target = d.index;
+  for (let j = d.index + 1; j < d.rects.length; j++) if (center > d.rects[j].top + d.rects[j].h / 2) target = j;
+  for (let j = d.index - 1; j >= 0; j--) if (center < d.rects[j].top + d.rects[j].h / 2) target = j;
+  if (target !== d.target) {
+    d.target = target;
+    d.items.forEach((it, j) => {
+      if (j === d.index) return;
+      const off = d.index < target && j > d.index && j <= target ? -me.h : d.index > target && j < d.index && j >= target ? me.h : 0;
+      it.style.translate = off ? `0 ${off}px` : "";
+    });
+  }
+  d.raf = requestAnimationFrame(sortFrame);
+}
+function onSortEnd(e) {
+  const d = sortDrag;
+  if (!d || (e.pointerId !== undefined && e.pointerId !== d.pointerId)) return;
+  sortDrag = null;
+  for (const t of ["pointermove", "pointerup", "pointercancel", "lostpointercapture"]) d.handle.removeEventListener(t, t === "pointermove" ? onSortMove : onSortEnd);
+  cancelAnimationFrame(d.raf);
+  wpList.classList.remove("sorting");
+  if (!d.started) { d.li.classList.remove("pressed"); return; } // a click on the handle, not a drag
+  const id = d.li.dataset.id;
+  if (e.type === "pointercancel" || d.target === d.index) {
+    renderWaypoints({ flip: true, settle: id });
+    return;
+  }
+  const [w] = state.waypoints.splice(d.index, 1);
+  state.waypoints.splice(d.target, 0, w);
+  invalidateBuilt();
+  renderWaypoints({ flip: true, settle: w.id });
+}
+
 function renderRouteSettingsSub() {
-  $("route-settings-sub").textContent = `${MODE_LABEL[$("default-mode").value]} · ${$("default-speed").value} km/h${$("road-aware").checked ? " · road-aware" : ""}`;
+  const alts = +$("alt-count").value || 0;
+  $("route-settings-sub").textContent = `${MODE_LABEL[$("default-mode").value]} · ${$("default-speed").value} km/h`
+    + `${$("road-aware").checked ? " · road-aware" : ""}${alts ? ` · ${alts} alt.` : ""}`;
 }
 $("closed").onchange = () => { invalidateBuilt(); renderWaypoints(); };
 $("default-speed").onchange = () => renderWaypoints();
 $("default-mode").onchange = () => renderRouteSettingsSub();
+$("alt-count").addEventListener("change", renderRouteSettingsSub);
 async function clearRoute() {
   const saved = { waypoints: state.waypoints.map((w) => ({ ...w, leg: { ...w.leg } })), built: state.built };
   state.builtSource = "route";
@@ -623,7 +884,7 @@ $("btn-reverse").onclick = () => {
   const legs = state.waypoints.map((w) => w.leg);
   state.waypoints.reverse();
   state.waypoints.forEach((w, i) => (w.leg = { ...(i < n - 1 ? legs[n - 2 - i] : legs[n - 1]) || defaultLeg() }));
-  invalidateBuilt(); renderWaypoints();
+  invalidateBuilt(); renderWaypoints({ flip: true });
 };
 function presetButtons(containerId, onPick) {
   const c = $(containerId);
@@ -640,7 +901,7 @@ $("speed-factor").oninput = () => ($("speed-factor-out").textContent = `${Math.r
   .forEach((id) => $(id).addEventListener("change", () => { invalidateBuilt(); if (id === "road-aware") renderWaypoints(); }));
 $("provider").addEventListener("change", () => {
   if ($("provider").value === "google" && !state.google.configured) {
-    toast("Add your Google Maps API key in Settings (⚙ › Google Maps) to use Google routing.", true);
+    toast("Add your Google Maps API key in Settings › Google Maps to use Google routing.", true);
     $("provider").value = "osrm";
   }
 });
@@ -658,31 +919,181 @@ function routeBody(name = "Route") {
   const legs = wps.slice(0, closed ? wps.length : wps.length - 1).map((w) => w.leg);
   return {
     name, closed, provider: $("provider").value, settings: profileSettings(), legs,
+    alternatives: Math.max(0, Math.min(3, +$("alt-count").value || 0)),
     waypoints: wps.map((w, i) => ({ lat: w.lat, lon: w.lon, name: w.name || `Checkpoint ${i + 1}`, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s || 0 })),
   };
 }
+
+// ---- build button: a progress bar with the stage the server is working on
+const buildBtn = $("btn-build");
+const bp = { fill: buildBtn.querySelector(".build-fill"), ticker: buildBtn.querySelector(".build-ticker"), pct: buildBtn.querySelector(".build-pct"),
+  shown: 0, target: 0, next: 0, raf: 0, last: 0, current: "", queue: [], msgAt: 0, timer: 0, resetTimer: 0 };
+const TICK_MIN_MS = 380; // each stage message stays readable for at least this long
+function buildStart() {
+  clearTimeout(bp.resetTimer); clearTimeout(bp.timer);
+  Object.assign(bp, { shown: 0, target: 0, next: 0.02, current: "", queue: [], msgAt: 0, timer: 0, last: performance.now() });
+  bp.ticker.replaceChildren();
+  bp.fill.style.width = "0%";
+  bp.pct.textContent = "0%";
+  buildBtn.classList.remove("done", "failed");
+  buildBtn.classList.add("loading");
+  buildBtn.disabled = true;
+  buildBtn.setAttribute("aria-busy", "true");
+  cancelAnimationFrame(bp.raf);
+  bp.raf = requestAnimationFrame(buildFrame);
+}
+// p: share of the work done, next: where this stage is expected to end. Network calls report no
+// progress of their own, so the bar creeps towards `next` (never past it) until the next report.
+function buildStage(p, msg, next = p) {
+  bp.target = Math.min(1, Math.max(bp.target, p));
+  bp.next = Math.min(1, Math.max(bp.next, next, bp.target));
+  if (msg) tickerMessage(msg);
+}
+function buildFrame(now) {
+  const dt = Math.min(0.1, (now - bp.last) / 1000);
+  bp.last = now;
+  if (bp.shown < bp.target - 0.002) bp.shown += (bp.target - bp.shown) * Math.min(1, dt * 9);
+  else {
+    bp.shown = Math.max(bp.shown, bp.target);
+    const ceiling = bp.target + (bp.next - bp.target) * 0.92;
+    if (bp.shown < ceiling) bp.shown += (ceiling - bp.shown) * (1 - Math.exp(-dt / 1.4));
+  }
+  bp.fill.style.width = `${(bp.shown * 100).toFixed(2)}%`;
+  bp.pct.textContent = `${Math.min(99, Math.floor(bp.shown * 100))}%`;
+  bp.raf = requestAnimationFrame(buildFrame);
+}
+function tickerMessage(msg) {
+  if (msg === bp.current || bp.queue.includes(msg)) return;
+  if (!bp.queue.length && performance.now() - bp.msgAt >= TICK_MIN_MS) { showTick(msg); return; }
+  bp.queue.push(msg);
+  if (bp.queue.length > 2) bp.queue.shift(); // keep the newest two, so the text never lags far behind
+  scheduleTick();
+}
+function scheduleTick() {
+  if (bp.timer) return;
+  bp.timer = setTimeout(() => {
+    bp.timer = 0;
+    const m = bp.queue.shift();
+    if (m) showTick(m);
+    if (bp.queue.length) scheduleTick();
+  }, Math.max(0, bp.msgAt + TICK_MIN_MS - performance.now()));
+}
+function showTick(msg, iconName) {
+  bp.current = msg;
+  bp.msgAt = performance.now();
+  const text = el("span", { textContent: msg });
+  const tick = el("span", { class: "tick below" }, ...(iconName ? [svgIcon(iconName)] : []), text);
+  const old = [...bp.ticker.children];
+  bp.ticker.append(tick);
+  void tick.offsetWidth;
+  tick.classList.remove("below");
+  for (const o of old) { o.classList.add("above"); setTimeout(() => o.remove(), 300); }
+  // long messages scroll sideways so they can be read in a narrow side menu
+  requestAnimationFrame(() => {
+    const overflow = tick.scrollWidth - tick.clientWidth;
+    if (overflow > 2) {
+      tick.style.setProperty("--shift", `-${overflow + 6}px`);
+      tick.style.setProperty("--dur", `${Math.max(2.2, overflow / 28).toFixed(1)}s`);
+      tick.classList.add("marquee");
+    }
+  });
+  $("build-status").textContent = msg;
+}
+function buildFinish(ok, msg) {
+  cancelAnimationFrame(bp.raf);
+  clearTimeout(bp.timer);
+  bp.timer = 0;
+  bp.queue = [];
+  buildBtn.classList.remove("loading");
+  buildBtn.classList.add(ok ? "done" : "failed");
+  buildBtn.disabled = false;
+  buildBtn.removeAttribute("aria-busy");
+  if (ok) { bp.fill.style.width = "100%"; bp.pct.textContent = "100%"; }
+  else bp.pct.textContent = "";
+  showTick(msg, ok ? "check" : "warn");
+  bp.resetTimer = setTimeout(buildReset, ok ? 2200 : 2600);
+}
+function buildReset() {
+  cancelAnimationFrame(bp.raf);
+  buildBtn.classList.remove("loading", "done", "failed");
+  buildBtn.disabled = false;
+  bp.fill.style.width = "0%";
+  bp.ticker.replaceChildren();
+}
+function noAlternativesReason(body) {
+  const roads = body.legs.filter((l) => ["car", "bike", "foot"].includes(l.mode)).length;
+  return roads ? "No alternative routes were found for these checkpoints (short legs often have only one sensible way)."
+    : "Sea and straight-line legs have no alternative routes.";
+}
 async function buildRoute() {
+  if (state.building) return;
   if (state.waypoints.length < 2) throw new Error("Add at least two checkpoints (click the map in the Route tab).");
-  const body = routeBody($("route-name").value.trim() || "Route");
-  const res = await api("/api/route/build", { body });
-  state.built = res;
-  state.builtSource = "route";
-  gpxLayer.clearLayers();
-  if ((res.providers || []).includes("google")) await useGoogleBase();
-  drawBuilt(res, routeLayer);
+  state.building = true;
+  const rev = state.routeRev;
+  buildStart();
+  buildStage(0, "Preparing the route", 0.02);
+  try {
+    const body = routeBody($("route-name").value.trim() || "Route");
+    const res = await apiStream("/api/route/build?stream=1", body, (ev) => buildStage(ev.p, ev.msg, ev.next));
+    if (rev !== state.routeRev) {
+      buildReset();
+      toast("The checkpoints changed while the route was building. Press Build route again.");
+      return;
+    }
+    buildStage(0.97, "Drawing the route on the map", 0.98);
+    await nextFrame();
+    state.options = [res, ...(res.alternatives || [])];
+    state.optionIndex = 0;
+    state.built = res;
+    state.builtSource = "route";
+    gpxLayer.clearLayers();
+    if ((res.providers || []).includes("google")) await useGoogleBase();
+    drawRoute({ fit: true });
+    buildStage(0.98, "Plotting the speed graph", 0.99);
+    await nextFrame();
+    showRouteResult(res);
+    renderWaypoints();
+    buildStage(0.99, "Loading the route into the player", 1);
+    await api(`/api/player/load/${res.id}`, { body: {} });
+    state.loaded = "route";
+    clearTrail();
+    await poll();
+    const n = state.options.length;
+    buildFinish(true, `Route ready · ${fmtDist(res.summary.distance_m)} · ${fmtTime(res.summary.duration_s)}${n > 1 ? ` · ${n} options` : ""}`);
+    if (body.alternatives && n === 1) toast(noAlternativesReason(body));
+    else if (body.alternatives && n - 1 < body.alternatives) toast(`Found ${n - 1} of ${body.alternatives} alternative routes. Pick one under Route summary or click a grey line on the map.`);
+  } catch (e) {
+    buildFinish(false, "Couldn't build the route");
+    throw e;
+  } finally {
+    state.building = false;
+  }
+}
+buildBtn.onclick = guard(buildRoute);
+function showRouteResult(res) {
   renderResult($("route-result"), res);
   $("sec-route-result").hidden = false;
   $("sec-route-result").open = true;
-  $("route-result-sub").textContent = `${fmtDist(res.summary.distance_m)} · ${fmtTime(res.summary.duration_s)}`;
-  renderWaypoints();
-  await api(`/api/player/load/${res.id}`, { body: {} });
+  $("route-result-sub").textContent = `${(state.options || []).length > 1 ? `Route ${res.option.label} · ` : ""}${fmtDist(res.summary.distance_m)} · ${fmtTime(res.summary.duration_s)}`;
+}
+async function selectOption(k) {
+  const opts = state.options || [];
+  if (!opts[k] || state.optionIndex === k) return;
+  const p = state.status && state.status.player;
+  const wasPlaying = p && state.loaded === "route" && ["playing", "paused"].includes(p.state);
+  state.optionIndex = k;
+  state.built = opts[k];
+  stopPreview();
+  drawRoute();
+  showRouteResult(opts[k]);
+  await api(`/api/player/load/${opts[k].id}`, { body: {} });
   state.loaded = "route";
   clearTrail();
   await poll();
+  toast(`Using route ${opts[k].option.label}${wasPlaying ? ". Playback stopped; press Play to drive it." : "."}`);
 }
-$("btn-build").onclick = busy($("btn-build"), "Routing…", buildRoute);
 
-// ------------------------------------------------------------------ speed-coloured route line
+// ------------------------------------------------------------------ route line: outlined, coloured by speed
 const SPEED_STOPS = [[0, [49, 54, 149]], [0.2, [69, 117, 180]], [0.4, [116, 173, 209]], [0.55, [171, 217, 233]],
   [0.65, [254, 224, 144]], [0.8, [253, 174, 97]], [0.9, [244, 109, 67]], [1, [215, 48, 39]]];
 function speedColor(f) {
@@ -697,26 +1108,93 @@ function speedColor(f) {
   }
   return "rgb(215,48,39)";
 }
-function drawBuilt(res, layer) {
+// Point at fraction f of the great circle from a to b (what the device follows on long straight legs).
+function gcInterp(a, b, f) {
+  const r = Math.PI / 180, d = haversine(a, b) / 6371008.8;
+  if (d < 1e-9) return a;
+  const [p1, l1, p2, l2] = [a[0] * r, a[1] * r, b[0] * r, b[1] * r];
+  const A = Math.sin((1 - f) * d) / Math.sin(d), B = Math.sin(f * d) / Math.sin(d);
+  const x = A * Math.cos(p1) * Math.cos(l1) + B * Math.cos(p2) * Math.cos(l2);
+  const y = A * Math.cos(p1) * Math.sin(l1) + B * Math.cos(p2) * Math.sin(l2);
+  const z = A * Math.sin(p1) + B * Math.sin(p2);
+  let lon = Math.atan2(y, x) / r;
+  while (lon - a[1] > 180) lon -= 360;
+  while (lon - a[1] < -180) lon += 360;
+  return [Math.atan2(z, Math.hypot(x, y)) / r, lon];
+}
+// All legs as one path with the distance along it, so it lines up with the timeline's distances.
+function routePath(legs) {
+  const out = [];
+  let prev = null, d = 0;
+  for (const leg of legs || []) {
+    for (const p of leg) {
+      if (!prev) { out.push({ ll: p, d: 0 }); prev = p; continue; }
+      const step = haversine(prev, p);
+      if (step < 1e-3) continue; // the shared checkpoint between two legs
+      const n = step > 2000 ? Math.min(64, Math.ceil(step / 2000)) : 1;
+      for (let k = 1; k <= n; k++) out.push({ ll: k === n ? p : gcInterp(prev, p, k / n), d: d + (step * k) / n });
+      d += step;
+      prev = p;
+    }
+  }
+  return out;
+}
+// Speed (km/h) at a distance along the route, from the preview samples [t, lat, lon, km/h, m].
+function speedLookup(pv) {
+  if (!pv || pv.length < 2 || pv[0].length < 5) return null;
+  const D = pv.map((p) => p[4]);
+  return (dist) => {
+    let lo = 0, hi = D.length - 1;
+    if (dist <= D[0]) return pv[0][3];
+    if (dist >= D[hi]) return pv[hi][3];
+    while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (D[mid] <= dist) lo = mid; else hi = mid; }
+    const span = D[hi] - D[lo];
+    return pv[lo][3] + (pv[hi][3] - pv[lo][3]) * (span > 0 ? (dist - D[lo]) / span : 0);
+  };
+}
+const LINE = { lineCap: "round", lineJoin: "round" };
+function optionLabel(o, k) { return o.option ? o.option.label : "ABCD"[k] || String(k + 1); }
+function drawRoute({ fit = false } = {}) {
+  const res = state.built;
+  const layer = state.builtSource === "gpx" ? gpxLayer : routeLayer;
   layer.clearLayers();
+  if (!res) return;
+  const opts = state.options && state.options.length ? state.options : [res];
+  // Other route options underneath in grey. Clicking one switches to it.
+  opts.forEach((o, k) => {
+    if (o === res) return;
+    const pts = routePath(o.legs).map((g) => g.ll);
+    const d = o.summary.duration_s - opts[0].summary.duration_s;
+    L.polyline(pts, { ...LINE, color: "#334155", weight: 9, opacity: 0.45, interactive: false }).addTo(layer);
+    L.polyline(pts, { ...LINE, color: "#a3acb9", weight: 5.5, opacity: 1, className: "route-alt", bubblingMouseEvents: false })
+      .bindTooltip(`Route ${optionLabel(o, k)} · ${fmtDist(o.summary.distance_m)} · ${fmtTime(o.summary.duration_s)}`
+        + `${k ? ` (${d >= 0 ? "+" : "−"}${fmtTime(Math.abs(d))})` : ""} — click to use it`, { sticky: true })
+      .on("click", () => guard(selectOption)(k))
+      .addTo(layer);
+  });
+  // The chosen route: a white halo and a dark outline keep it readable over roads of any colour
+  // (and over satellite imagery), then the speed colours on top.
+  const path = routePath(res.legs);
+  const pts = path.map((g) => g.ll);
+  L.polyline(pts, { ...LINE, color: "#ffffff", weight: 13, opacity: 0.6, interactive: false }).addTo(layer);
+  L.polyline(pts, { ...LINE, color: "#0f172a", weight: 9.5, opacity: 0.9, interactive: false }).addTo(layer);
   const pv = res.preview || [];
-  const all = [];
-  (res.legs || []).forEach((pts) => all.push(...pts));
-  (res.legs || []).forEach((pts) => L.polyline(pts, { color: "#222", weight: 7, opacity: 0.35, interactive: false }).addTo(layer));
   const vmax = Math.max(1, ...pv.map((p) => p[3]));
   const vmin = Math.min(...pv.map((p) => p[3]), vmax);
   const span = Math.max(1, vmax - vmin);
+  const at = speedLookup(pv);
+  // colour runs along the real geometry (older servers without distances: along the samples)
+  const samples = at ? path.map((g) => ({ ll: g.ll, v: at(g.d) })) : pv.map((p) => ({ ll: [p[1], p[2]], v: p[3] }));
   let run = [], runBucket = -1;
   const flush = () => {
-    if (run.length > 1) {
-      const pl = L.polyline(run.map((p) => [p[1], p[2]]), { color: speedColor(runBucket / 20), weight: 5, opacity: 0.95 });
-      const lo = Math.min(...run.map((p) => p[3])), hi = Math.max(...run.map((p) => p[3]));
-      pl.bindTooltip(`${lo.toFixed(0)}–${hi.toFixed(0)} km/h`, { sticky: true });
-      pl.addTo(layer);
-    }
+    if (run.length < 2) return;
+    const lo = Math.min(...run.map((p) => p.v)), hi = Math.max(...run.map((p) => p.v));
+    L.polyline(run.map((p) => p.ll), { ...LINE, color: speedColor(runBucket / 20), weight: 5.5, opacity: 1 })
+      .bindTooltip(`${lo.toFixed(0)}–${hi.toFixed(0)} km/h`, { sticky: true })
+      .addTo(layer);
   };
-  for (const p of pv) {
-    const bucket = Math.round(((p[3] - vmin) / span) * 20);
+  for (const p of samples) {
+    const bucket = Math.round(((p.v - vmin) / span) * 20);
     if (bucket !== runBucket && run.length) { const last = run[run.length - 1]; flush(); run = [last]; }
     runBucket = bucket;
     run.push(p);
@@ -725,13 +1203,40 @@ function drawBuilt(res, layer) {
   $("legend-min").textContent = vmin.toFixed(0);
   $("legend-max").textContent = vmax.toFixed(0);
   $("speed-legend").hidden = pv.length < 2;
-  if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
+  if (fit) {
+    const all = opts.flatMap((o) => (o.legs || []).flat());
+    if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
+  }
 }
 function fitRoute() {
   const layers = [];
   [routeLayer, gpxLayer, wpLayer].forEach((g) => g.eachLayer((l) => layers.push(l)));
   if (!layers.length) { toast("Nothing to fit yet."); return; }
   map.fitBounds(L.featureGroup(layers).getBounds(), { padding: [30, 30] });
+}
+function routeOptionsList() {
+  const opts = state.options || [];
+  if (opts.length < 2) return null;
+  const base = opts[0].summary;
+  const quickest = Math.min(...opts.map((o) => o.summary.duration_s));
+  const multiLeg = (opts[0].legs || []).length > 1;
+  return el("div", { class: "route-options", role: "radiogroup", "aria-label": "Route options" },
+    ...opts.map((o, k) => {
+      const s = o.summary, dt = s.duration_s - base.duration_s;
+      const meta = [];
+      if (k === 0) meta.push("main route");
+      if (s.duration_s <= quickest + 0.5) meta.push("quickest");
+      if (o.option && o.option.detour) meta.push("detour");
+      if (k && multiLeg && o.option && o.option.changed_legs.length) meta.push(`differs on leg ${o.option.changed_legs.map((i) => i + 1).join(", ")}`);
+      if (!meta.length) meta.push("alternative");
+      return el("button", { type: "button", class: "route-opt", role: "radio", "aria-checked": String(k === state.optionIndex),
+        title: `Use route ${optionLabel(o, k)}`, onclick: () => guard(selectOption)(k) },
+        el("span", { class: "opt-badge", textContent: optionLabel(o, k) }),
+        el("span", { class: "opt-main" },
+          el("b", { textContent: `${fmtTime(s.duration_s)} · ${fmtDist(s.distance_m)}` }),
+          el("span", { textContent: meta.join(" · ") })),
+        el("span", { class: "opt-delta", textContent: k ? `${dt >= 0 ? "+" : "−"}${fmtTime(Math.abs(dt))}` : "" }));
+    }));
 }
 function renderResult(box, res) {
   const s = res.summary;
@@ -754,21 +1259,24 @@ function renderResult(box, res) {
   if (f.highway_segments || f.ramps) feat.push("motorway sections");
   if (feat.length) extra.push(el("p", { class: "hint" }, "Road features: " + feat.join("; ") + "."));
   for (const n of s.notes || []) extra.push(el("p", { class: "hint", textContent: n }));
-  const exportBtn = el("button", { textContent: "⇩ Download GPX", disabled: res.exportable === false,
+  const exportBtn = el("button", { disabled: res.exportable === false,
     title: res.exportable === false ? "Google routes can't be exported (Google's terms restrict storing route data)." : "",
-    onclick: () => { window.location.href = `/api/gpx/export/${res.id}?interval=${intervalSel.value || 1}`; } });
+    onclick: () => { window.location.href = `/api/gpx/export/${res.id}?interval=${intervalSel.value || 1}`; } },
+    svgIcon("download"), "Download GPX");
+  const options = box.id === "route-result" ? routeOptionsList() : null;
   box.replaceChildren(
+    ...(options ? [options] : []),
     el("div", { class: "summary" },
-      el("span", {}, "Distance ", el("b", { textContent: fmtDist(s.distance_m) })),
-      el("span", {}, "Duration ", el("b", { textContent: fmtTime(s.duration_s) })),
-      el("span", {}, "Average ", el("b", { textContent: `${s.avg_speed_kmh} km/h` })),
-      el("span", {}, "Top speed ", el("b", { textContent: `${s.max_speed_kmh} km/h` }))),
+      el("span", {}, "Distance", el("b", { textContent: fmtDist(s.distance_m) })),
+      el("span", {}, "Duration", el("b", { textContent: fmtTime(s.duration_s) })),
+      el("span", {}, "Average", el("b", { textContent: `${s.avg_speed_kmh} km/h` })),
+      el("span", {}, "Top speed", el("b", { textContent: `${s.max_speed_kmh} km/h` }))),
     ...extra,
-    ...(s.warnings || []).map((w) => el("p", { class: "warn", textContent: "⚠ " + w })),
+    ...(s.warnings || []).map((w) => el("p", { class: "warn", textContent: w })),
     chartCanvas(res.preview),
     el("div", { class: "btn-row" },
-      el("button", { textContent: "▷ Preview", "data-action": "preview", onclick: () => togglePreview(res) }),
-      el("button", { textContent: "Fit on map", "data-action": "fit", onclick: fitRoute })),
+      el("button", { "data-action": "preview", onclick: () => togglePreview(res) }, svgIcon("preview"), "Preview"),
+      el("button", { "data-action": "fit", onclick: fitRoute }, svgIcon("fit"), "Fit on map")),
     el("div", { class: "btn-row" }, intervalSel, exportBtn),
   );
   decorateShortcutHints(box);
@@ -809,7 +1317,7 @@ function togglePreview(res) {
   const data = res.preview;
   if (!data || data.length < 2) return;
   const mult = Math.max(1, data[data.length - 1][0] / 20);
-  previewMarker = L.marker([data[0][1], data[0][2]], { icon: icon("prev-icon"), interactive: false }).addTo(map);
+  previewMarker = L.marker([data[0][1], data[0][2]], { icon: icon("prev-icon", "", 14), interactive: false }).addTo(map);
   const t0 = performance.now();
   let i = 0;
   const step = (now) => {
@@ -895,7 +1403,7 @@ async function uploadGpx(file) {
 }
 function renderGpxDrop() {
   if (state.gpx) {
-    $("gpx-drop-title").textContent = `📄 ${state.gpx.filename}`;
+    $("gpx-drop-title").textContent = state.gpx.filename;
     $("gpx-drop-sub").textContent = `${fmtSize(state.gpx.size || 0)} · ${state.gpx.tracks.length} item${state.gpx.tracks.length > 1 ? "s" : ""} — click or drop to replace`;
     $("gpx-sub").textContent = state.gpx.filename;
     drop.classList.add("loaded");
@@ -936,8 +1444,10 @@ $("btn-gpx-load").onclick = busy($("btn-gpx-load"), "Loading…", async () => {
   } });
   state.built = res;
   state.builtSource = "gpx";
+  state.options = [res];
+  state.optionIndex = 0;
   routeLayer.clearLayers();
-  drawBuilt(res, gpxLayer);
+  drawRoute({ fit: true });
   renderResult($("gpx-result"), res);
   await api(`/api/player/load/${res.id}`, { body: {} });
   state.loaded = "gpx";
@@ -1034,7 +1544,7 @@ function renderPlayer(st) {
   const connected = !!st.device;
   playerBtns.play.disabled = !has || !connected || p.state === "playing";
   playerBtns.play.title = !connected ? "Connect a device (or the Simulator) first" : !has ? "Build a route or load a GPX track first" : "";
-  playerBtns.play.firstChild.textContent = p.state === "paused" ? "▶ Resume" : "▶ Play";
+  playerBtns.play.querySelector(".lbl").textContent = p.state === "paused" ? "Resume" : "Play";
   playerBtns.pause.disabled = p.state !== "playing";
   playerBtns.stop.disabled = !["playing", "paused", "joystick"].includes(p.state);
   seek.disabled = !has;
@@ -1047,7 +1557,7 @@ function renderPlayer(st) {
   if (p.position) {
     const ll = [p.position.lat, p.position.lon];
     if (!deviceMarker) {
-      deviceMarker = L.marker(ll, { icon: icon("dev-icon"), zIndexOffset: 1000, title: "Spoofed location" }).addTo(map);
+      deviceMarker = L.marker(ll, { icon: icon("dev-icon", "", 18), zIndexOffset: 1000, title: "Spoofed location" }).addTo(map);
       trailLine = L.polyline([], { color: "#e53935", weight: 2, opacity: 0.6, interactive: false }).addTo(map);
     }
     deviceMarker.setLatLng(ll);
@@ -1161,7 +1671,7 @@ function decorateShortcutHints(root = document) {
     if (!k) { if (hint) hint.remove(); return; }
     if (!hint) { hint = el("span", { class: "kbd" }); b.append(hint); }
     hint.textContent = k;
-    b.title = `${(b.title || "").replace(/ \(shortcut .\)$/, "")} (shortcut ${k})`.trim();
+    b.title = `${(b.title || "").replace(/\s*\(shortcut .\)$/, "")} (shortcut ${k})`.trim();
   });
 }
 let listeningFor = null;
@@ -1229,7 +1739,7 @@ function saveSettingsSoon() {
     await saveStore();
   }), 700);
 }
-const SETTING_IDS = ["driver", "provider", "default-mode", "default-speed", "accel", "decel", "start-rest", "stop-end",
+const SETTING_IDS = ["driver", "provider", "default-mode", "default-speed", "accel", "decel", "alt-count", "start-rest", "stop-end",
   "road-aware", "road-data", "corner-slow", "match-eta", "speed-factor", "multiplier", "loop", "jitter", "tick", "joy-speed", "gpx-speed"];
 function collectSettings() {
   const s = {};
@@ -1261,17 +1771,17 @@ function renderSaved() {
   const fl = $("fav-list");
   fl.replaceChildren();
   $("fav-count").textContent = state.store.favorites.length ? String(state.store.favorites.length) : "";
-  if (!state.store.favorites.length) fl.append(el("li", { class: "hint", textContent: "Nothing saved yet. Pick a point and press ☆ Save." }));
+  if (!state.store.favorites.length) fl.append(el("li", { class: "hint", textContent: "Nothing saved yet. Pick a point and press Save." }));
   state.store.favorites.forEach((f, i) => {
     fl.append(el("li", {},
       el("span", { textContent: f.name, title: fmtLL(f.lat, f.lon) }),
       el("button", { textContent: "Show", onclick: () => { openTab("teleport"); setPicked(f.lat, f.lon); } }),
       el("button", { textContent: "Teleport", onclick: guard(async () => { setPicked(f.lat, f.lon); await teleport(); }) }),
-      el("button", { class: "x", textContent: "✕", title: "Delete", onclick: guard(async () => {
+      el("button", { class: "x", title: "Delete", "aria-label": `Delete ${f.name}`, onclick: guard(async () => {
         const [removed] = state.store.favorites.splice(i, 1);
         await saveStore();
         toast(`Deleted “${removed.name}”.`, false, { label: "Undo", run: guard(async () => { state.store.favorites.splice(i, 0, removed); await saveStore(); }) });
-      }) }),
+      }) }, svgIcon("x")),
     ));
   });
   const rl = $("route-list");
@@ -1283,11 +1793,11 @@ function renderSaved() {
       el("span", { textContent: `${r.name} (${(r.waypoints || []).length})`, title: r.name }),
       el("button", { textContent: "Load", onclick: () => loadRoute(r) }),
       el("span"),
-      el("button", { class: "x", textContent: "✕", title: "Delete", onclick: guard(async () => {
+      el("button", { class: "x", title: "Delete", "aria-label": `Delete ${r.name}`, onclick: guard(async () => {
         const [removed] = state.store.routes.splice(i, 1);
         await saveStore();
         toast(`Deleted “${removed.name}”.`, false, { label: "Undo", run: guard(async () => { state.store.routes.splice(i, 0, removed); await saveStore(); }) });
-      }) }),
+      }) }, svgIcon("x")),
     ));
   });
 }
@@ -1371,8 +1881,8 @@ async function saveKey() {
 $("btn-key-test").onclick = busy($("btn-key-test"), "Testing…", async () => {
   await saveKey();
   if (!state.google.configured) { $("key-status").textContent = "No key entered."; return; }
-  try { await ensureGoogleLayer(); $("key-status").textContent = "✓ Map Tiles API works with this key."; }
-  catch (e) { $("key-status").textContent = "✗ " + e.message; }
+  try { await ensureGoogleLayer(); $("key-status").textContent = "The Map Tiles API works with this key."; }
+  catch (e) { $("key-status").textContent = e.message; }
 });
 $("pref-channel").onchange = () => { settings().update_channel = $("pref-channel").value; saveSettingsSoon(); };
 settingsDlg.addEventListener("close", () => { listeningFor = null; guard(saveKey)(); });
@@ -1380,7 +1890,7 @@ $("btn-tutorial-again").onclick = () => { settingsDlg.close(); openTutorial(0); 
 async function refreshGoogleStatus() {
   try { state.google.configured = (await api("/api/google/status")).configured; } catch (_) { state.google.configured = false; }
   const opt = $("provider").querySelector('option[value="google"]');
-  opt.textContent = state.google.configured ? "Google Maps" : "Google Maps (add API key in ⚙)";
+  opt.textContent = state.google.configured ? "Google Maps" : "Google Maps (add an API key in Settings)";
   if (!state.google.configured && $("provider").value === "google") $("provider").value = "osrm";
 }
 
@@ -1399,7 +1909,7 @@ const TUTORIAL = [
   { title: "2 · Connect and trust", body: [
       "Plug the iPhone in with a cable and unlock it.",
       "When the phone asks “Trust This Computer?”, tap Trust and enter your passcode.",
-      "Then press Look for devices (⟳): your iPhone should appear in the Device list." ],
+      "Then press the refresh button next to the Device list: your iPhone should appear in it." ],
     action: { label: "Look for devices now", run: () => refreshDevices(true) } },
   { title: "3 · Turn on Developer Mode", body: [
       "iOS only lets a computer change the location when Developer Mode is on. Press the button below (iPhone plugged in and unlocked) to make the switch appear.",
@@ -1413,7 +1923,7 @@ const TUTORIAL = [
   { title: "5 · Move your iPhone", body: [
       "Teleport: click the map (or paste a Google Maps link) and press Teleport here. Right-click the map to jump instantly.",
       "Route: click checkpoints, choose roads, footpaths or sea lanes, set speeds, Build route, then Play. The line's colour shows the speed.",
-      "Every section can be folded away, the side menu can be resized by dragging its edge, and ⚙ Settings has themes and keyboard shortcuts (press H to see them).",
+      "Every section can be folded away, the side menu can be resized by dragging its edge, and Settings has themes and keyboard shortcuts (press H to see them).",
       "When you're done, press “Stop spoofing — back to real location”." ] },
 ];
 let tutIndex = 0;
@@ -1498,6 +2008,7 @@ async function poll() {
     const st = await api("/api/status");
     state.status = st;
     $("version").textContent = `v${st.version}${st.app === "standalone" ? "" : " · browser"}`;
+    document.querySelector(".brand h1").title = `Location Spoofer ${$("version").textContent}`;
     $("about-version").textContent = `Version ${st.version} (${st.app === "standalone" ? "standalone app" : "browser version"})`;
     if (!state.bootVersion) { state.bootVersion = st.version; applyFeatures(st.features); }
     renderUpdate(st);
