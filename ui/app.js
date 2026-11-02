@@ -1249,6 +1249,7 @@ function applySettings(s) {
   $("pref-night-map").checked = !!s.night_map;
   $("pref-compact").checked = !!s.compact;
   $("pref-channel").value = s.update_channel === "dev" ? "dev" : "stable";
+  $("pref-device-service").value = ["auto", "apple", "builtin"].includes(s.device_service) ? s.device_service : "auto";
   if (s.sidebar_w) setSidebarWidth(s.sidebar_w, false);
   applyAppearance();
   applySections();
@@ -1486,9 +1487,37 @@ function renderUpdate(st) {
 // Features differ between the standalone app and the browser version.
 function applyFeatures(f) {
   if (!f) return;
+  if (f.device_service) { $("tool-service").hidden = false; $("tool-diagnostics").hidden = false; }
   if (f.cli_driver === false) { const o = $("driver").querySelector('option[value="cli"]'); if (o) o.remove(); }
   if (f.tunnel_helper === false) { const b = $("btn-tunneld"); if (b) b.closest(".tool").remove(); }
 }
+
+// ------------------------------------------------------------------ device service & diagnostics (experimental)
+$("pref-device-service").onchange = () => {
+  settings().device_service = $("pref-device-service").value;
+  saveSettingsSoon();
+  toast("Saved. Press Connect (or Look for devices) to use the new device service.");
+};
+async function runDiagnostics() {
+  const d = await api("/api/diagnostics");
+  const yes = (v) => (v ? "✅" : "❌");
+  const rows = [];
+  const row = (ok, text) => rows.push(el("div", { class: "diag-row" }, el("span", { textContent: ok }), el("span", { textContent: text })));
+  if ("apple_devices_app" in d) row(yes(d.apple_devices_app), `Apple Devices app ${d.apple_devices_app ? "is installed" : "is not installed"}`);
+  if ("apple_mobile_device_service" in d) row(d.apple_mobile_device_service === "RUNNING" ? "✅" : "➖", `Apple Mobile Device Service: ${d.apple_mobile_device_service}`);
+  if ("apple_driver_packages" in d) row(yes(d.apple_driver_packages.length), `${d.apple_driver_packages.length} Apple driver package(s) in Windows`);
+  if ("apple_usb_filter_dll" in d) row(yes(d.apple_usb_filter_dll), `Apple USB filter driver (AppleUsbFilter.dll) ${d.apple_usb_filter_dll ? "found" : "not found"}`);
+  row(yes(d.builtin_service_included), `Built-in device service ${d.builtin_service_included ? "is included in this build" : "is not included in this build"}`);
+  row(d.builtin_service_running_on ? "✅" : "➖", d.builtin_service_running_on ? `Built-in service running on port ${d.builtin_service_running_on}` : "Built-in service not running");
+  row(d.apple_service_port_open ? "✅" : "➖", `A device service ${d.apple_service_port_open ? "is" : "is not"} listening on 127.0.0.1:27015`);
+  $("diag-summary").replaceChildren(...rows);
+  $("diag-raw").textContent = JSON.stringify({ app_version: state.status && state.status.version, ...d }, null, 2);
+  if (!$("diag-dialog").open) $("diag-dialog").showModal();
+}
+$("btn-diagnostics").onclick = busy($("btn-diagnostics"), "Checking…", runDiagnostics);
+$("btn-diag-rerun").onclick = busy($("btn-diag-rerun"), "Checking…", runDiagnostics);
+$("btn-diag-close").onclick = () => $("diag-dialog").close();
+$("btn-diag-copy").onclick = guard(async () => { await navigator.clipboard.writeText($("diag-raw").textContent); toast("Report copied"); });
 
 // ------------------------------------------------------------------ status polling
 let pollTimer;

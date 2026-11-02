@@ -79,7 +79,9 @@ fn main() {
         wait_for_pid_exit(pid);
     }
 
-    let update_enabled = cfg!(windows) && !cfg!(feature = "store") && !cfg!(debug_assertions) && !args.no_update;
+    // Experimental builds (feature branches) never auto-update into stable or test builds.
+    let update_enabled =
+        cfg!(windows) && !cfg!(feature = "store") && !cfg!(feature = "experimental") && !cfg!(debug_assertions) && !args.no_update;
     let upd = updater::Updater::new(update_enabled);
     if update_enabled {
         match upd.swap_in_staged() {
@@ -136,6 +138,7 @@ fn main() {
                         app.updater.relaunch(args.raw.clone());
                     }
                 }
+                device::muxsvc::shutdown();
             }
             None => {
                 let _ = tokio::signal::ctrl_c().await;
@@ -303,10 +306,12 @@ mod gui {
                 // Exit right away: waiting for background work to wind down could leave an
                 // invisible process holding the port.
                 Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+                    crate::device::muxsvc::shutdown();
                     *control_flow = ControlFlow::Exit;
                     std::process::exit(0);
                 }
                 Event::UserEvent(UserEvent::Restart) => {
+                    crate::device::muxsvc::shutdown();
                     if let Some(app) = &app {
                         app.updater.relaunch(raw_args.clone());
                     }

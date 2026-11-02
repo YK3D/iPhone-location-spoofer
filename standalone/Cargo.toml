@@ -14,6 +14,8 @@ default = ["gui"]
 gui = ["dep:tao", "dep:wry", "dep:png"]
 # Microsoft Store build: no self-updater (the Store delivers updates).
 store = []
+# Feature-test builds: no self-updater, so testers stay on the build they are testing.
+experimental = []
 
 [dependencies]
 anyhow = "1"

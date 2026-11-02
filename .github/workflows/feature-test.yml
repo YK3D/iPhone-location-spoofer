@@ -1,0 +1,90 @@
+name: Feature test build (no Apple Devices app)
+
+# Builds a test package for the experimental "built-in device service" on feature branches.
+# It is uploaded as a workflow artifact (not a release) so it never reaches regular users.
+on:
+  push:
+    branches: ["feature/**"]
+    paths-ignore:
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # netmuxd (LGPL-2.1) — pinned so every test build ships the same helper.
+  NETMUXD_REPO: https://github.com/jkcoxson/netmuxd
+  NETMUXD_REV: 3771657a20f3880c287551ea716762f1d52dded5
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: standalone
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview libraries
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: standalone
+      - run: cargo test --locked
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            standalone
+            netmuxd-src
+      - name: Build the app (experimental, no self-updater)
+        working-directory: standalone
+        env:
+          SPOOFER_VERSION: 0.2.0-test.${{ github.run_number }}
+        run: cargo build --release --locked --features experimental
+      - name: Build netmuxd (Apple USB driver backend only)
+        shell: bash
+        run: |
+          git clone --quiet "$NETMUXD_REPO" netmuxd-src
+          cd netmuxd-src
+          git checkout --quiet "$NETMUXD_REV"
+          cargo build --release --locked --no-default-features
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath standalone\target\release\location-spoofer.exe -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Write-Error "app self-test failed"; exit 1 }
+          netmuxd-src\target\release\netmuxd.exe --about
+      - name: Package
+        shell: pwsh
+        run: |
+          $d = "dist\LocationSpoofer-no-apple-devices-test"
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item standalone\target\release\location-spoofer.exe "$d\LocationSpooferStandalone.exe"
+          Copy-Item netmuxd-src\target\release\netmuxd.exe "$d\netmuxd.exe"
+          Copy-Item netmuxd-src\LICENSE "$d\NETMUXD-LICENSE.txt"
+          @"
+          netmuxd is included as a separate program under the GNU Lesser General Public License v2.1
+          (see NETMUXD-LICENSE.txt). Its complete source code is available at:
+            $env:NETMUXD_REPO
+            commit $env:NETMUXD_REV
+          It was built with: cargo build --release --locked --no-default-features
+          You may replace netmuxd.exe with your own build of that or a modified version.
+          Note: "netmuxd.exe --about" prints "MIT License"; that text is out of date. The licence
+          that applies is LGPL-2.1-only, as stated in netmuxd's Cargo.toml and LICENSE file.
+          "@ | Set-Content "$d\NETMUXD-SOURCE.txt"
+          Copy-Item docs\testing\no-apple-devices.md "$d\TESTING.md"
+          Copy-Item LICENSE "$d\LICENSE.txt"
+          Copy-Item THIRD_PARTY_NOTICES.md "$d\THIRD_PARTY_NOTICES.md"
+          @(Get-ChildItem $d -File) | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } | Set-Content "$d\SHA256SUMS.txt"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LocationSpoofer-no-apple-devices-test-${{ github.run_number }}
+          path: dist/LocationSpoofer-no-apple-devices-test
+          retention-days: 30
+          if-no-files-found: error

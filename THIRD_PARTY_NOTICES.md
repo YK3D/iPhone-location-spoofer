@@ -26,6 +26,12 @@ Location Spoofer is built on open-source software and public data services. This
 | [serde](https://serde.rs/), [roxmltree](https://github.com/RazrFalcon/roxmltree), [chrono](https://github.com/chronotope/chrono), [plist](https://github.com/ebarnard/rust-plist), [png](https://github.com/image-rs/image-png) and the other crates listed in `standalone/Cargo.lock` | Parsing, data formats | MIT and/or Apache-2.0 (each crate's own licence applies) |
 | Microsoft Edge WebView2 Runtime | Renders the interface; part of Windows, not redistributed | Microsoft software licence terms |
 
+### Experimental test builds only
+
+| Component | Use | Licence |
+|---|---|---|
+| [netmuxd](https://github.com/jkcoxson/netmuxd) (`netmuxd.exe`, a separate program next to the app) | Built-in device service that replaces Apple Mobile Device Service | LGPL-2.1-only. The licence text and exact source commit are included in the test package (`NETMUXD-LICENSE.txt`, `NETMUXD-SOURCE.txt`) |
+
 ## Browser version (`LocationSpooferBrowser.exe`)
 
 The exe bundles a Python runtime and these packages, with their dependencies, via PyInstaller:
