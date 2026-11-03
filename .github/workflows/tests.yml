@@ -1,0 +1,47 @@
+name: Tests
+
+# Both test suites for pull requests, and for pushes to feature-testing (which publishes no builds;
+# release.yml covers pushes to main and dev). To make auto-merge into feature-testing wait for the
+# tests, add "test-browser" and "test-standalone" as required checks in a branch rule for it.
+on:
+  pull_request:
+    branches: [main, dev, feature-testing]
+  push:
+    branches: [feature-testing]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-standalone:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: standalone
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview libraries (for the window feature)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: standalone
+      - run: cargo test --locked
+
+  test-browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: browser/requirements*.txt
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
