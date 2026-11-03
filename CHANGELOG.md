@@ -8,6 +8,15 @@ Test builds from the `dev` branch are marked as pre-releases.
 ## Unreleased (dev)
 
 ### New
+- Edit routes on the map: drag the route line to add a checkpoint at that spot (it goes into the leg you grabbed and the route rebuilds), double-click a checkpoint to delete it, and right-click one (on the map or in the list) for Delete, Insert after, Set wait and Make start.
+- "Hold until Continue" checkpoints: playback stops there and waits until you press Continue (or **N**); any wait time runs after that. Set it with the Hold box in the list or Set wait in the right-click menu.
+- Lap limit for looping routes (Playback options › Laps); in back-and-forth mode a lap is there and back.
+- Live speed and heading on the map while playing, and the position marker points the way it is going.
+- Hovering a checkpoint in the list highlights its marker (and the other way round); deleting one animates out.
+- Alternative routes are labelled on the map with their extra time; hovering an option in the list highlights its line.
+- Map theme setting (Dark, Light, or Match the app theme).
+- Screenshot script (`docs/screenshots/capture.js`) using the default look.
+
 - Alternative routes: choose "Up to 1/2/3" in Routing & speed, then pick a route in Route summary or click a grey line on the map. OpenStreetMap usually offers one alternative, so the app also looks for detours either side of the main route and keeps only sensible ones (no U-turns, no driving a road twice, no more than 50 % slower). Google offers up to three.
 - The Build route button now fills the whole row and works as a progress bar: it shows each step the app is working on (routing each leg, speed limits, turns, ETA) and how far along it is. Reverse and Clear sit underneath.
 - Drag checkpoints by their handle to reorder them; the other rows slide out of the way, and a checkpoint shrinks slightly when pressed, lifts while dragged and settles when dropped (on the map too). The arrow keys move a focused handle.
@@ -23,6 +32,10 @@ Test builds from the `dev` branch are marked as pre-releases.
 - Update channels: stable releases, or opt-in test builds.
 
 ### Fixed
+- Asking for three alternative routes often gave only one or two. The detour search now tries via points along the whole route, not just at its middle, follows the route's own direction, and if needed fills the last places with near misses that are only a little slower. A route with several legs no longer spends the search on legs that don't need it.
+- Clicking a checkpoint marker added another checkpoint at the end of the route.
+- The heading reported during playback now turns smoothly through corners instead of jumping at each bend of the road line.
+- The standalone window no longer flashes white at start-up: it stays hidden until the page has drawn, on a background in the theme's colour.
 - Checkpoint, position and preview markers were drawn half a marker below and to the right of their point; they are now centred on it, exactly on the route line.
 - The speed-coloured route line now follows the real road geometry (and the great circle on long straight legs), so it passes exactly through every checkpoint.
 - Road speed limits: OSRM reports newer OpenStreetMap node ids (10 billion and up) as rounded numbers. The browser edition sent these to Overpass (which failed the whole lookup) and the standalone app dropped them (so the limits no longer lined up with the route). Both now skip only those nodes.
@@ -34,6 +47,13 @@ Test builds from the `dev` branch are marked as pre-releases.
 - The local server now only answers the app itself, so other websites open in your browser can't send it commands or read your settings (both editions).
 
 ### Changed
+- Clearer layout: every section has its own header bar with an icon, sections sit apart on a darker background, field labels and dividers have more contrast, and the inputs inside the checkpoint list stay quiet until you point at them. The Route tab now lists Routing & speed, Checkpoints and Route summary first, then the extras.
+- Graphite is the default theme and the map is dark by default.
+- The speed colours along the route blend smoothly (OKLab colour mixing and light smoothing) instead of in visible bands.
+- Bigger app icon in the title bar, made from the new artwork with its background removed (the original file is kept as `assets/icon/source.jpg`).
+- "Use public speed limits" is marked as not recommended.
+- "My real location" asks for a fresh, high-accuracy position. The standalone app allows its own page to ask, so the only prompt is Windows' own location permission, and the message offers Windows' location settings when access is blocked. The Microsoft Store package declares the location capability.
+- The Simulator reports iOS 27.
 - A quieter, denser interface: edge-to-edge panes with thin dividers instead of floating cards, 13 px text, 28 px controls, 4–6 px corners, an underlined tab bar, a translucent player bar, monochrome icons instead of emoji, and validation messages as text instead of boxed alerts.
 - Both editions now live in one repository and share one interface. The standalone app is the recommended edition.
 - Release names: `standalone-v…` and `browser-v…`. The browser edition's file is now `LocationSpooferBrowser.exe`.

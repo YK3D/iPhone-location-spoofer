@@ -19,7 +19,7 @@ Ideas being considered for future versions. None of them is promised; suggestion
 
 ## Realism
 - Realistic GPS noise models (urban canyon, open sky), and a slow drift when standing still.
-- Heading and speed values that apps reading course and speed would see.
+- Heading and speed values that apps reading course and speed would see. Apple's location simulation only carries a position; this needs a different way of setting the location (see the discussion in the pull request that added the live HUD).
 - "Rest stops" that are inserted automatically on long drives.
 
 ## Comfort
