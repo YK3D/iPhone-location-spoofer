@@ -290,9 +290,6 @@ fn d_one() -> f64 {
 fn d_five() -> f64 {
     5.0
 }
-fn d_two() -> f64 {
-    2.0
-}
 
 #[derive(Deserialize, Clone)]
 struct SettingsIn {
@@ -316,8 +313,9 @@ struct SettingsIn {
     speed_factor: f64,
     #[serde(default)]
     corner_slowdown: bool,
-    #[serde(default = "d_two")]
-    lateral_accel_ms2: f64,
+    /// None: each vehicle's own cornering limits (see profile::VEHICLES)
+    #[serde(default)]
+    lateral_accel_ms2: Option<f64>,
 }
 
 impl Default for SettingsIn {
@@ -336,8 +334,7 @@ impl SettingsIn {
             && self.decel_ms2 <= 100.0
             && self.speed_factor > 0.1
             && self.speed_factor <= 3.0
-            && self.lateral_accel_ms2 > 0.1
-            && self.lateral_accel_ms2 <= 10.0;
+            && self.lateral_accel_ms2.map(|a| a > 0.1 && a <= 10.0).unwrap_or(true);
         if ok { Ok(()) } else { Err(ApiError(422, "settings: a value is out of range".into())) }
     }
     fn profile(&self) -> ProfileSettings {
@@ -537,6 +534,7 @@ async fn build_route_core(app: App, mut b: RouteIn, progress: Progress) -> Resul
             leg.cruise_kmh = li.cruise_kmh.filter(|v| *v > 0.0);
             leg.ramp = if li.ramp == "linear" { Ramp::Linear } else { Ramp::Accel };
             leg.zones = res.zones.clone();
+            leg.mode = li.mode.clone();
             legs.push(leg);
             geometry.push(res.points.iter().map(|p| json!([p.0, p.1])).collect::<Vec<_>>());
             providers.push(res.provider.clone());

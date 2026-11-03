@@ -63,7 +63,7 @@ Both editions have the same interface and features. They update themselves from 
   * hover a checkpoint in the list to highlight it on the map.
 * **Road-aware driving (experimental):**
   * follows each road's typical speed, and optionally public speed limits (not recommended: the public service is slow and often incomplete);
-  * slows for bends, roundabouts and U-turns, and on private or gated roads;
+  * takes every bend at the speed its radius allows for the vehicle (cars, bikes, walkers and boats differ), and slows on private or gated roads;
   * aims for the same trip time (ETA) as Google Maps or OpenStreetMap, shown side by side.
 * **GPX files:** drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes can be exported as GPX.
 * **Playback:** play, pause, seek, 0.25×–30× speed, loop or back-and-forth with an optional number of laps, optional GPS jitter, and a live speed and heading display on the map.
