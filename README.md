@@ -13,7 +13,20 @@ Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk 
   <a href="TERMS.md">Terms</a>
 </p>
 
+<p align="center"><img src="docs/screenshots/route-alternatives.webp" width="900" alt="Route tab: three route options, the chosen one outlined and coloured by speed"></p>
+
 > **Use it responsibly.** Location simulation is meant for testing your own apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the [Terms of Use](TERMS.md).
+
+## Screenshots
+
+| | |
+|---|---|
+| <img src="docs/screenshots/teleport.webp" alt="Teleport tab with a picked point and the spoofed position on the map"> | <img src="docs/screenshots/dark-theme.webp" alt="Dark theme with route option B selected"> |
+| **Teleport:** pick a point, see the jump distance, teleport. | **Dark theme:** route option B selected; the others stay grey on the map. |
+| <img src="docs/screenshots/build-progress.png" width="320" alt="Build route button showing its progress and current step"> | <img src="docs/screenshots/drag-reorder.png" width="320" alt="A checkpoint being dragged to a new place in the list"> |
+| **Building a route:** the button shows each step and how far along it is. | **Reordering:** drag a checkpoint by its handle; the others slide out of the way. |
+
+<p align="center"><img src="docs/screenshots/settings.webp" width="720" alt="Settings window with the theme picker"></p>
 
 ## Which edition should I use?
 
@@ -34,11 +47,13 @@ Both editions have the same interface and features. They update themselves from 
 * **Map:** streets, satellite and topographic views. Click to pick a point; right-click to jump there instantly.
 * **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
 * **Routes:**
-  * add checkpoints on the map;
+  * add checkpoints on the map, then drag them on the map or in the list to move and reorder them;
   * each leg follows roads, cycle paths, footpaths, sea lanes or a straight line, routed by OpenStreetMap or by Google with your own API key;
   * set a speed per leg, an exact speed at chosen checkpoints, and wait times;
   * acceleration and braking change speed smoothly;
-  * the route line is coloured by speed, with a speed chart.
+  * ask for up to three alternative routes and pick one in the list or by clicking it on the map;
+  * the Build route button shows each step as it happens (routing each leg, speed limits, turns, ETA) and how far along it is;
+  * the route line is outlined so it stands out from the roads, and coloured by speed, with a speed chart.
 * **Road-aware driving (experimental):**
   * follows each road's typical speed and public speed limits;
   * slows for bends, roundabouts and U-turns, and on private or gated roads;

@@ -32,6 +32,7 @@ FIELD_MASK = ",".join(
         "routes.legs.steps.polyline.encodedPolyline",
         "routes.legs.steps.navigationInstruction.maneuver",
         "routes.warnings",
+        "routes.routeLabels",
     ]
 )
 TRAVEL_MODES = {"car": "DRIVE", "bike": "BICYCLE", "foot": "WALK"}
@@ -98,6 +99,20 @@ def _error_message(r: httpx.Response) -> str:
 async def compute_route(
     client: httpx.AsyncClient, key: str, a: geo.LatLon, b: geo.LatLon, mode: str, traffic: bool = True
 ) -> GoogleRoute:
+    return (await compute_routes(client, key, a, b, mode, traffic))[0]
+
+
+async def compute_routes(
+    client: httpx.AsyncClient,
+    key: str,
+    a: geo.LatLon,
+    b: geo.LatLon,
+    mode: str,
+    traffic: bool = True,
+    alternatives: bool = False,
+) -> list[GoogleRoute]:
+    """The default route, then (with ``alternatives``) up to three alternatives Google offers.
+    Alternatives arrive in the same response, so no extra requests are made."""
     travel = TRAVEL_MODES.get(mode)
     if travel is None:
         raise GoogleError(f"Google routing does not support the '{mode}' mode")
@@ -110,6 +125,8 @@ async def compute_route(
     }
     if travel == "DRIVE":
         body["routingPreference"] = "TRAFFIC_AWARE" if traffic else "TRAFFIC_UNAWARE"
+    if alternatives:
+        body["computeAlternativeRoutes"] = True
     try:
         r = await client.post(
             ROUTES_URL,
@@ -124,10 +141,14 @@ async def compute_route(
     routes = data.get("routes") or []
     if not routes:
         raise GoogleError(f"Google found no {mode} route between these points")
-    route = routes[0]
-    pts = decode_polyline(route.get("polyline", {}).get("encodedPolyline", ""))
-    if len(pts) < 2:
+    out = [_parse_route(route) for route in routes]
+    if len(out[0].points) < 2:
         raise GoogleError("Google returned an empty route")
+    return [out[0], *(g for g in out[1:] if len(g.points) >= 2)]
+
+
+def _parse_route(route: dict) -> GoogleRoute:
+    pts = decode_polyline(route.get("polyline", {}).get("encodedPolyline", ""))
     steps: list[dict] = []
     s = 0.0
     for leg in route.get("legs", []):
@@ -147,7 +168,7 @@ async def compute_route(
         points=pts,
         duration_s=_seconds(route.get("duration")),
         static_duration_s=_seconds(route.get("staticDuration")),
-        distance_m=float(route.get("distanceMeters") or geo.polyline_length(pts)),
+        distance_m=float(route.get("distanceMeters") or (geo.polyline_length(pts) if pts else 0.0)),
         steps=steps,
         warnings=list(route.get("warnings") or []),
     )

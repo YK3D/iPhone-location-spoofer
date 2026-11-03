@@ -14,11 +14,13 @@ own per-segment speeds ("zones"), its ETA, and notable road features.
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 
@@ -38,6 +40,30 @@ MODES = ("car", "bike", "foot", "sea", "straight")
 ROAD_MODES = ("car", "bike", "foot")
 OFFNET_MIN_M = 25.0  # a gap this long between the waypoint and the road network is "off-network"
 
+# The public FOSSGIS servers allow at most one request per second
+# (https://routing.openstreetmap.de/about.html). Your own OSRM server (SPOOFER_OSRM_*) is not throttled.
+OSRM_PUBLIC_HOST = "routing.openstreetmap.de"
+OSRM_MIN_INTERVAL_S = 1.0
+
+# Alternative routes. OSRM returns at most one alternative in practice, so extra ones are found by
+# routing through a "via" point beside the main route and keeping only detours that are sensible.
+MAX_ALTERNATIVES = 3
+VIA_OFFSETS = (0.2, -0.2, 0.35, -0.35)  # sideways offset of the via point, as a share of the leg length
+MAX_VIA_REQUESTS = 6  # extra routing requests per route build, on top of one per leg
+MIN_ALT_LEG_M = 400.0  # shorter legs don't get detour alternatives
+ALT_MAX_DURATION_RATIO = 1.5  # a detour may take at most 50 % longer than the main route
+ALT_MAX_DISTANCE_RATIO = 1.6
+ALT_MAX_OVERLAP = 0.8  # share of road segments a detour may share with an already chosen route
+VIA_MAX_TURN_DEG = 150.0  # a sharper turn at the via point is a U-turn "spike": rejected
+# A detour may not turn back on itself more often than the main route does: a heading reversal of
+# more than REVERSAL_MIN_DEG over REVERSAL_WINDOW x REVERSAL_STEP_M either side of a point (up one
+# street and back down the next, or a lap round a block) is not a real alternative.
+REVERSAL_STEP_M = 50.0
+REVERSAL_WINDOW = 6
+REVERSAL_MIN_DEG = 135.0
+
+Report = Optional[Callable[[str], Awaitable[None]]]
+
 
 class RoutingError(Exception):
     pass
@@ -52,10 +78,18 @@ class RouteResult:
     features: dict = field(default_factory=dict)  # counts / lengths of notable road features
     notes: list[str] = field(default_factory=list)
     exportable: bool = True  # False for Google results (caching/export restricted)
+    kind: str = "main"  # main | alternative (offered by the provider) | detour (found through a via point)
+
+
+@dataclass
+class ViaBudget:
+    """How many extra (via point) routing requests one route build may still make."""
+
+    left: int = MAX_VIA_REQUESTS
 
 
 _client: Optional[httpx.AsyncClient] = None
-_cache: dict[tuple, RouteResult] = {}
+_cache: dict[tuple, list[RouteResult]] = {}
 
 
 def client() -> httpx.AsyncClient:
@@ -81,27 +115,59 @@ async def route(
     road_data: bool = False,
 ) -> RouteResult:
     """Path from a to b. ``road_data`` also fetches public speed-limit data (slower)."""
+    return (await route_options(a, b, mode, provider, google_key, road_data))[0]
+
+
+async def route_options(
+    a: geo.LatLon,
+    b: geo.LatLon,
+    mode: str,
+    provider: str = "osrm",
+    google_key: Optional[str] = None,
+    road_data: bool = False,
+    count: int = 0,
+    budget: Optional[ViaBudget] = None,
+    report: Report = None,
+) -> list[RouteResult]:
+    """The main path from a to b, then up to ``count`` alternative paths (fastest first).
+    Sea and straight legs have no alternatives."""
     if mode not in MODES:
         raise RoutingError(f"Unknown travel mode {mode!r}")
+    count = max(0, min(int(count), MAX_ALTERNATIVES))
     if mode == "straight" or geo.haversine_m(a, b) < 1.0:
-        return RouteResult([a, b], "straight")
+        return [RouteResult([a, b], "straight")]
     if mode == "sea":
         key = ("sea", _r(a), _r(b))
         if key not in _cache:
-            _cache[key] = RouteResult(await asyncio.to_thread(_sea_route, a, b), "searoute")
+            _cache[key] = [RouteResult(await asyncio.to_thread(_sea_route, a, b), "searoute")]
         return _cache[key]
     if provider == "google":
         if not google_key:
             raise RoutingError("Google routing needs an API key (Settings > Google Maps)")
-        return await _google_route(a, b, mode, google_key)
-    key = ("osrm", _r(a), _r(b), mode, road_data)
+        return await _google_routes(a, b, mode, google_key, count)
+    key = ("osrm", _r(a), _r(b), mode, road_data, count)
     if key in _cache:
         return _cache[key]
-    res = await _osrm_route(a, b, mode, road_data)
+    res, complete = await _osrm_options(a, b, mode, road_data, count, budget or ViaBudget(0), report)
     if len(_cache) > 300:
         _cache.clear()
-    _cache[key] = res
+    if complete:  # a search cut short by the request budget may find more next time
+        _cache[key] = res
     return res
+
+
+def _osrm_reserve(base_url: str) -> float:
+    """Seconds to wait before the next request to the public OSRM server (one per second)."""
+    global _osrm_next
+    if OSRM_MIN_INTERVAL_S <= 0 or OSRM_PUBLIC_HOST not in base_url:
+        return 0.0
+    now = time.monotonic()
+    start = max(now, _osrm_next)
+    _osrm_next = start + OSRM_MIN_INTERVAL_S
+    return start - now
+
+
+_osrm_next = 0.0
 
 
 def _r(p: geo.LatLon) -> tuple[float, float]:
@@ -136,10 +202,59 @@ def _with_connectors(
     return full, zones, features
 
 
-async def _osrm_route(a: geo.LatLon, b: geo.LatLon, mode: str, road_data: bool) -> RouteResult:
+UNKNOWN_NODE = -1  # an OSM node id OSRM could not report exactly
+
+
+@dataclass
+class _Candidate:
+    pts: list[geo.LatLon]  # OSRM geometry (snapped to the road network)
+    speeds: list[Optional[float]]  # per geometry segment, m/s
+    nodes: list[list[int]]  # OSM node ids per OSRM leg (a detour has two legs)
+    uturns: int
+    duration: float
+    distance: float
+    kind: str = "main"
+    via_turn: float = 0.0  # turn angle at the via point, degrees (0 = straight on)
+
+    def pairs(self) -> set[tuple[int, int]]:
+        out: set[tuple[int, int]] = set()
+        for ns in self.nodes:
+            for x, y in zip(ns, ns[1:]):
+                if x > 0 and y > 0:
+                    out.add((x, y) if x < y else (y, x))
+        return out
+
+    def doubles_back(self) -> bool:
+        """True when the path uses a road segment twice (a loop round a block or a spike to the
+        via point and back). The segment the via point sits on may end one leg and start the next
+        when the path carries straight on (same direction); driving it back counts."""
+        def key(x: int, y: int) -> tuple[int, int]:
+            return (x, y) if x < y else (y, x)
+
+        seen: set[tuple[int, int]] = set()
+        for k, ns in enumerate(self.nodes):
+            prev = self.nodes[k - 1] if k > 0 else []
+            for i, (x, y) in enumerate(zip(ns, ns[1:])):
+                if x <= 0 or y <= 0:
+                    continue
+                pair = key(x, y)
+                junction = i == 0 and len(prev) >= 2 and (x, y) == (prev[-2], prev[-1])
+                if pair in seen and not junction:
+                    return True
+                seen.add(pair)
+        return False
+
+
+async def _osrm_fetch(coords: list[geo.LatLon], mode: str, alternatives: int = 0) -> dict:
     base = OSRM_URLS[mode].rstrip("/")
-    url = f"{base}/route/v1/driving/{a[1]:.6f},{a[0]:.6f};{b[1]:.6f},{b[0]:.6f}"
+    path = ";".join(f"{lon:.6f},{lat:.6f}" for lat, lon in coords)
+    url = f"{base}/route/v1/driving/{path}"
     params = {"overview": "full", "geometries": "geojson", "steps": "true", "annotations": "speed,nodes"}
+    if alternatives:
+        params["alternatives"] = str(alternatives)
+    wait = _osrm_reserve(base)
+    if wait > 0:
+        await asyncio.sleep(wait)
     try:
         r = await client().get(url, params=params)
     except httpx.HTTPError as e:
@@ -154,38 +269,167 @@ async def _osrm_route(a: geo.LatLon, b: geo.LatLon, mode: str, road_data: bool) 
     except ValueError as e:
         raise RoutingError(f"Routing server returned HTTP {r.status_code}") from e
     if data.get("code") != "Ok" or not data.get("routes"):
+        if alternatives and data.get("code") == "TooBig":
+            # a self-hosted server may allow fewer alternatives: ask for the main route only
+            return await _osrm_fetch(coords, mode, 0)
         raise RoutingError(f"No {mode} route found: {data.get('message') or data.get('code')}")
-    rt = data["routes"][0]
-    coords = rt["geometry"]["coordinates"]
-    pts = [(lat, lon) for lon, lat in coords]
+    return data
+
+
+def _parse_osrm(rt: dict, kind: str) -> _Candidate:
+    pts = [(lat, lon) for lon, lat in rt["geometry"]["coordinates"]]
     speeds: list[Optional[float]] = []
-    nodes: list[int] = []
+    nodes: list[list[int]] = []
     uturns = 0
-    for leg in rt.get("legs", []):
+    legs = rt.get("legs", [])
+    for leg in legs:
         ann = leg.get("annotation") or {}
         speeds.extend(float(v) if v and v > 0 else None for v in ann.get("speed", []))
-        nodes.extend(ann.get("nodes", []))
+        # OSRM writes node ids of 10 billion and up as rounded floats (1.134297535e+10), which no
+        # longer name one node: keep their place in the list but mark them unknown.
+        nodes.append([v if isinstance(v, int) and v > 0 else UNKNOWN_NODE for v in ann.get("nodes", [])])
         for st in leg.get("steps", []):
             if (st.get("maneuver") or {}).get("modifier") == "uturn":
                 uturns += 1
     if len(speeds) != len(pts) - 1:  # defensive: annotation must match the geometry
         speeds = [None] * (len(pts) - 1)
-    notes: list[str] = []
-    features: dict = {"uturns": uturns}
-    if road_data and mode == "car" and nodes:
+    via_turn = 0.0
+    for l0, l1 in zip(legs, legs[1:]):
+        before = ((l0.get("steps") or [{}])[-1].get("maneuver") or {}).get("bearing_before")
+        after = ((l1.get("steps") or [{}])[0].get("maneuver") or {}).get("bearing_after")
+        if before is not None and after is not None:
+            via_turn = max(via_turn, abs((after - before + 540) % 360 - 180))
+    return _Candidate(pts, speeds, nodes, uturns, float(rt.get("duration") or 0), float(rt.get("distance") or 0), kind, via_turn)
+
+
+def _resample(pts: list[geo.LatLon], step: float) -> list[geo.LatLon]:
+    """Points every `step` metres along a polyline."""
+    out = [pts[0]]
+    carry = 0.0  # distance from the last sample to the start of the current segment
+    for a, b in zip(pts, pts[1:]):
+        d = geo.haversine_m(a, b)
+        if d <= 0:
+            continue
+        t = step - carry
+        while t <= d:
+            out.append(geo.interpolate(a, b, t / d))
+            t += step
+        carry = d - (t - step)
+    return out
+
+
+def _reversals(pts: list[geo.LatLon]) -> int:
+    """How many times the path turns back on itself (see REVERSAL_MIN_DEG)."""
+    if len(pts) < 2:
+        return 0
+    r, w = _resample(pts, REVERSAL_STEP_M), REVERSAL_WINDOW
+    events, inside = 0, False
+    for i in range(w, len(r) - w):
+        b1, b2 = geo.bearing_deg(r[i - w], r[i]), geo.bearing_deg(r[i], r[i + w])
+        if abs((b2 - b1 + 540) % 360 - 180) > REVERSAL_MIN_DEG:
+            events += not inside
+            inside = True
+        else:
+            inside = False
+    return events
+
+
+def _point_at_fraction(pts: list[geo.LatLon], f: float) -> geo.LatLon:
+    cum = geo.cumulative(pts)
+    target = cum[-1] * f
+    i = max(1, bisect.bisect_left(cum, target))
+    if i >= len(pts):
+        return pts[-1]
+    seg = cum[i] - cum[i - 1]
+    return geo.interpolate(pts[i - 1], pts[i], (target - cum[i - 1]) / seg if seg > 0 else 0.0)
+
+
+async def _add_detours(
+    a: geo.LatLon, b: geo.LatLon, mode: str, cands: list[_Candidate], count: int, budget: ViaBudget, report: Report
+) -> bool:
+    """Find detour alternatives through via points on either side of the main route.
+    Returns False when the request budget ran out before the search finished."""
+    main = cands[0]
+    length = geo.haversine_m(a, b)
+    if length < MIN_ALT_LEG_M or len(main.pts) < 2:
+        return True
+    mid = _point_at_fraction(main.pts, 0.5)
+    heading = geo.bearing_deg(a, b)
+    taken = [c.pairs() for c in cands]
+    main_reversals = _reversals(main.pts)
+    for f in VIA_OFFSETS:
+        if len(cands) - 1 >= count:
+            return True
+        if budget.left <= 0:
+            return False
+        budget.left -= 1
+        if report:
+            await report("Searching for alternative routes")
+        via = geo.destination(mid, (heading + (90 if f > 0 else -90)) % 360, abs(f) * length)
         try:
-            info = await road_speed.fetch_osm_roads(client(), nodes)
-            if len(info.maxspeed_kmh) == len(speeds):
-                speeds = _apply_osm(speeds, info, features)
-                notes.append(f"Speed limits known for {info.coverage:.0%} of this leg ({info.source}).")
-            elif info.source:
-                notes.append(f"Speed-limit data {info.source}.")
+            data = await _osrm_fetch([a, via, b], mode)
+        except RoutingError as e:
+            log.info("detour search failed: %s", e)
+            continue
+        c = _parse_osrm(data["routes"][0], "detour")
+        if c.via_turn > VIA_MAX_TURN_DEG or c.uturns > main.uturns or c.doubles_back():
+            continue  # it turns back at the via point or drives a road twice
+        if _reversals(c.pts) > main_reversals:
+            continue  # up one street and back down the next: not a real alternative
+        if main.duration and c.duration > main.duration * ALT_MAX_DURATION_RATIO:
+            continue
+        if main.distance and c.distance > main.distance * ALT_MAX_DISTANCE_RATIO:
+            continue
+        pairs = c.pairs()
+        if pairs and any(len(pairs & t) / len(pairs) > ALT_MAX_OVERLAP for t in taken):
+            continue  # practically the same roads as a route we already have
+        cands.append(c)
+        taken.append(pairs)
+    return True
+
+
+async def _osrm_options(
+    a: geo.LatLon, b: geo.LatLon, mode: str, road_data: bool, count: int, budget: ViaBudget, report: Report
+) -> tuple[list[RouteResult], bool]:
+    data = await _osrm_fetch([a, b], mode, count)
+    cands = [_parse_osrm(rt, "main" if i == 0 else "alternative") for i, rt in enumerate(data["routes"][: 1 + count])]
+    complete = True
+    if len(cands) - 1 < count:
+        complete = await _add_detours(a, b, mode, cands, count, budget, report)
+    if len(cands) > 2:  # keep the main route first, alternatives fastest first
+        cands[1:] = sorted(cands[1:], key=lambda c: c.duration)
+    infos: list[Optional[road_speed.RoadInfo]] = [None] * len(cands)
+    overpass_failed = False
+    if road_data and mode == "car" and any(any(n) for c in cands for n in c.nodes):
+        if report:
+            await report("Analysing speed-limit data (OpenStreetMap)")
+        try:
+            flat = [n for c in cands for n in c.nodes]
+            got = await road_speed.fetch_osm_roads_multi(client(), flat)
+            k = 0
+            for i, c in enumerate(cands):
+                infos[i] = road_speed.concat(got[k:k + len(c.nodes)])
+                k += len(c.nodes)
         except (httpx.HTTPError, ValueError) as e:
             log.info("overpass failed: %r", e)
-            notes.append("Public speed-limit data (OpenStreetMap Overpass) was unavailable; used typical road speeds.")
-    full, zones, f2 = _with_connectors(a, b, pts, speeds, mode)
-    features.update(f2)
-    return RouteResult(full, "osrm", zones, float(rt.get("duration") or 0) or None, features, notes)
+            overpass_failed = True
+    results = []
+    for c, info in zip(cands, infos):
+        notes: list[str] = []
+        features: dict = {"uturns": c.uturns}
+        speeds = c.speeds
+        if road_data and mode == "car" and any(c.nodes):
+            if overpass_failed:
+                notes.append("Public speed-limit data (OpenStreetMap Overpass) was unavailable; used typical road speeds.")
+            elif info is not None and len(info.maxspeed_kmh) == len(speeds):
+                speeds = _apply_osm(speeds, info, features)
+                notes.append(f"Speed limits known for {info.coverage:.0%} of this leg ({info.source}).")
+            elif info is not None and info.source:
+                notes.append(f"Speed-limit data {info.source}.")
+        full, zones, f2 = _with_connectors(a, b, c.pts, speeds, mode)
+        features.update(f2)
+        results.append(RouteResult(full, "osrm", zones, c.duration or None, features, notes, kind=c.kind))
+    return results, complete
 
 
 def _apply_osm(speeds: list[Optional[float]], info: road_speed.RoadInfo, features: dict) -> list[Optional[float]]:
@@ -208,11 +452,18 @@ def _apply_osm(speeds: list[Optional[float]], info: road_speed.RoadInfo, feature
     return out
 
 
-async def _google_route(a: geo.LatLon, b: geo.LatLon, mode: str, key: str) -> RouteResult:
+async def _google_routes(a: geo.LatLon, b: geo.LatLon, mode: str, key: str, count: int = 0) -> list[RouteResult]:
     try:
-        g = await google_api.compute_route(client(), key, a, b, mode)
+        found = await google_api.compute_routes(client(), key, a, b, mode, alternatives=count > 0)
     except google_api.GoogleError as e:
         raise RoutingError(str(e)) from e
+    out = [_google_result(a, b, mode, g) for g in found[: 1 + count]]
+    for r in out[1:]:
+        r.kind = "alternative"
+    return out
+
+
+def _google_result(a: geo.LatLon, b: geo.LatLon, mode: str, g: google_api.GoogleRoute) -> RouteResult:
     # step speeds -> zones along the decoded polyline (scaled to its geometric length)
     geo_len = geo.polyline_length(g.points)
     scale = geo_len / g.distance_m if g.distance_m > 0 else 1.0
