@@ -44,5 +44,7 @@
   <Capabilities>
     <Capability Name="internetClient" />
     <rescap:Capability Name="runFullTrust" />
+    <!-- "My real location" shows this PC's position on the map (precise location when Windows allows it). -->
+    <DeviceCapability Name="location" />
   </Capabilities>
 </Package>

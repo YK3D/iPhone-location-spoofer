@@ -1,109 +1,140 @@
-"""Regenerate every app icon file from assets/icon/source.webp.
+"""Regenerate every app icon file from the original artwork, assets/icon/source.jpg.
 
-    python assets/icon/make_icons.py        (needs Pillow: pip install pillow)
+    python assets/icon/make_icons.py        (needs Pillow and NumPy: pip install pillow numpy)
 
-The source artwork is a 1024 px render of a navy rounded tile on a grey canvas. The tile is
-786 x 818 px (not square) and the USB cable pokes out of its bottom edge, so this script:
+source.jpg is kept exactly as it was supplied (a 1375 px JPEG: the phone and the masked pin on a
+white background). This script never modifies it. It:
 
-1. cuts the tile out of the grey canvas (the cable is clipped to the tile),
-2. widens it to a square by extending the navy background 16 px on each side,
-3. writes PNGs (16-1024 px), a multi-size icon.ico and the copies the UI serves.
+1. removes the white background: every near-white area connected to the image border, plus the
+   white areas enclosed by the artwork that are background showing through (the gap between the
+   pin and its ring). White strokes that belong to the artwork (the phone's rim, the arrows, the
+   compass) are separated from the background by the dark outline, so they stay;
+2. turns the soft JPEG edge into real transparency: along the outline, each pixel's opacity is
+   worked out from how much white it was mixed with, and the white is taken back out of its colour,
+   so the icon has no white fringe on dark backgrounds (taskbar, dark title bars);
+3. crops tightly around the artwork and centres it on a square transparent canvas, so it fills
+   as much of the icon as possible (the phone's own rounded corners give the rounded outline);
+4. writes PNGs (16-1024 px), a multi-size icon.ico and the copies the UI serves (ui/icon-*.png).
 
 Small sizes are sharpened slightly after downscaling so they don't look soft.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 
-from PIL import Image, ImageChops, ImageDraw, ImageFilter
+import numpy as np
+from PIL import Image, ImageChops, ImageFilter
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-SOURCE = HERE / "source.webp"
+SOURCE = HERE / "source.jpg"
 
-# Tile geometry in the source image (measured from its navy pixels).
-TILE_LEFT, TILE_TOP, TILE_W, TILE_H = 119, 103, 786, 818
-TILE_RADIUS = 152
-NAVY = (24, 35, 52)
-MARGIN = 1 / 32  # transparent border around the tile, as a share of the icon size
-SS = 4  # supersampling factor for anti-aliased masks
+WHITE_MIN = 205  # a pixel is background-white when every channel is at least this ...
+WHITE_CHROMA = 28  # ... and its channels differ by at most this (JPEG noise is slightly tinted)
+# Enclosed white areas smaller than this share of the image are part of the artwork (highlights,
+# arrow strokes); the hole between the pin and its ring is about 0.2 %, the strokes are larger.
+HOLE_MAX_SHARE = 0.004
+HOLES = [(870, 230)]  # (y, x) inside each enclosed background area: the gap inside the pin's ring
+EDGE_PX = 3  # width of the soft edge band that gets fractional opacity
+OUTLINE = np.array([29.0, 36.0, 51.0])  # the artwork's dark navy outline colour
+MARGIN = 1 / 64  # transparent border around the artwork, as a share of the icon size
 
 PNG_SIZES = [16, 32, 48, 64, 128, 256, 512, 1024]
 ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
 UI_SIZES = [32, 64, 256]
 
 
-def rounded_mask(w: int, h: int, radius: float, inset: float = 0.0) -> Image.Image:
-    """Anti-aliased mask of a (w x h) rounded rectangle shrunk by `inset` px on every side."""
-    big = Image.new("L", (w * SS, h * SS), 0)
-    ImageDraw.Draw(big).rounded_rectangle(
-        [inset * SS, inset * SS, (w - inset) * SS - 1, (h - inset) * SS - 1],
-        radius=max(0.0, radius - inset) * SS,
-        fill=255,
-    )
-    return big.resize((w, h), Image.LANCZOS)
+def _flood(mask: np.ndarray, seeds: list[tuple[int, int]]) -> np.ndarray:
+    """Pixels of `mask` 4-connected to any seed."""
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    q = deque((y, x) for y, x in seeds if mask[y, x])
+    for y, x in q:
+        out[y, x] = True
+    while q:
+        y, x = q.popleft()
+        for ny, nx in ((y + 1, x), (y - 1, x), (y, x + 1), (y, x - 1)):
+            if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not out[ny, nx]:
+                out[ny, nx] = True
+                q.append((ny, nx))
+    return out
+
+
+def _dilate(mask: np.ndarray, r: int) -> np.ndarray:
+    img = Image.fromarray((mask * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(2 * r + 1))
+    return np.asarray(img) > 127
+
+
+def cutout() -> Image.Image:
+    """The artwork with a transparent background, cropped to its outline."""
+    rgb = np.asarray(Image.open(SOURCE).convert("RGB")).astype(np.float64)
+    h, w, _ = rgb.shape
+    hi, lo = rgb.max(axis=2), rgb.min(axis=2)
+    white = (lo >= WHITE_MIN) & (hi - lo <= WHITE_CHROMA)
+    border = [(y, x) for y in (0, h - 1) for x in range(0, w, 7)] + [(y, x) for x in (0, w - 1) for y in range(0, h, 7)]
+    background = _flood(white, border)
+    for y, x in HOLES:
+        hole = _flood(white, [(y, x)])
+        if 0 < hole.sum() <= HOLE_MAX_SHARE * h * w:
+            background |= hole
+    # Opacity: 0 on the background, 1 inside the artwork; across the soft edge band it follows how
+    # much of the white background is mixed into the pixel (relative to the dark outline).
+    band = _dilate(background, EDGE_PX) & ~background
+    alpha = np.where(background, 0.0, 1.0)
+    white_v, dark = 255.0, OUTLINE
+    mix = np.clip((white_v - rgb) / (white_v - dark), 0.0, 1.0).mean(axis=2)
+    alpha = np.where(band, np.clip(mix, 0.0, 1.0), alpha)
+    # Take the white back out of the edge colours: c = (p - (1 - a) * 255) / a.
+    a3 = np.maximum(alpha, 1e-3)[..., None]
+    colour = np.clip((rgb - (1.0 - a3) * white_v) / a3, 0.0, 255.0)
+    colour = np.where(band[..., None], colour, rgb)
+    rgba = np.dstack([colour, alpha * 255.0]).round().astype(np.uint8)
+    img = Image.fromarray(rgba, "RGBA")
+    return img.crop(img.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox())
 
 
 def master() -> Image.Image:
-    src = Image.open(SOURCE).convert("RGB")
-    tile = src.crop((TILE_LEFT, TILE_TOP, TILE_LEFT + TILE_W, TILE_TOP + TILE_H))
-    side = TILE_H
-    pad = (side - TILE_W) // 2
-    # Navy square, then the artwork pasted over it. The artwork keeps only pixels well inside
-    # its own tile edge, so the grey canvas never bleeds into the widened background.
-    canvas = Image.new("RGB", (side, side), NAVY)
-    art_mask = rounded_mask(TILE_W, TILE_H, TILE_RADIUS, inset=4).filter(ImageFilter.GaussianBlur(1.2))
-    canvas.paste(tile, (pad, 0), art_mask)
-    square_shape = Image.new("L", (side * SS, side * SS), 0)
-    ImageDraw.Draw(square_shape).rounded_rectangle([0, 0, side * SS - 1, side * SS - 1], radius=TILE_RADIUS * SS, fill=255)
-    alpha = square_shape.resize((side, side), Image.LANCZOS)
-    out = canvas.convert("RGBA")
-    out.putalpha(alpha)
-    # Place the tile on a 1024 canvas with a small transparent margin.
+    """1024 px square icon: the cut-out artwork centred with a small transparent margin."""
+    art = cutout()
     size = 1024
-    inner = round(size * (1 - 2 * MARGIN))
-    tile_scaled = out.resize((inner, inner), Image.LANCZOS)
-    final = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    off = (size - inner) // 2
-    final.alpha_composite(tile_scaled, (off, off))
-    return final
+    room = round(size * (1 - 2 * MARGIN))
+    scale = room / max(art.size)
+    art = premultiplied_resize(art, (max(1, round(art.width * scale)), max(1, round(art.height * scale))))
+    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    out.alpha_composite(art, ((size - art.width) // 2, (size - art.height) // 2))
+    return out
+
+
+def premultiplied_resize(img: Image.Image, size: tuple[int, int]) -> Image.Image:
+    # Premultiplied resampling avoids dark or light fringes along the transparent edge.
+    r, g, b, a = img.split()
+    pre = Image.merge("RGB", [ImageChops.multiply(c, a) for c in (r, g, b)]).resize(size, Image.LANCZOS)
+    a_small = a.resize(size, Image.LANCZOS)
+    ar = np.asarray(a_small).astype(np.float64)[..., None] / 255.0
+    rgb = np.asarray(pre).astype(np.float64) / np.maximum(ar, 1e-3)
+    return Image.fromarray(np.dstack([np.clip(rgb, 0, 255), ar[..., 0] * 255]).round().astype(np.uint8), "RGBA")
 
 
 def scaled(img: Image.Image, n: int) -> Image.Image:
-    # Premultiplied downscale avoids dark fringes on the transparent corners.
-    r, g, b, a = img.split()
-    pre = Image.merge("RGB", [ImageChops.multiply(c, a) for c in (r, g, b)])
-    pre_small = pre.resize((n, n), Image.LANCZOS)
-    a_small = a.resize((n, n), Image.LANCZOS)
+    small = premultiplied_resize(img, (n, n))
     if n <= 64:
-        pre_small = pre_small.filter(ImageFilter.UnsharpMask(radius=0.6, percent=80, threshold=1))
-    # un-premultiply
-    px_rgb = pre_small.load()
-    px_a = a_small.load()
-    out = Image.new("RGBA", (n, n))
-    po = out.load()
-    for y in range(n):
-        for x in range(n):
-            al = px_a[x, y]
-            if al == 0:
-                po[x, y] = (0, 0, 0, 0)
-                continue
-            rr, gg, bb = px_rgb[x, y]
-            po[x, y] = (min(255, rr * 255 // al), min(255, gg * 255 // al), min(255, bb * 255 // al), al)
-    return out
+        r, g, b, a = small.split()
+        rgb = Image.merge("RGB", (r, g, b)).filter(ImageFilter.UnsharpMask(radius=0.6, percent=80, threshold=1))
+        small = Image.merge("RGBA", (*rgb.split(), a))
+    return small
 
 
 def main() -> None:
     big = master()
-    images = {n: (big if n == 1024 else scaled(big, n)) for n in sorted(set(PNG_SIZES + ICO_SIZES + UI_SIZES))}
     for n in PNG_SIZES:
-        images[n].save(HERE / f"icon-{n}.png", optimize=True)
-    ico_imgs = [images[n] for n in ICO_SIZES]
-    ico_imgs[-1].save(HERE / "icon.ico", sizes=[(n, n) for n in ICO_SIZES], append_images=ico_imgs[:-1])
+        scaled(big, n).save(HERE / f"icon-{n}.png", optimize=True)
+    ico_images = [scaled(big, n) for n in ICO_SIZES]
+    ico_images[-1].save(HERE / "icon.ico", sizes=[(n, n) for n in ICO_SIZES], append_images=ico_images[:-1])
     for n in UI_SIZES:
-        images[n].save(ROOT / "ui" / f"icon-{n}.png", optimize=True)
-    print("wrote", ", ".join(f"icon-{n}.png" for n in PNG_SIZES), "icon.ico and ui/icon-{32,64,256}.png")
+        scaled(big, n).save(ROOT / "ui" / f"icon-{n}.png", optimize=True)
+    print(f"wrote {len(PNG_SIZES)} PNGs, icon.ico and {len(UI_SIZES)} UI icons from {SOURCE.name}")
 
 
 if __name__ == "__main__":

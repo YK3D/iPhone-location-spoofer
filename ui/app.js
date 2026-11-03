@@ -172,6 +172,15 @@ baseLayers.Streets.addTo(map);
 const layerControl = L.control.layers(baseLayers).addTo(map);
 L.control.scale().addTo(map);
 
+// Explicit layers, bottom to top: route lines, the device trail, alternative labels, markers.
+map.createPane("routeMain").style.zIndex = 410;
+map.createPane("trail").style.zIndex = 420;
+map.createPane("altLabels").style.zIndex = 590;
+// Route lines (alternatives first, the chosen route on top) share one canvas: the chosen route is
+// many short coloured pieces, which a canvas draws cheaply, and one canvas hit-tests all the lines
+// (a canvas above SVG lines would swallow their clicks). Its tolerance makes the line easy to grab.
+const routeRenderer = L.canvas({ pane: "routeMain", padding: 0.4, tolerance: 4 });
+const trailRenderer = L.svg({ pane: "trail" });
 const routeLayer = L.layerGroup().addTo(map);
 const wpLineLayer = L.layerGroup().addTo(map);
 const wpLayer = L.layerGroup().addTo(map);
@@ -181,8 +190,11 @@ let pickMarker = null, deviceMarker = null, previewMarker = null, trailLine = nu
 // without them the icon's top-left corner sat on the point, half an icon off the route.
 const icon = (cls, html = "", size = 14) => L.divIcon({ className: cls, html, iconSize: [size, size], iconAnchor: [size / 2, size / 2] });
 
+let suppressClickUntil = 0; // a route-line drag ends with a click that must not add a checkpoint
 map.on("click", (e) => {
+  if (performance.now() < suppressClickUntil) return;
   const lon = wrapLon(e.latlng.lng);
+  if (placing) { insertWaypointAt(placing.index, e.latlng.lat, lon); stopPlacement(); return; }
   if (state.tab === "route") addWaypoint(e.latlng.lat, lon);
   else setPicked(e.latlng.lat, lon, false);
 });
@@ -279,14 +291,26 @@ function wireInfoButtons(root = document) {
 document.addEventListener("scroll", hideTip, true);
 
 // ------------------------------------------------------------------ themes & appearance
+const DEFAULT_THEME = "graphite";
+// Map theme: "dark" (default), "light", or "auto" (dark only with a dark app theme). Older versions
+// stored a checkbox (night_map) that meant "auto"; unticking it meant a light map.
+function mapTheme(s) {
+  if (["dark", "light", "auto"].includes(s.map_theme)) return s.map_theme;
+  return s.night_map === true ? "auto" : s.night_map === false ? "light" : "dark";
+}
 function applyAppearance() {
   const s = settings();
-  const theme = THEMES.some((t) => t[0] === s.theme) ? s.theme : "system";
+  const theme = THEMES.some((t) => t[0] === s.theme) ? s.theme : DEFAULT_THEME;
   document.documentElement.dataset.theme = theme;
   const dark = DARK_THEMES.has(theme) || (theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.classList.toggle("night-map", !!s.night_map && dark);
+  const mt = mapTheme(s);
+  const nightMap = mt === "dark" || (mt === "auto" && dark);
+  document.documentElement.classList.toggle("night-map", nightMap);
   document.documentElement.classList.toggle("compact", !!s.compact);
   document.querySelectorAll(".theme-card").forEach((c) => c.classList.toggle("active", c.dataset.theme === theme));
+  $("pref-map-theme").value = mt;
+  // remembered for the first paint of the next start (index.html applies it before the CSS renders)
+  try { localStorage.setItem("ls-appearance", JSON.stringify({ theme, nightMap })); } catch (_) { /* storage blocked */ }
 }
 function renderThemeGrid() {
   $("theme-grid").replaceChildren(...THEMES.map(([id, name, bg, accent, panel]) =>
@@ -299,7 +323,7 @@ function renderThemeGrid() {
   applyAppearance();
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyAppearance);
-$("pref-night-map").onchange = (e) => { settings().night_map = e.target.checked; applyAppearance(); saveSettingsSoon(); };
+$("pref-map-theme").onchange = (e) => { settings().map_theme = e.target.value; applyAppearance(); saveSettingsSoon(); };
 $("pref-compact").onchange = (e) => { settings().compact = e.target.checked; applyAppearance(); saveSettingsSoon(); };
 
 // ------------------------------------------------------------------ collapsible sections (open/closed state is remembered)
@@ -460,10 +484,18 @@ function showRealLocation(afterStop = false) {
       if (afterStop) realMarker.openPopup();
       resolve(true);
     }, (err) => {
-      toast(err.code === 1 ? "Location permission was denied, so your real location can't be shown." :
-        "Your real location isn't available (turn on location services for this computer to show it).", !afterStop);
+      // In the Windows app the page's own request is always allowed, so a refusal comes from Windows:
+      // offer its location settings. In a browser, the site permission is in the address bar.
+      const winApp = state.status && state.status.app === "standalone" && /Windows/.test(navigator.userAgent);
+      const settingsAction = winApp ? { label: "Location settings", run: () => { location.href = "ms-settings:privacy-location"; } } : null;
+      if (err.code === 1) {
+        toast(winApp ? "Windows blocked location access. Turn on Location services and “Let desktop apps access your location”, then try again."
+          : "Location permission was denied for this page, so your real location can't be shown.", !afterStop, settingsAction);
+      } else {
+        toast("Your real location isn't available (turn on location services for this computer to show it).", !afterStop, settingsAction);
+      }
       resolve(false);
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+    }, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }); // a fresh, precise fix every time
   });
 }
 $("btn-locate").onclick = guard(() => showRealLocation(false));
@@ -569,7 +601,7 @@ $("route-link").addEventListener("keydown", (e) => { if (e.key === "Enter") $("b
 // ------------------------------------------------------------------ route builder
 function defaultLeg() { return { mode: $("default-mode").value, cruise_kmh: null, ramp: "accel" }; }
 function addWaypoint(lat, lon, extra = {}) {
-  const w = { id: nextId++, lat, lon, name: "", speed_kmh: null, dwell_s: 0, leg: defaultLeg(), ...extra };
+  const w = { id: nextId++, lat, lon, name: "", speed_kmh: null, dwell_s: 0, hold: false, leg: defaultLeg(), ...extra };
   state.waypoints.push(w);
   invalidateBuilt();
   renderWaypoints({ appear: w.id });
@@ -588,7 +620,7 @@ function invalidateBuilt() {
   stopPreview();
   drawCheckpointLine();
   const p = state.status && state.status.player;
-  if (hadRoute && state.loaded === "route" && p && !["playing", "joystick"].includes(p.state)) unloadPlayer();
+  if (hadRoute && state.loaded === "route" && p && !["playing", "held", "joystick"].includes(p.state)) unloadPlayer();
 }
 async function unloadPlayer() {
   try { await api("/api/player/unload", { body: {} }); } catch (_) { /* older server */ }
@@ -614,6 +646,15 @@ function wireMarker(m, id) {
     const e = elm();
     e.addEventListener("pointerdown", (ev) => { if (ev.button === 0) e.classList.add("pressed"); });
   });
+  m.on("click", (e) => L.DomEvent.stop(e)); // without a listener Leaflet hands the click to the map (= add a checkpoint)
+  m.on("dblclick", (e) => { L.DomEvent.stop(e); removeWaypoint(id); });
+  m.on("contextmenu", (e) => {
+    L.DomEvent.stop(e);
+    const ev = e.originalEvent;
+    openWaypointMenu(id, ev.clientX, ev.clientY);
+  });
+  m.on("mouseover", () => rowHot(id, true));
+  m.on("mouseout", () => rowHot(id, false));
   m.on("dragstart", () => { const e = elm(); e.classList.remove("pressed"); e.classList.add("lifted"); });
   m.on("drag", () => { if (!state.built) drawCheckpointLine(id, m.getLatLng()); });
   m.on("dragend", () => {
@@ -630,16 +671,19 @@ function wireMarker(m, id) {
   });
 }
 window.addEventListener("pointerup", () => document.querySelectorAll(".wp-icon.pressed").forEach((e) => e.classList.remove("pressed")));
+// A "hold until Continue" checkpoint carries a small hand badge on its marker.
+const pinHtml = (label, hold) => `<div class="wp-pin"><span class="wp-label">${label}</span>${hold
+  ? '<span class="wp-mark" title="Holds until you press Continue"><svg viewBox="0 0 24 24"><path d="M8 6v12M16 6v12"/></svg></span>' : ""}</div>`;
 function syncMarkers(appearId) {
   const seen = new Set();
   state.waypoints.forEach((w, i) => {
     seen.add(w.id);
     const label = String(i + 1);
-    const title = w.name || `Checkpoint ${i + 1}`;
+    const title = `${w.name || `Checkpoint ${i + 1}`}${w.hold ? " · holds until Continue" : ""} — double-click to delete, right-click for more`;
     let m = wpMarkers.get(w.id);
     if (!m) {
       m = L.marker([w.lat, w.lon], { draggable: true, autoPan: true, title, riseOnHover: true,
-        icon: icon("wp-icon", `<div class="wp-pin">${label}</div>`, 24) });
+        icon: icon("wp-icon", pinHtml(label, w.hold), 24) });
       wireMarker(m, w.id);
       m.addTo(wpLayer);
       wpMarkers.set(w.id, m);
@@ -650,14 +694,29 @@ function syncMarkers(appearId) {
     if (ll.lat !== w.lat || ll.lng !== w.lon) m.setLatLng([w.lat, w.lon]);
     const e = m.getElement();
     const pin = e && e.querySelector(".wp-pin");
-    if (pin && pin.textContent !== label) pin.textContent = label;
+    const key = `${label}|${!!w.hold}`;
+    if (pin && pin.dataset.key !== key) { pin.outerHTML = pinHtml(label, w.hold); e.querySelector(".wp-pin").dataset.key = key; }
     if (e) e.title = title;
   });
   for (const [id, m] of wpMarkers) if (!seen.has(id)) { wpLayer.removeLayer(m); wpMarkers.delete(id); }
+  markHeld();
 }
 function markerHot(id, on) {
   const m = wpMarkers.get(id);
   if (m && m.getElement()) m.getElement().classList.toggle("hot", on);
+}
+function rowHot(id, on) {
+  const li = wpList.querySelector(`:scope > li.wp[data-id="${id}"]`);
+  if (li) li.classList.toggle("hot", on);
+  markerHot(id, on);
+}
+// The checkpoint the player is waiting at (hold until Continue) is coloured on the map and in the list.
+function markHeld() {
+  const p = state.status && state.status.player;
+  const heldId = p && p.state === "held" && state.loaded === "route" && p.held_at != null && state.waypoints[p.held_at]
+    ? state.waypoints[p.held_at].id : null;
+  for (const [id, m] of wpMarkers) if (m.getElement()) m.getElement().classList.toggle("held", id === heldId);
+  wpList.querySelectorAll(":scope > li.wp").forEach((li) => li.classList.toggle("held-here", +li.dataset.id === heldId));
 }
 // Dashed straight lines between checkpoints, shown until a route is built.
 function drawCheckpointLine(movingId, movingLatLng) {
@@ -704,13 +763,145 @@ function moveWaypoint(from, to) {
   invalidateBuilt();
   renderWaypoints({ flip: true, settle: w.id });
 }
-function removeWaypoint(id) {
-  const i = state.waypoints.findIndex((x) => x.id === id);
-  if (i < 0) return;
-  state.waypoints.splice(i, 1);
-  invalidateBuilt();
-  renderWaypoints({ flip: true });
+// Deleting animates first (the row folds away, the marker shrinks), then the list closes the gap.
+const removing = new Set();
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+function removeWaypoint(id, { animate = true } = {}) {
+  if (removing.has(id) || !wpById(id)) return;
+  closeMenus();
+  const finish = () => {
+    removing.delete(id);
+    const i = state.waypoints.findIndex((x) => x.id === id);
+    if (i < 0) return;
+    state.waypoints.splice(i, 1);
+    invalidateBuilt();
+    renderWaypoints({ flip: true });
+  };
+  const li = wpList.querySelector(`:scope > li.wp[data-id="${id}"]`);
+  const m = wpMarkers.get(id);
+  if (!animate || reducedMotion()) { finish(); return; }
+  removing.add(id);
+  if (li) { li.style.setProperty("--h", `${li.offsetHeight}px`); li.classList.add("removing"); }
+  if (m && m.getElement()) { m.getElement().classList.remove("hot"); m.getElement().classList.add("removing"); }
+  setTimeout(finish, 240);
 }
+// New checkpoint at position `index` of the list; it takes over the leg settings of the leg it splits.
+function insertWaypointAt(index, lat, lon, extra = {}) {
+  index = Math.max(0, Math.min(state.waypoints.length, index));
+  const prev = state.waypoints[index - 1];
+  const leg = prev ? { ...prev.leg } : defaultLeg();
+  const w = { id: nextId++, lat, lon, name: "", speed_kmh: null, dwell_s: 0, hold: false, leg, ...extra };
+  state.waypoints.splice(index, 0, w);
+  state.builtSource = "route";
+  invalidateBuilt();
+  renderWaypoints({ appear: w.id, flip: true });
+  return w;
+}
+function makeStart(id) {
+  const i = state.waypoints.findIndex((x) => x.id === id);
+  if (i <= 0) return;
+  const wps = state.waypoints;
+  // A round trip keeps its order and only starts somewhere else; an open route moves the checkpoint to the front.
+  state.waypoints = $("closed").checked ? [...wps.slice(i), ...wps.slice(0, i)] : [wps[i], ...wps.slice(0, i), ...wps.slice(i + 1)];
+  invalidateBuilt();
+  renderWaypoints({ flip: true, settle: id });
+  toast(`Checkpoint ${i + 1} is now the start.`);
+}
+
+// ---- placement mode: the next click on the map adds a checkpoint at a chosen position (Insert after)
+let placing = null;
+function startPlacement(index) {
+  closeMenus();
+  placing = { index };
+  if (state.tab !== "route") openTab("route");
+  document.body.classList.add("placing");
+  $("map-hint-text").textContent = index >= state.waypoints.length
+    ? "Click the map to add the next checkpoint at the end." : `Click the map to add a checkpoint after checkpoint ${index}.`;
+  $("map-hint").hidden = false;
+}
+function stopPlacement() {
+  placing = null;
+  document.body.classList.remove("placing");
+  $("map-hint").hidden = true;
+}
+$("map-hint-cancel").onclick = stopPlacement;
+
+// ---- context menu (right-click a checkpoint on the map or in the list)
+const ctxMenu = $("ctx-menu");
+function placeFloating(elm, x, y) {
+  elm.hidden = false;
+  const r = elm.getBoundingClientRect();
+  elm.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
+  elm.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+}
+function closeMenus() {
+  ctxMenu.hidden = true;
+  $("wait-pop").hidden = true;
+}
+function openContextMenu(x, y, title, items) {
+  closeMenus();
+  ctxMenu.replaceChildren(el("div", { class: "ctx-title", textContent: title }), ...items.map((it) => it === "-" ? el("hr") :
+    el("button", { type: "button", role: "menuitem", class: it.danger ? "danger" : "", disabled: !!it.disabled,
+      onclick: () => { closeMenus(); guard(it.run)(); } },
+      svgIcon(it.icon), el("span", { textContent: it.label }), ...(it.key ? [el("span", { class: "ctx-key", textContent: it.key })] : []))));
+  placeFloating(ctxMenu, x, y);
+  const first = ctxMenu.querySelector("button:not(:disabled)");
+  if (first) first.focus({ preventScroll: true });
+}
+ctxMenu.addEventListener("keydown", (e) => {
+  const btns = [...ctxMenu.querySelectorAll("button:not(:disabled)")];
+  const i = btns.indexOf(document.activeElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const n = btns.length;
+    btns[(i + (e.key === "ArrowDown" ? 1 : -1) + n) % n].focus();
+  }
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) ctxMenu.hidden = true;
+  const pop = $("wait-pop");
+  if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true;
+}, true);
+function openWaypointMenu(id, x, y) {
+  const i = state.waypoints.findIndex((w) => w.id === id);
+  if (i < 0) return;
+  const w = state.waypoints[i];
+  openContextMenu(x, y, `${i + 1} · ${w.name || fmtLL(w.lat, w.lon)}`, [
+    { label: "Delete", icon: "trash", danger: true, key: "Double-click", run: () => removeWaypoint(id) },
+    { label: "Insert after", icon: "insert", run: () => startPlacement(i + 1) },
+    { label: w.dwell_s || w.hold ? `Set wait… (${w.hold ? "hold" : `${w.dwell_s} s`})` : "Set wait…", icon: "clock", run: () => openWaitPopover(id, x, y) },
+    { label: "Make start", icon: "start", disabled: i === 0, run: () => makeStart(id) },
+  ]);
+}
+// ---- "Set wait" popover: seconds to wait, or hold until Continue
+let waitFor = null;
+function openWaitPopover(id, x, y) {
+  const i = state.waypoints.findIndex((w) => w.id === id);
+  if (i < 0) return;
+  const w = state.waypoints[i];
+  waitFor = id;
+  $("wait-title").textContent = `Checkpoint ${i + 1}${w.name ? ` · ${w.name}` : ""}`;
+  $("wait-input").value = w.dwell_s || "";
+  $("wait-hold").checked = !!w.hold;
+  placeFloating($("wait-pop"), x, y);
+  $("wait-input").focus();
+  $("wait-input").select();
+}
+function saveWait() {
+  const w = wpById(waitFor);
+  $("wait-pop").hidden = true;
+  if (!w) return;
+  w.dwell_s = Math.max(0, Math.min(86400, Math.round(+$("wait-input").value || 0)));
+  w.hold = $("wait-hold").checked;
+  invalidateBuilt();
+  renderWaypoints({ settle: w.id });
+}
+$("wait-save").onclick = saveWait;
+$("wait-cancel").onclick = () => ($("wait-pop").hidden = true);
+$("wait-pop").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); saveWait(); }
+  if (e.key === "Escape") { e.preventDefault(); $("wait-pop").hidden = true; }
+});
 function renderWaypoints(opts = {}) {
   const first = opts.flip ? captureRects() : null;
   const focusedGrip = document.activeElement && document.activeElement.classList.contains("wp-grip")
@@ -727,7 +918,7 @@ function renderWaypoints(opts = {}) {
     const num = el("span", { class: "wp-num", textContent: i + 1, title: "Drag to reorder" });
     const head = el("div", { class: "wp-head" }, grip, num,
       el("input", { value: w.name, placeholder: fmtLL(w.lat, w.lon), title: "Name", "aria-label": "Checkpoint name", oninput: (e) => (w.name = e.target.value) }),
-      el("button", { type: "button", class: "wp-del", title: "Remove", "aria-label": `Remove checkpoint ${i + 1}`, onclick: () => removeWaypoint(w.id) }, svgIcon("x")),
+      el("button", { type: "button", class: "wp-del", title: "Remove (or double-click its marker)", "aria-label": `Remove checkpoint ${i + 1}`, onclick: () => removeWaypoint(w.id) }, svgIcon("x")),
     );
     const fields = el("div", { class: "wp-fields" },
       el("label", {}, "Speed here (km/h)",
@@ -737,8 +928,16 @@ function renderWaypoints(opts = {}) {
       el("label", {}, "Wait here (s)",
         el("input", { type: "number", min: 0, step: 1, value: w.dwell_s || "", placeholder: "0", title: "Stop and wait this long",
           onchange: change((t) => (w.dwell_s = Math.max(0, +t.value || 0))) })),
+      el("label", { class: "check", title: "Stop here and wait until you press Continue (any wait time runs after that)" },
+        el("input", { type: "checkbox", checked: !!w.hold, "aria-label": `Hold at checkpoint ${i + 1} until Continue`,
+          onchange: change((t) => { w.hold = t.checked; syncMarkers(); }) }), "Hold"),
     );
     const li = el("li", { class: "wp", dataset: { id: w.id } }, head, fields);
+    li.addEventListener("contextmenu", (e) => {
+      if (["INPUT", "SELECT"].includes(e.target.tagName)) return; // keep copy/paste in the fields
+      e.preventDefault();
+      openWaypointMenu(w.id, e.clientX, e.clientY);
+    });
     if (i < n - 1 || (closed && n > 1)) {
       const modeSel = el("select", { title: "How this leg is routed", "aria-label": "Leg routing", onchange: change((t) => { w.leg.mode = t.value; }) },
         ...Object.entries(MODE_LABEL).map(([k, v]) => el("option", { value: k, textContent: v, selected: w.leg.mode === k })));
@@ -758,13 +957,14 @@ function renderWaypoints(opts = {}) {
       const at = state.waypoints.findIndex((x) => x.id === w.id);
       moveWaypoint(at, at + (e.key === "ArrowUp" ? -1 : 1));
     });
-    li.addEventListener("mouseenter", () => markerHot(w.id, true));
-    li.addEventListener("mouseleave", () => markerHot(w.id, false));
+    li.addEventListener("mouseenter", () => rowHot(w.id, true));
+    li.addEventListener("mouseleave", () => rowHot(w.id, false));
     if (opts.appear === w.id) flash(li, "settle");
     wpList.append(li);
   });
   if (first) playFlip(first, opts.settle);
   if (focusedGrip) { const g = wpList.querySelector(`li.wp[data-id="${focusedGrip}"] .wp-grip`); if (g) g.focus(); }
+  for (const id of removing) { const li = wpList.querySelector(`:scope > li.wp[data-id="${id}"]`); if (li) li.classList.add("removing"); }
   syncMarkers(opts.appear);
   drawCheckpointLine();
   renderRouteSettingsSub();
@@ -870,7 +1070,7 @@ async function clearRoute() {
   renderWaypoints();
   const p = state.status && state.status.player;
   if (p && state.loaded === "route" && p.state !== "joystick") {
-    if (["playing", "paused"].includes(p.state)) await api("/api/player/stop", { body: {} }).catch(() => {});
+    if (["playing", "paused", "held"].includes(p.state)) await api("/api/player/stop", { body: {} }).catch(() => {});
     await unloadPlayer();
   }
   if (saved.waypoints.length) {
@@ -920,7 +1120,8 @@ function routeBody(name = "Route") {
   return {
     name, closed, provider: $("provider").value, settings: profileSettings(), legs,
     alternatives: Math.max(0, Math.min(3, +$("alt-count").value || 0)),
-    waypoints: wps.map((w, i) => ({ lat: w.lat, lon: w.lon, name: w.name || `Checkpoint ${i + 1}`, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s || 0 })),
+    waypoints: wps.map((w, i) => ({ lat: w.lat, lon: w.lon, name: w.name || `Checkpoint ${i + 1}`, speed_kmh: w.speed_kmh,
+      dwell_s: w.dwell_s || 0, hold: !!w.hold })),
   };
 }
 
@@ -1080,7 +1281,7 @@ async function selectOption(k) {
   const opts = state.options || [];
   if (!opts[k] || state.optionIndex === k) return;
   const p = state.status && state.status.player;
-  const wasPlaying = p && state.loaded === "route" && ["playing", "paused"].includes(p.state);
+  const wasPlaying = p && state.loaded === "route" && ["playing", "paused", "held"].includes(p.state);
   state.optionIndex = k;
   state.built = opts[k];
   stopPreview();
@@ -1096,17 +1297,67 @@ async function selectOption(k) {
 // ------------------------------------------------------------------ route line: outlined, coloured by speed
 const SPEED_STOPS = [[0, [49, 54, 149]], [0.2, [69, 117, 180]], [0.4, [116, 173, 209]], [0.55, [171, 217, 233]],
   [0.65, [254, 224, 144]], [0.8, [253, 174, 97]], [0.9, [244, 109, 67]], [1, [215, 48, 39]]];
+// Colours blend in OKLab, a perceptually even colour space: mixing two sRGB colours directly passes
+// through muddy greys and jumps in brightness, which showed as bands along the route.
+const toLin = (c) => { c /= 255; return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; };
+const fromLin = (c) => Math.round(255 * Math.min(1, Math.max(0, c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)));
+function oklab([r, g, b]) {
+  const [R, G, B] = [toLin(r), toLin(g), toLin(b)];
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+  const q = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * q, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * q,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * q];
+}
+function fromOklab([L, a, b]) {
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3,
+    q = (L - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [fromLin(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * q), fromLin(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * q),
+    fromLin(-0.0041960863 * l - 0.7034186147 * m + 1.707614701 * q)];
+}
+const SPEED_LAB = SPEED_STOPS.map(([f, c]) => [f, oklab(c)]);
+const speedColorCache = new Map();
 function speedColor(f) {
   f = Math.min(1, Math.max(0, f));
-  for (let i = 1; i < SPEED_STOPS.length; i++) {
-    const [f1, c1] = SPEED_STOPS[i];
-    if (f <= f1) {
-      const [f0, c0] = SPEED_STOPS[i - 1];
-      const t = (f - f0) / (f1 - f0 || 1);
-      return `rgb(${c0.map((c, k) => Math.round(c + (c1[k] - c) * t)).join(",")})`;
-    }
+  const key = Math.round(f * 512);
+  let c = speedColorCache.get(key);
+  if (c) return c;
+  const x = key / 512;
+  let i = 1;
+  while (i < SPEED_LAB.length - 1 && x > SPEED_LAB[i][0]) i++;
+  const [f0, c0] = SPEED_LAB[i - 1], [f1, c1] = SPEED_LAB[i];
+  const t = Math.min(1, Math.max(0, (x - f0) / (f1 - f0 || 1)));
+  c = `rgb(${fromOklab(c0.map((v, k) => v + (c1[k] - v) * t)).join(",")})`;
+  speedColorCache.set(key, c);
+  return c;
+}
+// Speeds every `step` metres along the path, lightly smoothed over distance (Gaussian), so the colour
+// follows acceleration and braking as a gradient instead of stepping between neighbouring samples.
+function speedProfile(path, at, total) {
+  const step = Math.max(3, total / 6000);
+  const pts = [], vs = [];
+  let j = 0;
+  for (let d = 0; ; d += step) {
+    const dd = Math.min(d, total);
+    while (j < path.length - 2 && path[j + 1].d < dd) j++;
+    const a = path[j], b = path[Math.min(j + 1, path.length - 1)];
+    const f = b.d > a.d ? (dd - a.d) / (b.d - a.d) : 0;
+    pts.push({ ll: [a.ll[0] + (b.ll[0] - a.ll[0]) * f, a.ll[1] + (b.ll[1] - a.ll[1]) * f], d: dd });
+    vs.push(at(dd));
+    if (dd >= total) break;
   }
-  return "rgb(215,48,39)";
+  const sigma = Math.min(50, Math.max(5, total / 2000)) / step;
+  const r = Math.min(60, Math.ceil(sigma * 2.5));
+  const w = Array.from({ length: 2 * r + 1 }, (_, k) => Math.exp(-(((k - r) / sigma) ** 2) / 2));
+  return pts.map((p, i) => {
+    let num = 0, den = 0;
+    for (let k = -r; k <= r; k++) {
+      const v = vs[i + k];
+      if (v === undefined) continue;
+      num += v * w[k + r]; den += w[k + r];
+    }
+    return { ...p, v: num / den };
+  });
 }
 // Point at fraction f of the great circle from a to b (what the device follows on long straight legs).
 function gcInterp(a, b, f) {
@@ -1123,21 +1374,38 @@ function gcInterp(a, b, f) {
   return [Math.atan2(z, Math.hypot(x, y)) / r, lon];
 }
 // All legs as one path with the distance along it, so it lines up with the timeline's distances.
+// Each point also records which leg it belongs to (for inserting a checkpoint by dragging the line).
 function routePath(legs) {
   const out = [];
   let prev = null, d = 0;
-  for (const leg of legs || []) {
+  (legs || []).forEach((leg, li) => {
     for (const p of leg) {
-      if (!prev) { out.push({ ll: p, d: 0 }); prev = p; continue; }
+      if (!prev) { out.push({ ll: p, d: 0, leg: li }); prev = p; continue; }
       const step = haversine(prev, p);
       if (step < 1e-3) continue; // the shared checkpoint between two legs
       const n = step > 2000 ? Math.min(64, Math.ceil(step / 2000)) : 1;
-      for (let k = 1; k <= n; k++) out.push({ ll: k === n ? p : gcInterp(prev, p, k / n), d: d + (step * k) / n });
+      for (let k = 1; k <= n; k++) out.push({ ll: k === n ? p : gcInterp(prev, p, k / n), d: d + (step * k) / n, leg: li });
       d += step;
       prev = p;
     }
-  }
+  });
   return out;
+}
+// Closest point of a path to a map position, in screen pixels: {i (segment), f, ll, d, leg, px}.
+function nearestOnPath(path, latlng) {
+  const P = map.latLngToLayerPoint(latlng);
+  let best = null;
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = map.latLngToLayerPoint(path[i].ll), b = map.latLngToLayerPoint(path[i + 1].ll);
+    const dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+    const f = L2 > 0 ? Math.max(0, Math.min(1, ((P.x - a.x) * dx + (P.y - a.y) * dy) / L2)) : 0;
+    const px = Math.hypot(P.x - a.x - f * dx, P.y - a.y - f * dy);
+    if (!best || px < best.px) best = { i, f, px };
+  }
+  if (!best) return null;
+  const a = path[best.i], b = path[best.i + 1];
+  return { ...best, ll: [a.ll[0] + (b.ll[0] - a.ll[0]) * best.f, a.ll[1] + (b.ll[1] - a.ll[1]) * best.f],
+    d: a.d + (b.d - a.d) * best.f, leg: b.leg };
 }
 // Speed (km/h) at a distance along the route, from the preview samples [t, lat, lon, km/h, m].
 function speedLookup(pv) {
@@ -1153,53 +1421,111 @@ function speedLookup(pv) {
   };
 }
 const LINE = { lineCap: "round", lineJoin: "round" };
+const SPEED_LEVELS = 64; // colour steps: fine enough that neighbouring pieces can't be told apart
 function optionLabel(o, k) { return o.option ? o.option.label : "ABCD"[k] || String(k + 1); }
+const altLines = new Map(); // option index -> {line, label}
+// Where an alternative is furthest from the chosen route: the clearest spot for its label.
+function mostDistinctPoint(altPath, mainPath) {
+  const sub = (p, n) => p.filter((_, i) => i % Math.max(1, Math.floor(p.length / n)) === 0);
+  const main = sub(mainPath, 240).map((g) => g.ll);
+  let best = null, bestD = -1;
+  for (const g of sub(altPath, 160)) {
+    let dmin = Infinity;
+    for (const m of main) { const d = haversine(g.ll, m); if (d < dmin) dmin = d; }
+    if (dmin > bestD) { bestD = dmin; best = g.ll; }
+  }
+  return best;
+}
+function highlightAlt(k, on) {
+  const a = altLines.get(k);
+  if (!a) return;
+  a.line.setStyle({ color: on ? "#e5e7eb" : "#a3acb9", weight: on ? 7 : 5.5 });
+  if (a.label && a.label.getElement()) a.label.getElement().classList.toggle("hover", on);
+}
 function drawRoute({ fit = false } = {}) {
   const res = state.built;
   const layer = state.builtSource === "gpx" ? gpxLayer : routeLayer;
   layer.clearLayers();
+  altLines.clear();
+  state.routeGeom = null;
   if (!res) return;
   const opts = state.options && state.options.length ? state.options : [res];
-  // Other route options underneath in grey. Clicking one switches to it.
+  const path = routePath(res.legs);
+  // Other route options underneath in grey, each labelled where it differs most. Clicking one uses it.
   opts.forEach((o, k) => {
     if (o === res) return;
-    const pts = routePath(o.legs).map((g) => g.ll);
+    const altPath = routePath(o.legs);
+    const pts = altPath.map((g) => g.ll);
     const d = o.summary.duration_s - opts[0].summary.duration_s;
-    L.polyline(pts, { ...LINE, color: "#334155", weight: 9, opacity: 0.45, interactive: false }).addTo(layer);
-    L.polyline(pts, { ...LINE, color: "#a3acb9", weight: 5.5, opacity: 1, className: "route-alt", bubblingMouseEvents: false })
+    const delta = k ? `${d >= 0 ? "+" : "−"}${fmtTime(Math.abs(d))}` : "main";
+    L.polyline(pts, { ...LINE, renderer: routeRenderer, color: "#334155", weight: 9, opacity: 0.45, interactive: false }).addTo(layer);
+    const line = L.polyline(pts, { ...LINE, renderer: routeRenderer, color: "#a3acb9", weight: 5.5, opacity: 1, bubblingMouseEvents: false })
       .bindTooltip(`Route ${optionLabel(o, k)} · ${fmtDist(o.summary.distance_m)} · ${fmtTime(o.summary.duration_s)}`
-        + `${k ? ` (${d >= 0 ? "+" : "−"}${fmtTime(Math.abs(d))})` : ""} — click to use it`, { sticky: true })
+        + `${k ? ` (${delta})` : ""} — click to use it`, { sticky: true })
       .on("click", () => guard(selectOption)(k))
+      .on("mouseover", () => highlightAlt(k, true))
+      .on("mouseout", () => highlightAlt(k, false))
       .addTo(layer);
+    const spot = mostDistinctPoint(altPath, path);
+    let label = null;
+    if (spot) {
+      label = L.marker(spot, { pane: "altLabels", keyboard: false, title: `Use route ${optionLabel(o, k)}`,
+        icon: L.divIcon({ className: "alt-label", html: `<span><b>${optionLabel(o, k)}</b>${delta}</span>`, iconSize: [84, 22], iconAnchor: [42, 11] }) })
+        .on("click", () => guard(selectOption)(k))
+        .on("mouseover", () => highlightAlt(k, true))
+        .on("mouseout", () => highlightAlt(k, false))
+        .addTo(layer);
+    }
+    altLines.set(k, { line, label });
   });
   // The chosen route: a white halo and a dark outline keep it readable over roads of any colour
   // (and over satellite imagery), then the speed colours on top.
-  const path = routePath(res.legs);
   const pts = path.map((g) => g.ll);
-  L.polyline(pts, { ...LINE, color: "#ffffff", weight: 13, opacity: 0.6, interactive: false }).addTo(layer);
-  L.polyline(pts, { ...LINE, color: "#0f172a", weight: 9.5, opacity: 0.9, interactive: false }).addTo(layer);
+  const R = { ...LINE, renderer: routeRenderer };
+  L.polyline(pts, { ...R, color: "#ffffff", weight: 13, opacity: 0.6, interactive: false }).addTo(layer);
+  L.polyline(pts, { ...R, color: "#0f172a", weight: 9.5, opacity: 0.9, interactive: false }).addTo(layer);
   const pv = res.preview || [];
   const vmax = Math.max(1, ...pv.map((p) => p[3]));
   const vmin = Math.min(...pv.map((p) => p[3]), vmax);
   const span = Math.max(1, vmax - vmin);
   const at = speedLookup(pv);
+  const total = path.length ? path[path.length - 1].d : 0;
   // colour runs along the real geometry (older servers without distances: along the samples)
-  const samples = at ? path.map((g) => ({ ll: g.ll, v: at(g.d) })) : pv.map((p) => ({ ll: [p[1], p[2]], v: p[3] }));
-  let run = [], runBucket = -1;
+  const samples = at && total > 0 ? speedProfile(path, at, total) : pv.map((p) => ({ ll: [p[1], p[2]], v: p[3] }));
+  let run = [], runLevel = -1;
   const flush = () => {
     if (run.length < 2) return;
-    const lo = Math.min(...run.map((p) => p.v)), hi = Math.max(...run.map((p) => p.v));
-    L.polyline(run.map((p) => p.ll), { ...LINE, color: speedColor(runBucket / 20), weight: 5.5, opacity: 1 })
-      .bindTooltip(`${lo.toFixed(0)}–${hi.toFixed(0)} km/h`, { sticky: true })
-      .addTo(layer);
+    L.polyline(run.map((p) => p.ll), { ...R, color: speedColor(runLevel / SPEED_LEVELS), weight: 5.5, opacity: 1, interactive: false }).addTo(layer);
   };
   for (const p of samples) {
-    const bucket = Math.round(((p.v - vmin) / span) * 20);
-    if (bucket !== runBucket && run.length) { const last = run[run.length - 1]; flush(); run = [last]; }
-    runBucket = bucket;
+    const level = Math.round(((p.v - vmin) / span) * SPEED_LEVELS);
+    if (level !== runLevel && run.length) { const last = run[run.length - 1]; flush(); run = [last]; }
+    runLevel = level;
     run.push(p);
   }
   flush();
+  // One invisible, wider line on top takes the mouse: a tooltip with the speed under the pointer, and
+  // (Route tab) dragging it inserts a checkpoint there, like moving a route in Google Maps.
+  if (pts.length > 1) {
+    state.routeGeom = { path, at };
+    const hit = L.polyline(pts, { ...R, weight: 18, opacity: 0, className: "route-main" }).addTo(layer);
+    hit.bindTooltip("", { sticky: true, direction: "top", offset: [0, -8] });
+    hit.on("mousemove", (e) => {
+      const g = state.routeGeom;
+      if (!g || routeDrag) return;
+      const near = nearestOnPath(g.path, e.latlng);
+      if (!near) return;
+      const v = g.at ? g.at(near.d) : null;
+      const canDrag = state.builtSource === "route" && state.tab === "route";
+      hit.setTooltipContent(`${v != null ? `${v.toFixed(0)} km/h · ` : ""}${fmtDist(near.d)} from the start`
+        + `${(res.legs || []).length > 1 ? ` · leg ${near.leg + 1}` : ""}${canDrag ? "<br><span class='muted'>Drag to add a checkpoint here</span>" : ""}`);
+    });
+    hit.on("mousedown", (e) => startRouteDrag(e));
+    // canvas lines can't carry a CSS cursor of their own: show "grab" on the canvas while over the line
+    const cur = (c) => { const el = routeRenderer.getPane && routeRenderer._container; if (el) el.style.cursor = c; };
+    hit.on("mouseover", () => cur(state.builtSource === "route" && state.tab === "route" ? "grab" : ""));
+    hit.on("mouseout", () => cur(""));
+  }
   $("legend-min").textContent = vmin.toFixed(0);
   $("legend-max").textContent = vmax.toFixed(0);
   $("speed-legend").hidden = pv.length < 2;
@@ -1207,6 +1533,51 @@ function drawRoute({ fit = false } = {}) {
     const all = opts.flatMap((o) => (o.legs || []).flat());
     if (all.length) map.fitBounds(L.latLngBounds(all), { padding: [30, 30] });
   }
+}
+
+// ---- drag the route line to insert a checkpoint (into the leg that was grabbed)
+let routeDrag = null;
+function startRouteDrag(e) {
+  const ev = e.originalEvent;
+  if (ev.button !== 0 || state.builtSource !== "route" || state.tab !== "route" || state.building || !state.routeGeom) return;
+  const near = nearestOnPath(state.routeGeom.path, e.latlng);
+  if (!near) return;
+  L.DomEvent.stop(e); // no map panning while the line is held
+  map.dragging.disable();
+  routeDrag = { leg: near.leg, x: ev.clientX, y: ev.clientY, moved: false, ghost: null, guide: null };
+  document.addEventListener("pointermove", onRouteDragMove);
+  document.addEventListener("pointerup", endRouteDrag, { once: true });
+}
+function onRouteDragMove(ev) {
+  const d = routeDrag;
+  if (!d) return;
+  if (!d.moved && Math.hypot(ev.clientX - d.x, ev.clientY - d.y) < 5) return;
+  const ll = map.mouseEventToLatLng(ev);
+  if (!d.moved) {
+    d.moved = true;
+    routeLayer.eachLayer((l) => { if (l.closeTooltip) l.closeTooltip(); });
+    d.ghost = L.marker(ll, { interactive: false, keyboard: false, icon: icon("drag-ghost", '<div class="ghost-pin"></div>', 16) }).addTo(map);
+    d.guide = L.polyline([], { color: cssVar("--accent") || "#2563eb", weight: 2.5, dashArray: "6 6", interactive: false }).addTo(map);
+  }
+  const wps = state.waypoints, n = wps.length;
+  const a = wps[d.leg], b = wps[(d.leg + 1) % n];
+  d.ghost.setLatLng(ll);
+  if (a && b) d.guide.setLatLngs([[a.lat, a.lon], ll, [b.lat, b.lon]]);
+  d.ll = ll;
+}
+function endRouteDrag() {
+  const d = routeDrag;
+  routeDrag = null;
+  document.removeEventListener("pointermove", onRouteDragMove);
+  map.dragging.enable();
+  if (!d || !d.moved) return; // a plain click on the line: handled like a click on the map
+  suppressClickUntil = performance.now() + 400;
+  if (d.ghost) map.removeLayer(d.ghost);
+  if (d.guide) map.removeLayer(d.guide);
+  if (!d.ll) return;
+  const w = insertWaypointAt(d.leg + 1, d.ll.lat, wrapLon(d.ll.lng));
+  toast(`Added checkpoint ${d.leg + 2} on leg ${d.leg + 1}. Rebuilding the route…`);
+  guard(buildRoute)().then(() => flash(wpList.querySelector(`:scope > li.wp[data-id="${w.id}"]`), "settle"));
 }
 function fitRoute() {
   const layers = [];
@@ -1230,7 +1601,8 @@ function routeOptionsList() {
       if (k && multiLeg && o.option && o.option.changed_legs.length) meta.push(`differs on leg ${o.option.changed_legs.map((i) => i + 1).join(", ")}`);
       if (!meta.length) meta.push("alternative");
       return el("button", { type: "button", class: "route-opt", role: "radio", "aria-checked": String(k === state.optionIndex),
-        title: `Use route ${optionLabel(o, k)}`, onclick: () => guard(selectOption)(k) },
+        title: `Use route ${optionLabel(o, k)}`, onclick: () => guard(selectOption)(k),
+        onmouseenter: () => highlightAlt(k, true), onmouseleave: () => highlightAlt(k, false) },
         el("span", { class: "opt-badge", textContent: optionLabel(o, k) }),
         el("span", { class: "opt-main" },
           el("b", { textContent: `${fmtTime(s.duration_s)} · ${fmtDist(s.distance_m)}` }),
@@ -1258,6 +1630,7 @@ function renderResult(box, res) {
   if (f.restricted_segments) feat.push("private/restricted roads driven slowly");
   if (f.highway_segments || f.ramps) feat.push("motorway sections");
   if (feat.length) extra.push(el("p", { class: "hint" }, "Road features: " + feat.join("; ") + "."));
+  if (s.holds) extra.push(el("p", { class: "hint", textContent: `Stops at ${s.holds} checkpoint${s.holds > 1 ? "s" : ""} until you press Continue (the times above don't include that wait).` }));
   for (const n of s.notes || []) extra.push(el("p", { class: "hint", textContent: n }));
   const exportBtn = el("button", { disabled: res.exportable === false,
     title: res.exportable === false ? "Google routes can't be exported (Google's terms restrict storing route data)." : "",
@@ -1465,7 +1838,7 @@ $("btn-gpx-remove").onclick = guard(async () => {
   if (state.loaded === "gpx") {
     state.built = null;
     const p = state.status && state.status.player;
-    if (p && ["playing", "paused"].includes(p.state)) await api("/api/player/stop", { body: {} }).catch(() => {});
+    if (p && ["playing", "paused", "held"].includes(p.state)) await api("/api/player/stop", { body: {} }).catch(() => {});
     await unloadPlayer();
   }
 });
@@ -1508,6 +1881,7 @@ const playerBtns = { play: $("btn-play"), pause: $("btn-pause"), stop: $("btn-st
 async function playOrPause() {
   const st = state.status && state.status.player;
   if (!st) return;
+  if (st.state === "held") { await continuePlayback(); return; }
   if (st.state === "playing") { await api("/api/player/pause", { body: {} }); await poll(); return; }
   if (!st.name && !st.duration) { toast("Build a route or load a GPX track first."); return; }
   if (!state.status.device) { toast("Connect a device (or the Simulator) first.", true); return; }
@@ -1516,6 +1890,13 @@ async function playOrPause() {
   await poll();
 }
 async function stopPlayback() { await api("/api/player/stop", { body: {} }); await poll(); }
+async function continuePlayback() {
+  const st = state.status && state.status.player;
+  if (!st || st.state !== "held") return;
+  await api("/api/player/continue", { body: {} });
+  await poll();
+}
+$("btn-continue").onclick = guard(continuePlayback);
 playerBtns.play.onclick = guard(playOrPause);
 playerBtns.pause.onclick = guard(playOrPause);
 playerBtns.stop.onclick = guard(stopPlayback);
@@ -1528,39 +1909,61 @@ const sendOptions = guard(async () => {
   await api("/api/player-options", { body: {
     multiplier: +$("multiplier").value, loop: $("loop").value,
     jitter_m: Math.min(100, Math.max(0, +$("jitter").value || 0)), tick_s: Math.min(10, Math.max(0.2, +$("tick").value || 1)),
+    lap_limit: Math.min(100000, Math.max(0, Math.round(+$("laps").value || 0))),
   } });
   saveSettingsSoon();
 });
-["multiplier", "loop", "jitter", "tick"].forEach((id) => $(id).addEventListener("change", sendOptions));
+["multiplier", "loop", "jitter", "tick", "laps"].forEach((id) => $(id).addEventListener("change", sendOptions));
 function clearTrail() { if (trailLine) trailLine.setLatLngs([]); }
+function lapText(p) {
+  if (p.loop === "once" || !["playing", "paused", "held", "finished"].includes(p.state)) return "";
+  const lap = p.lap || p.laps + 1;
+  if (p.lap_limit) return ` · lap ${Math.min(lap, p.lap_limit)} of ${p.lap_limit}`;
+  return lap > 1 ? ` · lap ${lap}` : "";
+}
 function renderPlayer(st) {
   const p = st.player;
   const has = p.duration > 0 || !!p.name;
   $("player").classList.toggle("empty", !has && p.state !== "joystick");
   $("player-name").textContent = p.state === "joystick" ? "Joystick" : (p.name || "No route loaded");
   const badge = $("player-state");
-  badge.textContent = p.state + (p.laps ? ` · lap ${p.laps + 1}` : "");
+  const word = p.state === "held" ? "waiting" : p.state;
+  badge.textContent = word.charAt(0).toUpperCase() + word.slice(1) + lapText(p);
   badge.className = "badge " + p.state;
   const connected = !!st.device;
+  const held = p.state === "held";
   playerBtns.play.disabled = !has || !connected || p.state === "playing";
   playerBtns.play.title = !connected ? "Connect a device (or the Simulator) first" : !has ? "Build a route or load a GPX track first" : "";
-  playerBtns.play.querySelector(".lbl").textContent = p.state === "paused" ? "Resume" : "Play";
+  playerBtns.play.querySelector(".lbl").textContent = held ? "Continue" : p.state === "paused" ? "Resume" : "Play";
+  $("hold-banner").hidden = !held;
+  if (held) {
+    const w = state.loaded === "route" && p.held_at != null ? state.waypoints[p.held_at] : null;
+    $("hold-text").textContent = `Waiting at checkpoint ${p.held_at != null ? p.held_at + 1 : ""}${w && w.name ? ` · ${w.name}` : ""}`;
+  }
+  markHeld();
+  renderHud(p);
   playerBtns.pause.disabled = p.state !== "playing";
-  playerBtns.stop.disabled = !["playing", "paused", "joystick"].includes(p.state);
+  playerBtns.stop.disabled = !["playing", "paused", "held", "joystick"].includes(p.state);
   seek.disabled = !has;
   seek.max = p.duration;
   if (!state.seeking) { seek.value = p.t; $("player-time").textContent = `${fmtTime(p.t)} / ${fmtTime(p.duration)}`; }
   $("player-dist").textContent = `${fmtDist(p.distance_m)} / ${fmtDist(p.total_distance_m)}`;
-  $("player-speed").textContent = p.position ? `${p.position.speed_kmh.toFixed(1)} km/h` : "—";
+  $("player-speed").textContent = p.position ? `${(moving(p) ? p.position.speed_kmh : 0).toFixed(1)} km/h` : "—";
   if (p.state === "error" && p.error && state.lastError !== p.error) toast(p.error, true);
   state.lastError = p.error;
   if (p.position) {
     const ll = [p.position.lat, p.position.lon];
     if (!deviceMarker) {
-      deviceMarker = L.marker(ll, { icon: icon("dev-icon", "", 18), zIndexOffset: 1000, title: "Spoofed location" }).addTo(map);
-      trailLine = L.polyline([], { color: "#e53935", weight: 2, opacity: 0.6, interactive: false }).addTo(map);
+      deviceMarker = L.marker(ll, { icon: icon("dev-icon", '<div class="dev-cone"></div><div class="dev-dot"></div>', 18), zIndexOffset: 1000,
+        title: "Spoofed location", interactive: false, keyboard: false }).addTo(map);
+      trailLine = L.polyline([], { renderer: trailRenderer, color: "#e53935", weight: 2, opacity: 0.6, interactive: false }).addTo(map);
     }
     deviceMarker.setLatLng(ll);
+    const de = deviceMarker.getElement();
+    if (de) {
+      de.style.setProperty("--course", `${hudAngle(p.position.course, "marker")}deg`);
+      de.classList.toggle("still", !moving(p) || p.position.speed_kmh < 0.5);
+    }
     if (["playing", "joystick"].includes(p.state)) {
       const tl = trailLine.getLatLngs();
       tl.push(L.latLng(ll));
@@ -1572,6 +1975,34 @@ function renderPlayer(st) {
     map.removeLayer(deviceMarker); deviceMarker = null;
     if (trailLine) { map.removeLayer(trailLine); trailLine = null; }
   }
+}
+
+// ------------------------------------------------------------------ live HUD (speed + heading on the map)
+const CARDINALS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+const moving = (p) => ["playing", "joystick"].includes(p.state);
+// Rotations keep counting past 360 so a turn from 350° to 10° rotates 20°, not back round 340°.
+const angles = {};
+function hudAngle(course, key) {
+  const prev = angles[key];
+  if (prev === undefined) return (angles[key] = course);
+  const delta = ((course - prev) % 360 + 540) % 360 - 180;
+  return (angles[key] = prev + delta);
+}
+function renderHud(p) {
+  const hud = $("hud");
+  const show = !!p.position && (["playing", "paused", "held", "joystick"].includes(p.state));
+  hud.hidden = !show;
+  document.body.classList.toggle("hud-on", show);
+  if (!show) return;
+  const v = moving(p) ? p.position.speed_kmh : 0;
+  const c = ((p.position.course % 360) + 360) % 360;
+  $("hud-speed").textContent = v < 10 ? v.toFixed(1) : Math.round(v);
+  $("hud-course").textContent = `${Math.round(c) % 360}°`;
+  $("hud-card").textContent = CARDINALS[Math.round(c / 45) % 8];
+  $("hud-needle").style.transform = `rotate(${hudAngle(c, "hud")}deg)`;
+  const tag = $("hud-state");
+  tag.hidden = !["paused", "held"].includes(p.state);
+  tag.textContent = p.state === "held" ? "Waiting" : "Paused";
 }
 
 // ------------------------------------------------------------------ joystick
@@ -1627,6 +2058,7 @@ const ACTIONS = [
   ["build", "B", "Build route", () => buildRoute()],
   ["playpause", "P", "Play / pause on the device", () => playOrPause()],
   ["stop", "X", "Stop playback", () => stopPlayback()],
+  ["continue", "N", "Continue from a hold checkpoint", () => continuePlayback()],
   ["clear", "C", "Stop spoofing (back to real location)", () => stopSpoofing()],
   ["connect", "K", "Connect / disconnect", () => (state.status && state.status.device ? disconnectNow() : connectNow())],
   ["locate", "R", "Show my real location", () => showRealLocation(false)],
@@ -1654,7 +2086,7 @@ document.addEventListener("keydown", (e) => {
   if (listeningFor) return;
   if (joystickKeydown(e)) return;
   if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || typing()) return;
-  if (e.key === "Escape") { hideTip(); return; }
+  if (e.key === "Escape") { hideTip(); closeMenus(); stopPlacement(); return; }
   const k = e.key.length === 1 ? e.key.toUpperCase() : "";
   if (!/^[A-Z0-9]$/.test(k)) return;
   const m = shortcutMap();
@@ -1740,7 +2172,7 @@ function saveSettingsSoon() {
   }), 700);
 }
 const SETTING_IDS = ["driver", "provider", "default-mode", "default-speed", "accel", "decel", "alt-count", "start-rest", "stop-end",
-  "road-aware", "road-data", "corner-slow", "match-eta", "speed-factor", "multiplier", "loop", "jitter", "tick", "joy-speed", "gpx-speed"];
+  "road-aware", "road-data", "corner-slow", "match-eta", "speed-factor", "multiplier", "loop", "jitter", "tick", "laps", "joy-speed", "gpx-speed"];
 function collectSettings() {
   const s = {};
   for (const id of SETTING_IDS) { const e = $(id); s[id] = e.type === "checkbox" ? e.checked : e.value; }
@@ -1756,7 +2188,6 @@ function applySettings(s) {
   $("speed-factor").oninput();
   if (Array.isArray(s.view)) map.setView([s.view[0], s.view[1]], s.view[2]);
   $("google-key").value = s.google_api_key || "";
-  $("pref-night-map").checked = !!s.night_map;
   $("pref-compact").checked = !!s.compact;
   $("pref-channel").value = s.update_channel === "dev" ? "dev" : "stable";
   if (s.sidebar_w) setSidebarWidth(s.sidebar_w, false);
@@ -1806,7 +2237,7 @@ $("btn-save-route").onclick = guard(async () => {
   const name = $("route-name").value.trim() || `Route ${state.store.routes.length + 1}`;
   state.store.routes.push({
     name, closed: $("closed").checked, settings: profileSettings(), provider: $("provider").value,
-    waypoints: state.waypoints.map(({ lat, lon, name, speed_kmh, dwell_s, leg }) => ({ lat, lon, name, speed_kmh, dwell_s, leg })),
+    waypoints: state.waypoints.map(({ lat, lon, name, speed_kmh, dwell_s, hold, leg }) => ({ lat, lon, name, speed_kmh, dwell_s, hold: !!hold, leg })),
   });
   await saveStore();
   toast(`Saved “${name}”`);
@@ -2030,8 +2461,13 @@ renderThemeGrid();
 renderWaypoints();
 renderGpxDrop();
 decorateShortcutHints();
+// The standalone app keeps its window hidden until the page has painted with the right theme
+// (no white flash at start-up); the browser version has no window.ipc.
+function notifyReady() {
+  try { if (window.ipc && typeof window.ipc.postMessage === "function") window.ipc.postMessage("ready"); } catch (_) { /* not the desktop app */ }
+}
 (async () => {
-  await loadStore();
+  try { await loadStore(); } finally { requestAnimationFrame(() => requestAnimationFrame(notifyReady)); }
   await refreshGoogleStatus();
   await poll();
   refreshDevices(false);
