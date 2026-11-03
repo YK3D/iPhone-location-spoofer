@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import bisect
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional, Sequence
 
 from . import geo
@@ -58,6 +58,9 @@ class Leg:
     points: list[geo.LatLon]  # routed geometry, first/last should be the waypoints
     cruise_kmh: Optional[float] = None  # None -> settings.default_cruise_kmh
     ramp: str = "accel"  # "accel" | "linear"
+    # How the leg is travelled (car, bike, foot, sea, straight): picks the vehicle whose cornering
+    # limits apply. Straight legs guess the vehicle from their speed.
+    mode: str = "straight"
     # Road-aware mode: typical speed (m/s, None = unknown) up to each distance along the leg,
     # as reported by the routing service / speed-limit data. Sorted by distance.
     zones: Optional[list[tuple[float, Optional[float]]]] = None
@@ -74,9 +77,11 @@ class ProfileSettings:
     # --- experimental road-aware driving ---
     road_aware: bool = False  # follow per-road typical speeds / limits from the routing data
     speed_factor: float = 1.0  # multiply road speeds (driving style); tuned by ETA matching
-    corner_slowdown: bool = False  # slow down for sharp turns, roundabouts and U-turns
-    lateral_accel_ms2: float = 2.0  # comfortable cornering acceleration (car ~2, bike ~1.5)
-    min_corner_kmh: float = 8.0  # never plan a turn slower than this (U-turns)
+    corner_slowdown: bool = False  # take every bend at the speed its radius and the vehicle allow
+    # Override the vehicle's comfortable lateral acceleration at low speed (m/s^2); None = the
+    # vehicle's own (see VEHICLES). Its fall-off at speed scales along.
+    lateral_accel_ms2: Optional[float] = None
+    min_corner_kmh: float = 0.0  # optional floor for planned turn speeds
 
 
 @dataclass
@@ -110,6 +115,7 @@ class Timeline:
     warnings: list[str] = field(default_factory=list)
     dwell_total: float = 0.0  # seconds spent waiting at checkpoints
     corners_slowed: int = 0
+    turns: list["Turn"] = field(default_factory=list)  # every bend found (see detect_turns)
     # (time, waypoint index) of every "hold until Continue" checkpoint: the moment the device
     # comes to a stop there, before any wait time.
     holds: list[tuple[float, int]] = field(default_factory=list)
@@ -228,6 +234,8 @@ class Timeline:
             "waypoint_times_s": [round(t, 1) for t in self.waypoint_times],
             "moving_time_s": round(self.duration - self.dwell_total, 1),
             "corners_slowed": self.corners_slowed,
+            "turns": len(self.turns),
+            "sharpest_turn": _sharpest(self.turns),
             "holds": len(self.holds),
             "warnings": self.warnings,
         }
@@ -292,8 +300,10 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
         cap[k] = min(cap[k], c)
         cap[k + 1] = min(cap[k + 1], c)
     corners = 0
+    turns: list[Turn] = []
     if settings.corner_slowdown:
-        corners = _apply_corner_caps(nodes, cum, cap, settings)
+        turns = apply_turn_caps(nodes, cum, cap, [legs[i].mode for i in node_leg], settings)
+        corners = sum(1 for t in turns if t.slowed)
 
     pinned: dict[int, float] = {}
     for i, wp in enumerate(waypoints):
@@ -385,6 +395,7 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
     tl = Timeline(segments, [node_arrival[k] for k in wp_node], warnings)
     tl.dwell_total = sum(dwell_at.values())
     tl.corners_slowed = corners
+    tl.turns = turns
     tl.holds = sorted((node_arrival[wp_node[i]], i) for i, wp in enumerate(waypoints) if wp.hold)
     return tl
 
@@ -417,40 +428,192 @@ def _zone_speed(zones: list[tuple[float, Optional[float]]], s: float) -> Optiona
     return zones[i][1]
 
 
-def _apply_corner_caps(nodes, cum, cap, settings: ProfileSettings, look_m: float = 15.0) -> int:
-    """Cap the speed at bends: the heading change between the path 15 m before and 15 m after a
-    node gives a turn radius R ~ L / angle, and a comfortable lateral acceleration a gives
-    v = sqrt(a * R). U-turns (angle ~ 180 deg) end up near min_corner_kmh."""
+# ---------------------------------------------------------------- cornering physics
+G = 9.81
+
+
+@dataclass(frozen=True)
+class Vehicle:
+    """What a vehicle can do in a turn.
+
+    * a_lat_low, a_lat_high: the sideways (lateral) acceleration a driver is comfortable with at
+      walking pace and at v_high m/s and above; it falls linearly in between, because people accept
+      less sideways force the faster they go.
+    * grip, safety: the tyre/road friction coefficient and the share of it a careful driver uses;
+      a turn is never planned faster than sqrt(grip * safety * g * R).
+    * min_radius: the tightest circle it can drive (a car's turning circle is about 11 m across), so
+      a U-turn is planned at the speed of that circle.
+    * cut_junction, cut_lane: how far (m) the line actually driven may stray inside the line the map
+      draws. Maps draw a junction as a sharp corner on the road centre lines, and drivers round it
+      using the junction's width (about 4 m for a car on a 50 km/h road); on a curve that is drawn
+      as a curve they only have their lane (about 1 m). Junctions on faster roads are bigger, so
+      cut_junction scales with the road speed relative to v_typical (0.6x to 2x).
+    """
+
+    a_lat_low: float
+    a_lat_high: float
+    v_high: float
+    grip: float
+    safety: float
+    min_radius: float
+    cut_junction: float
+    cut_lane: float
+    v_typical: float
+
+
+VEHICLES = {
+    "car": Vehicle(2.8, 1.8, 30.0, 0.7, 0.55, 5.5, 4.0, 1.0, 13.9),
+    "bike": Vehicle(2.4, 2.0, 10.0, 0.6, 0.5, 2.5, 1.5, 0.5, 5.0),
+    "foot": Vehicle(1.6, 1.6, 3.0, 0.6, 0.6, 0.5, 0.4, 0.2, 1.4),
+    "sea": Vehicle(0.6, 0.4, 15.0, 1.0, 1.0, 40.0, 40.0, 15.0, 10.0),
+}
+JUNCTION_LEN = 8.0  # a bend drawn shorter than this many cut_junction lengths counts as a junction corner
+TURN_MIN_DEG = 10.0  # gentler bends slow nobody down
+TURN_NOISE_DEG = 0.3  # smaller heading changes at a node are digitising noise
+TURN_WOBBLE_DEG = 4.0  # a small kink the other way inside a bend doesn't end it
+TURN_GAP_S = 1.0  # a bend continues across straight bits shorter than this much travel time ...
+TURN_GAP_MIN_M, TURN_GAP_MAX_M = 10.0, 40.0  # ... clamped to these lengths
+
+
+@dataclass
+class Turn:
+    s: float  # distance along the route at the middle of the bend (m)
+    angle_deg: float  # how far the heading turns; positive = to the right (clockwise)
+    radius_m: float  # radius of the arc the vehicle drives
+    speed_kmh: float  # speed it takes the bend at
+    slowed: bool  # whether that is slower than the road or leg allows there
+
+
+def vehicle_for(mode: str, cruise_ms: float) -> Optional[Vehicle]:
+    """The vehicle whose limits apply on a leg. Straight legs guess it from the speed; very fast
+    ones (trains, planes between far-apart checkpoints) are not slowed for their corners."""
+    if mode in VEHICLES:
+        return VEHICLES[mode]
+    kmh = cruise_ms * 3.6
+    if kmh <= 8:
+        return VEHICLES["foot"]
+    if kmh <= 30:
+        return VEHICLES["bike"]
+    if kmh <= 150:
+        return VEHICLES["car"]
+    return None
+
+
+def turn_speed(veh: Vehicle, radius_m: float, a_scale: float = 1.0) -> float:
+    """Fastest speed (m/s) at which the vehicle takes a turn of this radius comfortably and
+    safely: v = sqrt(a_lat(v) * R), where a_lat falls linearly from a_lat_low (at rest) to
+    a_lat_high (at v_high and above), capped by the grip limit."""
+    r = max(radius_m, veh.min_radius)
+    a0, a1 = veh.a_lat_low * a_scale, veh.a_lat_high * a_scale
+    k = (a0 - a1) / veh.v_high
+    # v^2 = (a0 - k v) R  ->  v^2 + kR v - a0 R = 0, valid while v <= v_high
+    v = (-k * r + math.sqrt((k * r) ** 2 + 4 * a0 * r)) / 2
+    if v > veh.v_high:
+        v = math.sqrt(a1 * r)
+    return min(v, math.sqrt(veh.grip * veh.safety * G * r))
+
+
+def _bends(nodes, cum, gap_m) -> list[tuple[int, int, float]]:
+    """Bends along the path as (first node, last node, signed heading change in degrees): runs of
+    nodes where the heading keeps changing the same way, across straight bits up to gap_m(k)."""
+    n = len(nodes)
+    delta = [0.0] * n
+    prev_b: Optional[float] = None
+    for k in range(n - 1):
+        if cum[k + 1] - cum[k] <= 0.05:
+            continue
+        b = geo.bearing_deg(nodes[k], nodes[k + 1])
+        if prev_b is not None:
+            delta[k] = (b - prev_b + 540.0) % 360.0 - 180.0
+        prev_b = b
+    out: list[tuple[int, int, float]] = []
+    cur: Optional[list] = None  # [first, last, sum, sign]
+    for k in range(1, n - 1):
+        d = delta[k]
+        if abs(d) < TURN_NOISE_DEG:
+            continue
+        sign = 1 if d > 0 else -1
+        near = cur is not None and cum[k] - cum[cur[1]] <= gap_m(k)
+        if near and (sign == cur[3] or abs(d) <= TURN_WOBBLE_DEG):
+            cur[1], cur[2] = k, cur[2] + d
+            continue
+        if cur is not None:
+            out.append((cur[0], cur[1], cur[2]))
+        cur = [k, k, d, sign]
+    if cur is not None:
+        out.append((cur[0], cur[1], cur[2]))
+    return out
+
+
+def driven_radius(veh: Vehicle, theta_deg: float, length: float, v_ref: float, room: float) -> float:
+    """Radius of the arc a driver follows through a bend of `theta_deg` drawn over `length` metres.
+
+    The drawn bend has radius length / angle (0 for a sharp corner). The driver straightens it as far
+    as the road lets them: an arc with the same entry and exit directions whose middle lies `e` metres
+    inside the drawn line has radius r_drawn + e / (1 / cos(angle / 2) - 1). `e` blends from
+    cut_junction (a corner drawn sharp) to cut_lane (a drawn curve); the arc must also fit into the
+    straight road available either side (`room`), and is never tighter than the turning circle."""
+    th = math.radians(min(theta_deg, 179.9))
+    r_drawn = length / math.radians(theta_deg)
+    junction = min(1.0, max(0.0, 1.0 - length / (JUNCTION_LEN * veh.cut_junction)))
+    scale = min(2.0, max(0.6, v_ref / veh.v_typical))
+    e = (veh.cut_lane + (veh.cut_junction - veh.cut_lane) * junction) * scale
+    sec_1 = 1.0 / math.cos(th / 2) - 1.0
+    r_cut = r_drawn + e / sec_1
+    r_fit = (room + length / 2) / math.tan(th / 2)
+    return max(veh.min_radius, r_drawn, min(r_cut, r_fit))
+
+
+def apply_turn_caps(nodes, cum, cap, node_modes, settings: ProfileSettings) -> list[Turn]:
+    """Find every bend and cap the speed through it at what its radius and the vehicle allow
+    (see driven_radius and turn_speed). The limit covers the whole driven arc; the backward pass
+    then brakes in time for it and the forward pass accelerates out of it at the configured rates."""
     n = len(nodes)
     if n < 3:
-        return 0
-    a_lat = max(0.2, settings.lateral_accel_ms2)
-    v_min = settings.min_corner_kmh / 3.6
-    count = 0
-    in_corner = False
-    for k in range(1, n - 1):
-        j = bisect.bisect_right(cum, cum[k] - look_m) - 1
-        m = bisect.bisect_left(cum, cum[k] + look_m)
-        if j < 0 or m >= n or j == k or m == k:
-            in_corner = False
+        return []
+    ref = [c if math.isfinite(c) else 0.0 for c in cap]  # road / leg speeds before any bend
+    gap = lambda k: min(TURN_GAP_MAX_M, max(TURN_GAP_MIN_M, TURN_GAP_S * ref[k]))  # noqa: E731
+    bends = [b for b in _bends(nodes, cum, gap) if abs(b[2]) >= TURN_MIN_DEG]
+    a_scale = settings.speed_factor ** 2 if settings.road_aware else 1.0
+    total = cum[-1]
+    floor = settings.min_corner_kmh / 3.6
+    turns: list[Turn] = []
+    for j, (k0, k1, ang) in enumerate(bends):
+        v_ref = min(ref[k0:k1 + 1]) if k1 >= k0 else ref[k0]
+        veh = vehicle_for(node_modes[k0], v_ref)
+        if veh is None or v_ref <= 0:
             continue
-        if cum[k] - cum[j] < 1.0 or cum[m] - cum[k] < 1.0:
-            continue
-        b1 = geo.bearing_deg(nodes[j], nodes[k])
-        b2 = geo.bearing_deg(nodes[k], nodes[m])
-        theta = math.radians(abs((b2 - b1 + 180.0) % 360.0 - 180.0))
-        if theta < math.radians(20):
-            in_corner = False
-            continue
-        span = ((cum[k] - cum[j]) + (cum[m] - cum[k])) / 2
-        radius = span / theta
-        v = max(v_min, math.sqrt(a_lat * radius))
-        if v < cap[k]:
-            cap[k] = v
-            if not in_corner:
-                count += 1
-            in_corner = True
-    return count
+        if settings.lateral_accel_ms2:
+            a0 = settings.lateral_accel_ms2
+            veh = replace(veh, a_lat_low=a0, a_lat_high=a0 * veh.a_lat_high / veh.a_lat_low)
+        # straight road available before and after: up to halfway to the neighbouring bends
+        before = cum[k0] - cum[bends[j - 1][1]] if j > 0 else cum[k0]
+        after = cum[bends[j + 1][0]] - cum[k1] if j + 1 < len(bends) else total - cum[k1]
+        room = max(0.0, min(before / 2 if j > 0 else before, after / 2 if j + 1 < len(bends) else after))
+        theta = abs(ang)
+        length = cum[k1] - cum[k0]
+        radius = driven_radius(veh, theta, length, v_ref, room)
+        v = max(turn_speed(veh, radius, a_scale), min(floor, v_ref))
+        # the limit holds along the whole driven arc (at least the drawn bend)
+        mid = (cum[k0] + cum[k1]) / 2
+        half = max(length / 2, radius * math.radians(theta) / 2)
+        lo = bisect.bisect_left(cum, mid - half)
+        hi = bisect.bisect_right(cum, mid + half)
+        slowed = False
+        for k in range(lo, hi):
+            if v < cap[k] - 1e-9:
+                cap[k] = v
+                slowed = True
+        turns.append(Turn((cum[k0] + cum[k1]) / 2, round(ang, 1), round(radius, 1), round(min(v, v_ref) * 3.6, 1), slowed))
+    return turns
+
+
+def _sharpest(turns: list[Turn]) -> Optional[dict]:
+    slowed = [t for t in turns if t.slowed]
+    if not slowed:
+        return None
+    t = min(slowed, key=lambda x: x.speed_kmh)
+    return {"angle_deg": abs(t.angle_deg), "radius_m": t.radius_m, "speed_kmh": t.speed_kmh, "distance_m": round(t.s, 1)}
 
 
 def timeline_from_timed_points(points: Sequence[tuple[float, float, float]]) -> Timeline:
@@ -517,7 +680,6 @@ def build_matching_eta(
     """
     if reference_moving_s <= 0 or not settings.road_aware:
         return build_timeline(waypoints, legs, settings), settings.speed_factor
-    from dataclasses import replace
 
     lo, hi = factor_range
     factor = min(max(settings.speed_factor, lo), hi)

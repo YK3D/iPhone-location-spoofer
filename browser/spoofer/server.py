@@ -182,7 +182,8 @@ class SettingsIn(BaseModel):
     match_eta: bool = True  # tune the driving-style factor towards the routing service's ETA
     speed_factor: float = Field(1.0, gt=0.1, le=3)
     corner_slowdown: bool = False
-    lateral_accel_ms2: float = Field(2.0, gt=0.1, le=10)
+    # None: each vehicle's own cornering limits (see profile.VEHICLES)
+    lateral_accel_ms2: Optional[float] = Field(None, gt=0.1, le=10)
 
     def to_profile(self) -> ProfileSettings:
         return ProfileSettings(
@@ -420,7 +421,7 @@ async def _build_route(body: RouteIn, progress: Progress = _no_progress) -> dict
         ref_complete = True
         exportable = True
         for i, (li, res) in enumerate(zip(legs_in, chosen)):
-            legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones))
+            legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones, mode=li.mode))
             geometry.append([[round(p[0], 7), round(p[1], 7)] for p in res.points])
             providers.append(res.provider)
             notes.extend(f"Leg {i + 1}: {nt}" for nt in res.notes)

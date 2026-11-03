@@ -221,9 +221,9 @@ def test_corner_slowdown_slows_uturn():
     slowed = build_timeline(wps, legs, ProfileSettings(accel_ms2=2, decel_ms2=2, corner_slowdown=True))
     assert slowed.duration > plain.duration
     assert slowed.corners_slowed == 1
-    # speed at the turnaround point is close to the minimum corner speed
+    # a U-turn is driven on the car's turning circle (about 5.5 m radius): about 14 km/h
     t_turn = min(slowed.sample(0.5), key=lambda p: geo.haversine_m((p.lat, p.lon), far)).t
-    assert slowed.at(t_turn).speed_ms < 12 / 3.6
+    assert 10 / 3.6 < slowed.at(t_turn).speed_ms < 16 / 3.6
 
 
 def test_road_aware_follows_zones():

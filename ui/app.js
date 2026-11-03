@@ -1624,7 +1624,11 @@ function renderResult(box, res) {
   }
   const f = s.features || {};
   const feat = [];
-  if (s.corners_slowed) feat.push(`slowed for ${s.corners_slowed} bend${s.corners_slowed > 1 ? "s" : ""}/U-turns`);
+  if (s.corners_slowed) {
+    const t = s.sharpest_turn;
+    feat.push(`slowed for ${s.corners_slowed} bend${s.corners_slowed > 1 ? "s" : ""}/U-turns`
+      + (t ? ` (sharpest: ${Math.round(t.angle_deg)}° on a ${t.radius_m < 10 ? t.radius_m.toFixed(1) : Math.round(t.radius_m)} m arc, taken at ${Math.round(t.speed_kmh)} km/h)` : ""));
+  }
   if (f.uturns) feat.push(`${f.uturns} U-turn${f.uturns > 1 ? "s" : ""} in the directions`);
   if (f.offnet_m >= 25) feat.push(`${fmtDist(f.offnet_m)} off the road network (private road, gated area or car park; driven slowly)`);
   if (f.restricted_segments) feat.push("private/restricted roads driven slowly");
