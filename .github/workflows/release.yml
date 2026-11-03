@@ -1,72 +1,154 @@
-name: Build and release LocationSpoofer.exe
+name: Build and release
 
-# Every push to main that changes code runs the tests, builds the Windows exe, self-tests it and
-# publishes it as the latest GitHub Release. Installed copies of the exe pick it up automatically.
+# One pipeline for both editions.
+#   push to main -> stable releases:  standalone-v<ver> (marked "latest") and browser-v<ver>
+#   push to dev  -> test builds:      standalone-v<ver>-dev and browser-v<ver>-dev (pre-releases)
+# Installed apps only look at their own tag prefix; pre-releases are used only by people who
+# choose "Test builds" in Settings › Updates.
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths-ignore:
       - "**.md"
       - "docs/**"
+      - "LICENSE"
+      - "browser/LICENSE"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: release
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
+env:
+  STANDALONE_VERSION: 0.2.${{ github.run_number }}
+  BROWSER_VERSION: 1.3.${{ github.run_number }}
+
 jobs:
-  test:
+  test-standalone:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: standalone
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux webview libraries (for the window feature)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: standalone
+      - run: cargo test --locked
+
+  test-browser:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: browser/requirements*.txt
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest -q
 
-  build:
-    needs: test
+  build-standalone:
+    needs: test-standalone
     runs-on: windows-latest
-    env:
-      VERSION: 1.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: standalone
+      - name: Build
+        working-directory: standalone
+        env:
+          SPOOFER_VERSION: ${{ env.STANDALONE_VERSION }}
+        run: cargo build --release --locked
+      - name: Self-test
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath standalone\target\release\location-spoofer.exe -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Write-Error "self-test failed ($($p.ExitCode))"; exit 1 }
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item standalone\target\release\location-spoofer.exe dist\LocationSpooferStandalone.exe
+          $h = (Get-FileHash dist\LocationSpooferStandalone.exe -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("dist\LocationSpooferStandalone.exe.sha256", "$h  LocationSpooferStandalone.exe")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: standalone
+          path: dist/*
+          if-no-files-found: error
+
+  build-browser:
+    needs: test-browser
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: browser/requirements*.txt
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt pyinstaller==6.22.3
-      - name: Build exe
-        run: python packaging/build_exe.py --version $env:VERSION
-      - name: Self-test the exe
+        run: python -m pip install -r browser/requirements.txt pyinstaller==6.22.3
+      - name: Build
+        run: python browser/packaging/build_exe.py --version $env:BROWSER_VERSION
+      - name: Self-test
         run: |
-          dist\LocationSpoofer.exe --version
-          dist\LocationSpoofer.exe --self-test
+          browser\dist\LocationSpooferBrowser.exe --version
+          browser\dist\LocationSpooferBrowser.exe --self-test
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      - name: Checksum
+      - name: Package
         shell: pwsh
         run: |
-          $h = (Get-FileHash dist\LocationSpoofer.exe -Algorithm SHA256).Hash.ToLower()
-          [IO.File]::WriteAllText("dist\LocationSpoofer.exe.sha256", "$h  LocationSpoofer.exe")
-          Write-Host "SHA-256: $h"
-      - name: Publish release
-        shell: bash
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item browser\dist\LocationSpooferBrowser.exe dist\LocationSpooferBrowser.exe
+          $h = (Get-FileHash dist\LocationSpooferBrowser.exe -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("dist\LocationSpooferBrowser.exe.sha256", "$h  LocationSpooferBrowser.exe")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: browser
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [build-standalone, build-browser]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish releases
         env:
           GH_TOKEN: ${{ github.token }}
-          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          {
-            echo "Automatic build of ${GITHUB_SHA::7}."
-            echo
-            echo "${COMMIT_MSG:-Manual build}"
-            echo
-            echo "SHA-256: \`$(cut -d' ' -f1 dist/LocationSpoofer.exe.sha256)\`"
-          } > notes.md
-          gh release create "v$VERSION" dist/LocationSpoofer.exe dist/LocationSpoofer.exe.sha256 \
-            --title "LocationSpoofer $VERSION" --notes-file notes.md --target "$GITHUB_SHA" --latest
+          set -euo pipefail
+          if [ "$BRANCH" = "main" ]; then
+            SUFFIX=""; FLAGS_SA="--latest"; FLAGS_BR="--latest=false"; LABEL=""
+            NOTE=""
+          else
+            SUFFIX="-dev"; FLAGS_SA="--prerelease"; FLAGS_BR="--prerelease"; LABEL=" (test build)"
+            NOTE=" This is a **test build** from the dev branch: newest features, may contain bugs. Installed apps only receive test builds when Settings › Updates is set to Test builds."
+          fi
+          render() {  # template version sha
+            sed -e "s|{VERSION}|$2|g" -e "s|{SHA}|$3|g" -e "s|{BRANCH}|$BRANCH|g" -e "s|{CHANNEL_NOTE}|$NOTE|g" ".github/release-notes/$1.md"
+          }
+          # Browser edition first, so the standalone release ends up as the repository's latest.
+          BR_SHA=$(cut -d' ' -f1 dist/browser/LocationSpooferBrowser.exe.sha256)
+          render browser "$BROWSER_VERSION$LABEL" "$BR_SHA" > notes-browser.md
+          gh release create "browser-v$BROWSER_VERSION$SUFFIX" dist/browser/LocationSpooferBrowser.exe dist/browser/LocationSpooferBrowser.exe.sha256 \
+            --title "Location Spoofer Browser Edition $BROWSER_VERSION$LABEL" --notes-file notes-browser.md --target "$GITHUB_SHA" $FLAGS_BR
+          SA_SHA=$(cut -d' ' -f1 dist/standalone/LocationSpooferStandalone.exe.sha256)
+          render standalone "$STANDALONE_VERSION$LABEL" "$SA_SHA" > notes-standalone.md
+          gh release create "standalone-v$STANDALONE_VERSION$SUFFIX" dist/standalone/LocationSpooferStandalone.exe dist/standalone/LocationSpooferStandalone.exe.sha256 \
+            --title "Location Spoofer Standalone $STANDALONE_VERSION$LABEL" --notes-file notes-standalone.md --target "$GITHUB_SHA" $FLAGS_SA
