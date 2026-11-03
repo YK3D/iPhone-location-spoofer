@@ -22,12 +22,23 @@ const OSRM_MIN_INTERVAL: Duration = Duration::from_secs(1);
 /// Alternative routes. OSRM returns at most one alternative in practice, so extra ones are found by
 /// routing through a "via" point beside the main route and keeping only detours that are sensible.
 pub const MAX_ALTERNATIVES: usize = 3;
-const VIA_OFFSETS: [f64; 4] = [0.2, -0.2, 0.35, -0.35]; // sideways offset of the via point, share of the leg length
-pub const MAX_VIA_REQUESTS: usize = 6; // extra routing requests per route build, on top of one per leg
+/// Via points tried for detours, most promising first: (share of the way along the main route,
+/// sideways offset as a share of the leg length; positive = right of the direction of travel there).
+pub const VIA_GRID: [(f64, f64); 12] = [
+    (0.5, 0.15), (0.5, -0.15), (0.35, 0.22), (0.35, -0.22), (0.65, 0.22), (0.65, -0.22),
+    (0.5, 0.3), (0.5, -0.3), (0.25, 0.15), (0.25, -0.15), (0.75, 0.15), (0.75, -0.15),
+];
+pub const MAX_VIA_REQUESTS: usize = 12; // extra routing requests per route build, on top of one per leg
+const VIA_PER_MISSING: usize = 4; // via points a leg may try per alternative it still lacks
 const MIN_ALT_LEG_M: f64 = 400.0;
 const ALT_MAX_DURATION_RATIO: f64 = 1.5;
 const ALT_MAX_DISTANCE_RATIO: f64 = 1.6;
 const ALT_MAX_OVERLAP: f64 = 0.8; // share of road segments a detour may share with an already chosen route
+// When too few detours pass, near misses (a little slower, longer or more similar) fill the gap.
+// Detours that turn back, loop or drive a road twice are never offered.
+const ALT_RELAXED_DURATION_RATIO: f64 = 1.8;
+const ALT_RELAXED_DISTANCE_RATIO: f64 = 1.9;
+const ALT_RELAXED_OVERLAP: f64 = 0.9;
 const VIA_MAX_TURN_DEG: f64 = 150.0; // a sharper turn at the via point is a U-turn "spike"
 // A detour may not turn back on itself more often than the main route does: a heading reversal of
 // more than REVERSAL_MIN_DEG over REVERSAL_WINDOW x REVERSAL_STEP_M either side of a point (up one
@@ -92,7 +103,8 @@ fn cache_put(key: String, v: Vec<RouteResult>) {
 }
 
 /// The main path from a to b, then up to `count` alternative paths (fastest first).
-/// Sea and straight legs have no alternatives.
+/// `detours == false` only keeps the alternatives the routing service offers itself (no extra
+/// requests). Sea and straight legs have no alternatives.
 #[allow(clippy::too_many_arguments)]
 pub async fn route_options(
     a: LatLon,
@@ -104,6 +116,7 @@ pub async fn route_options(
     count: usize,
     budget: &mut ViaBudget,
     report: Report<'_>,
+    detours: bool,
 ) -> Result<Vec<RouteResult>, String> {
     if !["car", "bike", "foot", "sea", "straight"].contains(&mode) {
         return Err(format!("Unknown travel mode '{mode}'"));
@@ -127,11 +140,13 @@ pub async fn route_options(
         let key = google_key.ok_or("Google routing needs an API key (Settings > Google Maps)")?;
         return google_routes(a, b, mode, key, count).await;
     }
-    let key = format!("osrm|{mode}|{}|{}|{road_data}|{count}", r6(a), r6(b));
+    let key = format!("osrm|{mode}|{}|{}|{road_data}|{count}|{detours}", r6(a), r6(b));
     if let Some(hit) = cache().lock().unwrap().get(&key) {
         return Ok(hit.clone());
     }
-    let (res, complete) = osrm_options(a, b, mode, road_data, count, budget, report).await?;
+    let mut none = ViaBudget { left: 0 };
+    let use_budget = if detours { budget } else { &mut none };
+    let (res, complete) = osrm_options(a, b, mode, road_data, count, use_budget, report).await?;
     if complete {
         // a search cut short by the request budget may find more next time
         cache_put(key, res.clone());
@@ -377,44 +392,76 @@ fn point_at_fraction(pts: &[LatLon], f: f64) -> LatLon {
     geo::interpolate(pts[i - 1], pts[i], if seg > 0.0 { (target - cum[i - 1]) / seg } else { 0.0 })
 }
 
-/// Whether a detour is worth offering next to the routes already found.
-fn detour_ok(c: &Candidate, main: &Candidate, taken: &[HashSet<(i64, i64)>]) -> bool {
-    if c.via_turn > VIA_MAX_TURN_DEG || c.uturns > main.uturns || c.doubles_back() {
-        return false; // it turns back at the via point or drives a road twice
-    }
-    if reversals(&c.pts) > reversals(&main.pts) {
-        return false; // up one street and back down the next: not a real alternative
-    }
-    if main.duration > 0.0 && c.duration > main.duration * ALT_MAX_DURATION_RATIO {
-        return false;
-    }
-    if main.distance > 0.0 && c.distance > main.distance * ALT_MAX_DISTANCE_RATIO {
-        return false;
-    }
-    let pairs = c.pairs();
-    pairs.is_empty() || taken.iter().all(|t| (pairs.intersection(t).count() as f64) / (pairs.len() as f64) <= ALT_MAX_OVERLAP)
+/// Direction of the path around a share f of the way along it.
+fn heading_at_fraction(pts: &[LatLon], f: f64) -> f64 {
+    geo::bearing_deg(point_at_fraction(pts, (f - 0.05).max(0.0)), point_at_fraction(pts, (f + 0.05).min(1.0)))
 }
 
-/// Detour alternatives through via points on either side of the main route.
+/// Largest share of a route's road segments that another route also uses.
+fn overlap(pairs: &HashSet<(i64, i64)>, taken: &[HashSet<(i64, i64)>]) -> f64 {
+    if pairs.is_empty() {
+        return 0.0;
+    }
+    taken.iter().map(|t| pairs.intersection(t).count() as f64 / pairs.len() as f64).fold(0.0, f64::max)
+}
+
+#[derive(Debug, PartialEq)]
+enum Verdict {
+    Ok,   // offer it
+    Near, // offer it only when too few detours pass
+    No,
+}
+
+fn judge_detour(c: &Candidate, main: &Candidate, main_reversals: usize, taken: &[HashSet<(i64, i64)>]) -> Verdict {
+    if c.via_turn > VIA_MAX_TURN_DEG || c.uturns > main.uturns || c.doubles_back() {
+        return Verdict::No; // it turns back at the via point or drives a road twice
+    }
+    if reversals(&c.pts) > main_reversals {
+        return Verdict::No; // up one street and back down the next: not a real alternative
+    }
+    let dur = if main.duration > 0.0 { c.duration / main.duration } else { 1.0 };
+    let dist = if main.distance > 0.0 { c.distance / main.distance } else { 1.0 };
+    let ov = overlap(&c.pairs(), taken);
+    if dur <= ALT_MAX_DURATION_RATIO && dist <= ALT_MAX_DISTANCE_RATIO && ov <= ALT_MAX_OVERLAP {
+        Verdict::Ok
+    } else if dur <= ALT_RELAXED_DURATION_RATIO && dist <= ALT_RELAXED_DISTANCE_RATIO && ov <= ALT_RELAXED_OVERLAP {
+        Verdict::Near
+    } else {
+        Verdict::No
+    }
+}
+
+/// Whether a detour is worth offering next to the routes already found.
+#[cfg(test)]
+fn detour_ok(c: &Candidate, main: &Candidate, taken: &[HashSet<(i64, i64)>]) -> bool {
+    judge_detour(c, main, reversals(&main.pts), taken) == Verdict::Ok
+}
+
+/// Detour alternatives through via points beside the main route (see VIA_GRID).
 /// Returns false when the request budget ran out before the search finished.
 async fn add_detours(a: LatLon, b: LatLon, mode: &str, cands: &mut Vec<Candidate>, count: usize, budget: &mut ViaBudget, report: Report<'_>) -> bool {
     let length = geo::haversine_m(a, b);
-    if length < MIN_ALT_LEG_M {
+    if length < MIN_ALT_LEG_M || cands[0].pts.len() < 2 {
         return true;
     }
-    let mid = point_at_fraction(&cands[0].pts, 0.5);
-    let heading = geo::bearing_deg(a, b);
+    let main_pts = cands[0].pts.clone();
+    let main_reversals = reversals(&main_pts);
     let mut taken: Vec<HashSet<(i64, i64)>> = cands.iter().map(|c| c.pairs()).collect();
-    for f in VIA_OFFSETS {
+    let mut near: Vec<Candidate> = Vec::new();
+    let tries = VIA_GRID.len().min(VIA_PER_MISSING * count.saturating_sub(cands.len() - 1));
+    let mut complete = true;
+    for &(f, off) in &VIA_GRID[..tries] {
         if cands.len() > count {
-            return true;
+            break;
         }
         if budget.left == 0 {
-            return false;
+            complete = false;
+            break;
         }
         budget.left -= 1;
-        report("Searching for alternative routes");
-        let via = geo::destination(mid, (heading + if f > 0.0 { 90.0 } else { -90.0 }).rem_euclid(360.0), f.abs() * length);
+        report(&format!("Searching for alternative routes ({} of {count} found)", cands.len() - 1));
+        let side = if off > 0.0 { 90.0 } else { -90.0 };
+        let via = geo::destination(point_at_fraction(&main_pts, f), (heading_at_fraction(&main_pts, f) + side).rem_euclid(360.0), off.abs() * length);
         let data = match osrm_fetch(&[a, via, b], mode, 0).await {
             Ok(d) => d,
             Err(e) => {
@@ -423,12 +470,28 @@ async fn add_detours(a: LatLon, b: LatLon, mode: &str, cands: &mut Vec<Candidate
             }
         };
         let Some(c) = parse_osrm(&data["routes"][0], "detour") else { continue };
-        if detour_ok(&c, &cands[0], &taken) {
-            taken.push(c.pairs());
+        match judge_detour(&c, &cands[0], main_reversals, &taken) {
+            Verdict::Ok => {
+                taken.push(c.pairs());
+                cands.push(c);
+            }
+            Verdict::Near => near.push(c),
+            Verdict::No => {}
+        }
+    }
+    near.sort_by(|x, y| x.duration.partial_cmp(&y.duration).unwrap_or(std::cmp::Ordering::Equal));
+    for c in near {
+        if cands.len() > count {
+            break;
+        }
+        let pairs = c.pairs();
+        if overlap(&pairs, &taken) <= ALT_RELAXED_OVERLAP {
+            // still different enough from what was added since
+            taken.push(pairs);
             cands.push(c);
         }
     }
-    true
+    complete || cands.len() > count
 }
 
 async fn osrm_options(a: LatLon, b: LatLon, mode: &str, road_data: bool, count: usize, budget: &mut ViaBudget, report: Report<'_>) -> Result<(Vec<RouteResult>, bool), String> {
@@ -1080,6 +1143,28 @@ mod tests {
     }
 
     #[test]
+    fn near_misses_and_via_directions() {
+        let main = parse_osrm(&osrm_route(&[&[1, 2, 3, 4]], 300.0, 3000.0, None), "main").unwrap();
+        let taken = vec![main.pairs()];
+        let rev = reversals(&main.pts);
+        let near = parse_osrm(&osrm_route(&[&[1, 20, 21], &[21, 22, 4]], 510.0, 3700.0, None), "detour").unwrap();
+        assert_eq!(judge_detour(&near, &main, rev, &taken), Verdict::Near); // 1.7x the time
+        let good = parse_osrm(&osrm_route(&[&[1, 7, 8], &[8, 9, 4]], 360.0, 3600.0, None), "detour").unwrap();
+        assert_eq!(judge_detour(&good, &main, rev, &taken), Verdict::Ok);
+        let spike = parse_osrm(&osrm_route(&[&[1, 10], &[10, 4]], 340.0, 3300.0, Some((180.0, 0.0))), "detour").unwrap();
+        assert_eq!(judge_detour(&spike, &main, rev, &taken), Verdict::No);
+        let a = (51.5, -0.12);
+        let north = [a, geo::destination(a, 0.0, 2000.0)];
+        assert!(heading_at_fraction(&north, 0.5).abs() < 0.01);
+        let e = geo::destination(a, 90.0, 1000.0);
+        let bend = [a, e, geo::destination(e, 0.0, 1000.0)];
+        assert!((heading_at_fraction(&bend, 0.25) - 90.0).abs() < 0.5);
+        assert!(heading_at_fraction(&bend, 0.75).abs() < 0.5);
+        assert_eq!(VIA_GRID.len(), 12);
+        assert!(MAX_VIA_REQUESTS >= VIA_PER_MISSING * MAX_ALTERNATIVES);
+    }
+
+    #[test]
     fn reversals_spot_up_and_back_detours() {
         let a = (51.5, -0.12);
         let up: Vec<LatLon> = (0..=8).map(|k| geo::destination(a, 0.0, 100.0 * k as f64)).collect();
@@ -1120,7 +1205,7 @@ mod tests {
     #[tokio::test]
     async fn straight_and_short_legs_have_no_alternatives() {
         let mut budget = ViaBudget::default();
-        let r = route_options((51.5, -0.12), (51.51, -0.12), "straight", "osrm", None, false, 3, &mut budget, &|_| {}).await.unwrap();
+        let r = route_options((51.5, -0.12), (51.51, -0.12), "straight", "osrm", None, false, 3, &mut budget, &|_| {}, true).await.unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].kind, "main");
         assert_eq!(budget.left, MAX_VIA_REQUESTS);

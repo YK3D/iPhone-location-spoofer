@@ -48,12 +48,23 @@ OSRM_MIN_INTERVAL_S = 1.0
 # Alternative routes. OSRM returns at most one alternative in practice, so extra ones are found by
 # routing through a "via" point beside the main route and keeping only detours that are sensible.
 MAX_ALTERNATIVES = 3
-VIA_OFFSETS = (0.2, -0.2, 0.35, -0.35)  # sideways offset of the via point, as a share of the leg length
-MAX_VIA_REQUESTS = 6  # extra routing requests per route build, on top of one per leg
+# Via points tried for detours, most promising first: (share of the way along the main route,
+# sideways offset as a share of the leg length; positive = right of the direction of travel there).
+VIA_GRID = (
+    (0.5, 0.15), (0.5, -0.15), (0.35, 0.22), (0.35, -0.22), (0.65, 0.22), (0.65, -0.22),
+    (0.5, 0.3), (0.5, -0.3), (0.25, 0.15), (0.25, -0.15), (0.75, 0.15), (0.75, -0.15),
+)
+MAX_VIA_REQUESTS = 12  # extra routing requests per route build, on top of one per leg
+VIA_PER_MISSING = 4  # a leg tries at most this many via points per alternative it still lacks
 MIN_ALT_LEG_M = 400.0  # shorter legs don't get detour alternatives
 ALT_MAX_DURATION_RATIO = 1.5  # a detour may take at most 50 % longer than the main route
 ALT_MAX_DISTANCE_RATIO = 1.6
 ALT_MAX_OVERLAP = 0.8  # share of road segments a detour may share with an already chosen route
+# When too few detours pass, near misses (a little slower, longer or more similar) fill the gap.
+# Detours that turn back, loop or drive a road twice are never offered.
+ALT_RELAXED_DURATION_RATIO = 1.8
+ALT_RELAXED_DISTANCE_RATIO = 1.9
+ALT_RELAXED_OVERLAP = 0.9
 VIA_MAX_TURN_DEG = 150.0  # a sharper turn at the via point is a U-turn "spike": rejected
 # A detour may not turn back on itself more often than the main route does: a heading reversal of
 # more than REVERSAL_MIN_DEG over REVERSAL_WINDOW x REVERSAL_STEP_M either side of a point (up one
@@ -128,9 +139,11 @@ async def route_options(
     count: int = 0,
     budget: Optional[ViaBudget] = None,
     report: Report = None,
+    detours: bool = True,
 ) -> list[RouteResult]:
     """The main path from a to b, then up to ``count`` alternative paths (fastest first).
-    Sea and straight legs have no alternatives."""
+    ``detours=False`` only keeps the alternatives the routing service offers itself (no extra
+    requests). Sea and straight legs have no alternatives."""
     if mode not in MODES:
         raise RoutingError(f"Unknown travel mode {mode!r}")
     count = max(0, min(int(count), MAX_ALTERNATIVES))
@@ -145,10 +158,11 @@ async def route_options(
         if not google_key:
             raise RoutingError("Google routing needs an API key (Settings > Google Maps)")
         return await _google_routes(a, b, mode, google_key, count)
-    key = ("osrm", _r(a), _r(b), mode, road_data, count)
+    key = ("osrm", _r(a), _r(b), mode, road_data, count, detours)
     if key in _cache:
         return _cache[key]
-    res, complete = await _osrm_options(a, b, mode, road_data, count, budget or ViaBudget(0), report)
+    use_budget = (budget or ViaBudget(0)) if detours else ViaBudget(0)
+    res, complete = await _osrm_options(a, b, mode, road_data, count, use_budget, report)
     if len(_cache) > 300:
         _cache.clear()
     if complete:  # a search cut short by the request budget may find more next time
@@ -344,48 +358,81 @@ def _point_at_fraction(pts: list[geo.LatLon], f: float) -> geo.LatLon:
     return geo.interpolate(pts[i - 1], pts[i], (target - cum[i - 1]) / seg if seg > 0 else 0.0)
 
 
+def _heading_at_fraction(pts: list[geo.LatLon], f: float) -> float:
+    """Direction of the path around a share f of the way along it."""
+    return geo.bearing_deg(_point_at_fraction(pts, max(0.0, f - 0.05)), _point_at_fraction(pts, min(1.0, f + 0.05)))
+
+
+def _overlap(pairs: set, taken: list[set]) -> float:
+    """Largest share of a route's road segments that another route also uses."""
+    return max((len(pairs & t) / len(pairs) for t in taken), default=0.0) if pairs else 0.0
+
+
+def _judge_detour(c: _Candidate, main: _Candidate, main_reversals: int, taken: list[set]) -> str:
+    """"ok" (offer it), "near" (offer it only when too few pass) or "no"."""
+    if c.via_turn > VIA_MAX_TURN_DEG or c.uturns > main.uturns or c.doubles_back():
+        return "no"  # it turns back at the via point or drives a road twice
+    if _reversals(c.pts) > main_reversals:
+        return "no"  # up one street and back down the next: not a real alternative
+    dur = c.duration / main.duration if main.duration else 1.0
+    dist = c.distance / main.distance if main.distance else 1.0
+    ov = _overlap(c.pairs(), taken)
+    if dur <= ALT_MAX_DURATION_RATIO and dist <= ALT_MAX_DISTANCE_RATIO and ov <= ALT_MAX_OVERLAP:
+        return "ok"
+    if dur <= ALT_RELAXED_DURATION_RATIO and dist <= ALT_RELAXED_DISTANCE_RATIO and ov <= ALT_RELAXED_OVERLAP:
+        return "near"
+    return "no"
+
+
+def _take_near_misses(cands: list[_Candidate], near: list[_Candidate], count: int, taken: list[set]) -> None:
+    for c in sorted(near, key=lambda x: x.duration):
+        if len(cands) - 1 >= count:
+            return
+        pairs = c.pairs()
+        if _overlap(pairs, taken) <= ALT_RELAXED_OVERLAP:  # still different enough from what was added since
+            cands.append(c)
+            taken.append(pairs)
+
+
 async def _add_detours(
     a: geo.LatLon, b: geo.LatLon, mode: str, cands: list[_Candidate], count: int, budget: ViaBudget, report: Report
 ) -> bool:
-    """Find detour alternatives through via points on either side of the main route.
+    """Find detour alternatives through via points beside the main route (see VIA_GRID).
     Returns False when the request budget ran out before the search finished."""
     main = cands[0]
     length = geo.haversine_m(a, b)
     if length < MIN_ALT_LEG_M or len(main.pts) < 2:
         return True
-    mid = _point_at_fraction(main.pts, 0.5)
-    heading = geo.bearing_deg(a, b)
     taken = [c.pairs() for c in cands]
     main_reversals = _reversals(main.pts)
-    for f in VIA_OFFSETS:
+    near: list[_Candidate] = []
+    tries = min(len(VIA_GRID), VIA_PER_MISSING * (count - (len(cands) - 1)))
+    complete = True
+    for f, off in VIA_GRID[:tries]:
         if len(cands) - 1 >= count:
-            return True
+            break
         if budget.left <= 0:
-            return False
+            complete = False
+            break
         budget.left -= 1
         if report:
-            await report("Searching for alternative routes")
-        via = geo.destination(mid, (heading + (90 if f > 0 else -90)) % 360, abs(f) * length)
+            await report(f"Searching for alternative routes ({len(cands) - 1} of {count} found)")
+        side = 90 if off > 0 else -90
+        via = geo.destination(_point_at_fraction(main.pts, f), (_heading_at_fraction(main.pts, f) + side) % 360, abs(off) * length)
         try:
             data = await _osrm_fetch([a, via, b], mode)
         except RoutingError as e:
             log.info("detour search failed: %s", e)
             continue
         c = _parse_osrm(data["routes"][0], "detour")
-        if c.via_turn > VIA_MAX_TURN_DEG or c.uturns > main.uturns or c.doubles_back():
-            continue  # it turns back at the via point or drives a road twice
-        if _reversals(c.pts) > main_reversals:
-            continue  # up one street and back down the next: not a real alternative
-        if main.duration and c.duration > main.duration * ALT_MAX_DURATION_RATIO:
-            continue
-        if main.distance and c.distance > main.distance * ALT_MAX_DISTANCE_RATIO:
-            continue
-        pairs = c.pairs()
-        if pairs and any(len(pairs & t) / len(pairs) > ALT_MAX_OVERLAP for t in taken):
-            continue  # practically the same roads as a route we already have
-        cands.append(c)
-        taken.append(pairs)
-    return True
+        verdict = _judge_detour(c, main, main_reversals, taken)
+        if verdict == "ok":
+            cands.append(c)
+            taken.append(c.pairs())
+        elif verdict == "near":
+            near.append(c)
+    _take_near_misses(cands, near, count, taken)
+    return complete or len(cands) - 1 >= count
 
 
 async def _osrm_options(

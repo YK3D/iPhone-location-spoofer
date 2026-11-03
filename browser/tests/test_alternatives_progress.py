@@ -99,9 +99,17 @@ def _route(coords, nodes_per_leg, duration, distance, turn=None):
     return {"duration": duration, "distance": distance, "geometry": {"coordinates": coords}, "legs": legs}
 
 
+def _grid_entry(via):
+    """Which VIA_GRID entry a via point came from (the main route runs due east from A to B)."""
+    x = geo.haversine_m(A, (A[0], via[1])) / 3000
+    y = geo.haversine_m((A[0], via[1]), via) / 3000
+    south = via[0] < A[0]  # right of the direction of travel = positive offset
+    return min(routing.VIA_GRID, key=lambda g: abs(g[0] - x) + abs(abs(g[1]) - y) + (0 if (g[1] > 0) == south else 9))
+
+
 def _osrm_handler(seen):
+    south = geo.destination(geo.destination(A, 90, 1050), 180, 660)
     north = geo.destination(geo.destination(A, 90, 1500), 0, 300)
-    south = geo.destination(geo.destination(A, 90, 1500), 180, 1050)
     main = _route(_line(A, geo.destination(A, 90, 1000), geo.destination(A, 90, 2000), B), [[1, 2, 3, 4]], 300, 3000)
     native = _route(_line(A, north, B), [[1, 5, 6, 4]], 330, 3200)
 
@@ -114,16 +122,18 @@ def _osrm_handler(seen):
             n = int(req.url.params.get("alternatives", "0"))
             return httpx.Response(200, json={"code": "Ok", "routes": [main, native][: 1 + n]})
         via = pts[1]
-        mid = geo.destination(A, 90, 1500)
-        off = geo.haversine_m(mid, via)
-        southern = via[0] < mid[0]
-        if southern and off < 800:  # +0.2: doubles back at the via point
+        g = _grid_entry(via)
+        if g in ((0.5, 0.15), (0.65, -0.22)):  # turns back at the via point
             r = _route(_line(A, via, B), [[1, 10], [10, 4]], 340, 3300, turn=(180, 0))
-        elif not southern and off < 800:  # -0.2: the same roads as the main route
+        elif g == (0.5, -0.15):  # the same roads as the main route
             r = _route(_line(A, via, B), [[1, 2, 3], [3, 4]], 310, 3050)
-        elif southern:  # +0.35: a real detour
+        elif g == (0.35, 0.22):  # a real detour
             r = _route(_line(A, south, B), [[1, 7, 8], [8, 9, 4]], 360, 3600)
-        else:  # -0.35: far too slow
+        elif g == (0.65, 0.22):  # a near miss: 1.7x the main route's time
+            r = _route(_line(A, via, B), [[1, 20, 21], [21, 22, 4]], 510, 3700)
+        elif g == (0.5, 0.3):  # the real detour's roads again
+            r = _route(_line(A, south, B), [[1, 7, 8], [8, 9, 4]], 365, 3650)
+        else:  # far too slow
             r = _route(_line(A, via, B), [[1, 11, 12], [12, 4]], 1000, 3500)
         return httpx.Response(200, json={"code": "Ok", "routes": [r]})
 
@@ -141,15 +151,35 @@ def test_osrm_alternatives_fill_up_with_filtered_detours(monkeypatch):
 
     res = asyncio.run(routing.route_options(A, B, "car", count=3, budget=budget, report=report))
     assert "alternatives=3" in seen[0]
-    assert [r.kind for r in res] == ["main", "alternative", "detour"]
-    assert [r.ref_duration_s for r in res] == [300, 330, 360]
+    # one strict pass, then the near miss fills the third place; spikes, copies and slow ones never do
+    assert [r.kind for r in res] == ["main", "alternative", "detour", "detour"]
+    assert [r.ref_duration_s for r in res] == [300, 330, 360, 510]
     assert all(r.points[0] == A and r.points[-1] == B for r in res)
-    assert budget.left == routing.MAX_VIA_REQUESTS - 4  # all four via points were tried
-    assert "Searching for alternative routes" in reports
+    assert budget.left == routing.MAX_VIA_REQUESTS - 8  # 4 via points per missing alternative
+    assert "Searching for alternative routes (1 of 3 found)" in reports
     # a second build reuses the cached result: no new requests
     n = len(seen)
     asyncio.run(routing.route_options(A, B, "car", count=3, budget=routing.ViaBudget()))
     assert len(seen) == n
+
+
+def test_detours_can_be_skipped(monkeypatch):
+    seen = []
+    monkeypatch.setattr(routing, "_client", httpx.AsyncClient(transport=httpx.MockTransport(_osrm_handler(seen))))
+    res = asyncio.run(routing.route_options(A, B, "car", count=3, budget=routing.ViaBudget(), detours=False))
+    assert len(seen) == 1 and [r.kind for r in res] == ["main", "alternative"]
+    # cached separately from a search with detours
+    res = asyncio.run(routing.route_options(A, B, "car", count=3, budget=routing.ViaBudget()))
+    assert len(res) == 4
+
+
+def test_via_points_follow_the_route_direction():
+    # a route heading north: "right of travel" is east
+    pts = [A, geo.destination(A, 0, 2000)]
+    assert routing._heading_at_fraction(pts, 0.5) == pytest.approx(0, abs=0.01)
+    bend = [A, geo.destination(A, 90, 1000), geo.destination(geo.destination(A, 90, 1000), 0, 1000)]
+    assert routing._heading_at_fraction(bend, 0.25) == pytest.approx(90, abs=0.5)
+    assert routing._heading_at_fraction(bend, 0.75) == pytest.approx(0, abs=0.5)
 
 
 def test_detour_search_respects_the_request_budget(monkeypatch):

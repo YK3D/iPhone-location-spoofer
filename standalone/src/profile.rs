@@ -12,6 +12,11 @@ use serde::Serialize;
 const KMH: f64 = 1.0 / 3.6;
 const MIN_MOVING_SPEED: f64 = 0.05;
 const MAX_NODES: f64 = 60_000.0;
+// The heading while moving is the path's direction over a short window around the current spot
+// (a car turns over several metres, not at a polyline vertex): about 0.8 s of travel.
+const HEADING_WINDOW_S: f64 = 0.8;
+const HEADING_WINDOW_MIN_M: f64 = 2.0;
+const HEADING_WINDOW_MAX_M: f64 = 12.0;
 
 #[derive(Clone, Debug)]
 pub struct Waypoint {
@@ -19,11 +24,13 @@ pub struct Waypoint {
     pub lon: f64,
     pub speed_kmh: Option<f64>,
     pub dwell_s: f64,
+    /// Stop here and wait until the user presses Continue (then any dwell_s).
+    pub hold: bool,
 }
 
 impl Waypoint {
     pub fn at(p: LatLon) -> Self {
-        Self { lat: p.0, lon: p.1, speed_kmh: None, dwell_s: 0.0 }
+        Self { lat: p.0, lon: p.1, speed_kmh: None, dwell_s: 0.0, hold: false }
     }
     fn ll(&self) -> LatLon {
         (self.lat, self.lon)
@@ -113,13 +120,70 @@ pub struct Timeline {
     pub warnings: Vec<String>,
     pub dwell_total: f64,
     pub corners_slowed: usize,
+    /// (time, waypoint index) of every "hold until Continue" checkpoint: the moment the device
+    /// comes to a stop there, before any wait time.
+    pub holds: Vec<(f64, usize)>,
     t0s: Vec<f64>,
+    /// indexes of the moving segments and their start distances, for the heading window
+    moving: Vec<usize>,
+    s0s: Vec<f64>,
 }
 
 impl Timeline {
     pub fn new(segments: Vec<Segment>, waypoint_times: Vec<f64>, warnings: Vec<String>) -> Self {
         let t0s = segments.iter().map(|s| s.t0).collect();
-        Self { segments, waypoint_times, warnings, dwell_total: 0.0, corners_slowed: 0, t0s }
+        let moving: Vec<usize> = (0..segments.len()).filter(|&i| segments[i].ds > 0.0).collect();
+        let s0s = moving.iter().map(|&i| segments[i].s0).collect();
+        Self { segments, waypoint_times, warnings, dwell_total: 0.0, corners_slowed: 0, holds: Vec::new(), t0s, moving, s0s }
+    }
+
+    /// The first hold strictly after t (before t when going backwards).
+    pub fn next_hold(&self, t: f64, forward: bool) -> Option<(f64, usize)> {
+        if forward {
+            self.holds.iter().copied().find(|h| h.0 > t + 1e-9)
+        } else {
+            self.holds.iter().rev().copied().find(|h| h.0 < t - 1e-9)
+        }
+    }
+
+    /// Position at distance s (m) along the path, clamped to it.
+    pub fn point_at_distance(&self, s: f64) -> Option<LatLon> {
+        if self.moving.is_empty() {
+            return None;
+        }
+        let s = s.clamp(0.0, self.distance());
+        let i = match self.s0s.partition_point(|&x| x <= s) {
+            0 => 0,
+            n => n - 1,
+        };
+        let seg = &self.segments[self.moving[i]];
+        Some(geo::interpolate(seg.p0, seg.p1, ((s - seg.s0) / seg.ds).clamp(0.0, 1.0)))
+    }
+
+    /// Direction of travel at distance s: the path's bearing over a short window, so the heading
+    /// turns smoothly through corners instead of jumping at each polyline vertex. Standing still,
+    /// the device faces the way it arrived (or, at the start, the way it leaves).
+    pub fn heading_at(&self, s: f64, speed_ms: f64, moving: bool) -> Option<f64> {
+        if self.moving.is_empty() {
+            return None;
+        }
+        let w = (speed_ms * HEADING_WINDOW_S).clamp(HEADING_WINDOW_MIN_M, HEADING_WINDOW_MAX_M);
+        let (a, b) = if moving {
+            (s - w, s + w)
+        } else if s - 2.0 * w >= 0.0 {
+            (s - 2.0 * w, s)
+        } else {
+            (s, s + 2.0 * w)
+        };
+        let (a, b) = (a.max(0.0), b.min(self.distance()));
+        if b - a < 0.5 {
+            return None;
+        }
+        let (pa, pb) = (self.point_at_distance(a)?, self.point_at_distance(b)?);
+        if geo::haversine_m(pa, pb) < 0.3 {
+            return None;
+        }
+        Some(geo::bearing_deg(pa, pb))
     }
 
     pub fn duration(&self) -> f64 {
@@ -153,8 +217,11 @@ impl Timeline {
         };
         let f = if seg.ds > 0.0 { s / seg.ds } else { 0.0 };
         let (lat, lon) = geo::interpolate(seg.p0, seg.p1, f);
-        let course = if seg.ds > 0.0 { geo::bearing_deg(seg.p0, seg.p1) } else { self.last_course(i) };
-        TimelinePoint { t, lat, lon, speed_ms: v.max(0.0), course, distance_m: seg.s0 + s }
+        let v = v.max(0.0);
+        let course = self.heading_at(seg.s0 + s, v, v > MIN_MOVING_SPEED).unwrap_or_else(|| {
+            if seg.ds > 0.0 { geo::bearing_deg(seg.p0, seg.p1) } else { self.last_course(i) }
+        });
+        TimelinePoint { t, lat, lon, speed_ms: v, course, distance_m: seg.s0 + s }
     }
 
     fn last_course(&self, i: usize) -> f64 {
@@ -183,6 +250,11 @@ impl Timeline {
         out
     }
 
+    /// Holds as [time, waypoint index] pairs (for the status API).
+    pub fn holds_json(&self) -> Vec<serde_json::Value> {
+        self.holds.iter().map(|(t, i)| serde_json::json!([(t * 100.0).round() / 100.0, i])).collect()
+    }
+
     pub fn summary(&self) -> serde_json::Value {
         let d = self.duration();
         serde_json::json!({
@@ -193,6 +265,7 @@ impl Timeline {
             "waypoint_times_s": self.waypoint_times.iter().map(|t| round1(*t)).collect::<Vec<_>>(),
             "moving_time_s": round1(d - self.dwell_total),
             "corners_slowed": self.corners_slowed,
+            "holds": self.holds.len(),
             "warnings": self.warnings,
         })
     }
@@ -316,7 +389,7 @@ pub fn build_timeline(waypoints: &[Waypoint], legs: &[Leg], settings: &ProfileSe
     let mut pinned: Vec<(usize, f64)> = Vec::new();
     for (i, wp) in waypoints.iter().enumerate() {
         let k = wp_node[i];
-        let v = if wp.dwell_s > 0.0 {
+        let v = if wp.dwell_s > 0.0 || wp.hold {
             Some(0.0)
         } else if let Some(s) = wp.speed_kmh {
             Some(s * KMH)
@@ -430,6 +503,8 @@ pub fn build_timeline(waypoints: &[Waypoint], legs: &[Leg], settings: &ProfileSe
     let mut tl = Timeline::new(segments, wp_node.iter().map(|&k| node_arrival[k]).collect(), warnings);
     tl.dwell_total = dwell_at.iter().sum();
     tl.corners_slowed = corners;
+    tl.holds = waypoints.iter().enumerate().filter(|(_, w)| w.hold).map(|(i, _)| (node_arrival[wp_node[i]], i)).collect();
+    tl.holds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(tl)
 }
 
@@ -603,6 +678,53 @@ mod tests {
         let target = tl.duration() * 1.25;
         let (tl2, f) = build_matching_eta(&[Waypoint::at(A), Waypoint::at(b)], &[leg], &s, target).unwrap();
         assert!(f < 1.0 && ((tl2.duration() - target) / target).abs() < 0.04);
+    }
+
+    fn corner(hold_at: Option<usize>, dwell: f64) -> Timeline {
+        let b = geo::destination(A, 90.0, 200.0);
+        let c = geo::destination(b, 0.0, 200.0);
+        let mut w = vec![Waypoint::at(A), Waypoint::at(b), Waypoint::at(c)];
+        if let Some(i) = hold_at {
+            w[i].hold = true;
+        }
+        w[1].dwell_s = dwell;
+        let s = ProfileSettings { default_cruise_kmh: 36.0, accel_ms2: 2.0, decel_ms2: 2.0, ..Default::default() };
+        build_timeline(&w, &[Leg::new(vec![A, b]), Leg::new(vec![b, c])], &s).unwrap()
+    }
+
+    #[test]
+    fn hold_checkpoint_stops_there() {
+        let tl = corner(Some(1), 0.0);
+        assert_eq!(tl.holds.len(), 1);
+        let (h, i) = tl.holds[0];
+        assert_eq!(i, 1);
+        assert!((h - tl.waypoint_times[1]).abs() < 1e-9);
+        let p = tl.at(h);
+        assert!(p.speed_ms.abs() < 1e-6);
+        assert!(geo::haversine_m((p.lat, p.lon), geo::destination(A, 90.0, 200.0)) < 0.05);
+        assert!((p.course - 90.0).abs() < 1.0, "stopped: faces the way it arrived, got {}", p.course);
+        assert_eq!(tl.next_hold(0.0, true), Some((h, 1)));
+        assert_eq!(tl.next_hold(h, true), None);
+        assert_eq!(tl.next_hold(h + 1.0, false), Some((h, 1)));
+        assert_eq!(tl.summary()["holds"], 1);
+        let tl2 = corner(Some(1), 10.0); // the wait runs after the hold
+        assert!((tl2.holds[0].0 - tl2.waypoint_times[1]).abs() < 1e-9);
+        assert_eq!(tl2.at(tl2.holds[0].0 + 5.0).speed_ms, 0.0);
+    }
+
+    #[test]
+    fn heading_turns_smoothly_through_a_corner() {
+        let tl = corner(None, 0.0);
+        let tb = tl.waypoint_times[1];
+        let p = tl.at(tb);
+        assert!(p.speed_ms > 5.0 && p.course > 20.0 && p.course < 70.0, "{p:?}");
+        assert!((tl.at(tb * 0.5).course - 90.0).abs() < 0.5);
+        assert!((tl.at((tb + tl.duration()) / 2.0).course - 0.0).abs() < 0.5);
+        let c: Vec<f64> = [-1.0, -0.5, 0.0, 0.5, 1.0].iter().map(|dt| tl.at(tb + dt).course).collect();
+        let d: Vec<f64> = c.windows(2).map(|w| ((w[1] - w[0] + 540.0).rem_euclid(360.0) - 180.0).abs()).collect();
+        assert!(d.iter().cloned().fold(0.0, f64::max) < 60.0);
+        assert!((d.iter().sum::<f64>() - 90.0).abs() < 3.0);
+        assert!((tl.at(0.0).course - 90.0).abs() < 0.5); // at the start: the way it leaves
     }
 
     #[test]

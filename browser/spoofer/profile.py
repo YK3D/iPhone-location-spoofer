@@ -37,6 +37,11 @@ from . import geo
 KMH = 1 / 3.6  # km/h -> m/s
 MIN_MOVING_SPEED = 0.05  # m/s; below this on both ends of a step the step never finishes
 MAX_NODES = 60_000
+# The heading reported while moving is the direction of the path over a short window around the
+# current spot (a car turns over several metres, not at a polyline vertex): about 0.8 s of travel.
+HEADING_WINDOW_S = 0.8
+HEADING_WINDOW_MIN_M = 2.0
+HEADING_WINDOW_MAX_M = 12.0
 
 
 @dataclass
@@ -45,6 +50,7 @@ class Waypoint:
     lon: float
     speed_kmh: Optional[float] = None  # exact speed when passing this point
     dwell_s: float = 0.0  # stop here (speed 0) for this many seconds
+    hold: bool = False  # stop here and wait until the user presses Continue (then any dwell_s)
 
 
 @dataclass
@@ -104,9 +110,15 @@ class Timeline:
     warnings: list[str] = field(default_factory=list)
     dwell_total: float = 0.0  # seconds spent waiting at checkpoints
     corners_slowed: int = 0
+    # (time, waypoint index) of every "hold until Continue" checkpoint: the moment the device
+    # comes to a stop there, before any wait time.
+    holds: list[tuple[float, int]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._t0s = [s.t0 for s in self.segments]
+        # moving segments by distance, for the heading window
+        self._moving = [s for s in self.segments if s.ds > 0]
+        self._s0s = [s.s0 for s in self._moving]
 
     @property
     def duration(self) -> float:
@@ -141,8 +153,42 @@ class Timeline:
             s = min(max(s, 0.0), seg.ds)
         f = s / seg.ds if seg.ds > 0 else 0.0
         lat, lon = geo.interpolate(seg.p0, seg.p1, f)
-        course = geo.bearing_deg(seg.p0, seg.p1) if seg.ds > 0 else self._last_course(i)
-        return TimelinePoint(t, lat, lon, max(v, 0.0), course, seg.s0 + s)
+        v = max(v, 0.0)
+        course = self.heading_at(seg.s0 + s, v, moving=v > MIN_MOVING_SPEED)
+        if course is None:
+            course = geo.bearing_deg(seg.p0, seg.p1) if seg.ds > 0 else self._last_course(i)
+        return TimelinePoint(t, lat, lon, v, course, seg.s0 + s)
+
+    def point_at_distance(self, s: float) -> Optional[geo.LatLon]:
+        """Position at distance s (m) along the path, clamped to it."""
+        if not self._moving:
+            return None
+        s = min(max(s, 0.0), self.distance)
+        i = max(0, bisect.bisect_right(self._s0s, s) - 1)
+        seg = self._moving[i]
+        return geo.interpolate(seg.p0, seg.p1, min(1.0, max(0.0, (s - seg.s0) / seg.ds)))
+
+    def heading_at(self, s: float, speed_ms: float, moving: bool = True) -> Optional[float]:
+        """Direction of travel at distance s: the path's bearing over a short window, so the
+        heading turns smoothly through corners instead of jumping at each polyline vertex.
+        Standing still, the device faces the way it arrived (or, at the start, the way it leaves)."""
+        if not self._moving:
+            return None
+        w = min(HEADING_WINDOW_MAX_M, max(HEADING_WINDOW_MIN_M, speed_ms * HEADING_WINDOW_S))
+        total = self.distance
+        if moving:
+            a, b = s - w, s + w
+        elif s - 2 * w >= 0:
+            a, b = s - 2 * w, s
+        else:
+            a, b = s, s + 2 * w
+        a, b = max(0.0, a), min(total, b)
+        if b - a < 0.5:
+            return None
+        pa, pb = self.point_at_distance(a), self.point_at_distance(b)
+        if pa is None or pb is None or geo.haversine_m(pa, pb) < 0.3:
+            return None
+        return geo.bearing_deg(pa, pb)
 
     def _last_course(self, i: int) -> float:
         for j in range(i, -1, -1):
@@ -153,17 +199,25 @@ class Timeline:
                 return geo.bearing_deg(seg.p0, seg.p1)
         return 0.0
 
-    def sample(self, interval_s: float = 1.0, start: float = 0.0) -> list[TimelinePoint]:
-        """Points every interval_s seconds from start to the end (end always included)."""
+    def sample(self, interval_s: float = 1.0, start: float = 0.0, end: Optional[float] = None) -> list[TimelinePoint]:
+        """Points every interval_s seconds from start to end (default: the end of the timeline;
+        the end point is always included)."""
         if interval_s <= 0:
             raise ValueError("Sample interval must be positive")
+        stop = self.duration if end is None else min(max(end, start), self.duration)
         out: list[TimelinePoint] = []
-        n = int(math.floor((self.duration - start) / interval_s + 1e-9))
+        n = int(math.floor((stop - start) / interval_s + 1e-9))
         for k in range(n + 1):
             out.append(self.at(start + k * interval_s))
-        if not out or out[-1].t < self.duration - 1e-6:
-            out.append(self.at(self.duration))
+        if not out or out[-1].t < stop - 1e-6:
+            out.append(self.at(stop))
         return out
+
+    def next_hold(self, t: float, direction: int = 1) -> Optional[tuple[float, int]]:
+        """The first hold strictly after t (before t when going backwards)."""
+        if direction > 0:
+            return next(((h, i) for h, i in self.holds if h > t + 1e-9), None)
+        return next(((h, i) for h, i in reversed(self.holds) if h < t - 1e-9), None)
 
     def summary(self) -> dict:
         return {
@@ -174,6 +228,7 @@ class Timeline:
             "waypoint_times_s": [round(t, 1) for t in self.waypoint_times],
             "moving_time_s": round(self.duration - self.dwell_total, 1),
             "corners_slowed": self.corners_slowed,
+            "holds": len(self.holds),
             "warnings": self.warnings,
         }
 
@@ -243,7 +298,7 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
     pinned: dict[int, float] = {}
     for i, wp in enumerate(waypoints):
         k = wp_node[i]
-        if wp.dwell_s > 0:
+        if wp.dwell_s > 0 or wp.hold:
             pinned[k] = 0.0
         elif wp.speed_kmh is not None:
             pinned[k] = wp.speed_kmh * KMH
@@ -330,6 +385,7 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
     tl = Timeline(segments, [node_arrival[k] for k in wp_node], warnings)
     tl.dwell_total = sum(dwell_at.values())
     tl.corners_slowed = corners
+    tl.holds = sorted((node_arrival[wp_node[i]], i) for i, wp in enumerate(waypoints) if wp.hold)
     return tl
 
 

@@ -364,6 +364,9 @@ struct WaypointIn {
     speed_kmh: Option<f64>,
     #[serde(default)]
     dwell_s: f64,
+    /// stop here until the user presses Continue
+    #[serde(default)]
+    hold: bool,
 }
 
 #[derive(Deserialize, Clone)]
@@ -456,7 +459,7 @@ async fn build_route_core(app: App, mut b: RouteIn, progress: Progress) -> Resul
     let n_checkpoints = b.waypoints.len();
     if b.closed {
         let f = b.waypoints[0].clone();
-        b.waypoints.push(WaypointIn { lat: f.lat, lon: f.lon, name: Some(format!("{} (return)", f.name.unwrap_or("Start".into()))), speed_kmh: None, dwell_s: 0.0 });
+        b.waypoints.push(WaypointIn { lat: f.lat, lon: f.lon, name: Some(format!("{} (return)", f.name.unwrap_or("Start".into()))), speed_kmh: None, dwell_s: 0.0, hold: false });
         if b.legs.len() == b.waypoints.len() - 2 {
             let last = b.legs.last().cloned().unwrap_or(LegIn { mode: foot(), cruise_kmh: None, ramp: accel() });
             b.legs.push(last);
@@ -480,6 +483,9 @@ async fn build_route_core(app: App, mut b: RouteIn, progress: Progress) -> Resul
     progress(0.01, &format!("Checking {n_checkpoints} checkpoints"), 0.03);
     let mut budget = routing::ViaBudget::default();
     let mut leg_options: Vec<Vec<routing::RouteResult>> = Vec::with_capacity(n);
+    // Option k uses alternative k on every leg that has one, so one leg with enough alternatives is
+    // enough: once some leg has them, later legs skip the (slow) detour search.
+    let mut best = 0;
     for (i, li) in b.legs.iter().enumerate() {
         let a = (b.waypoints[i].lat, b.waypoints[i].lon);
         let c = (b.waypoints[i + 1].lat, b.waypoints[i + 1].lon);
@@ -497,12 +503,14 @@ async fn build_route_core(app: App, mut b: RouteIn, progress: Progress) -> Resul
             b.alternatives,
             &mut budget,
             &sub,
+            best < b.alternatives,
         )
         .await
         .map_err(|e| upstream(format!("Leg {} ({}): {e}", i + 1, li.mode)))?;
+        best = best.max(opts.len().saturating_sub(1));
         leg_options.push(opts);
     }
-    let wps: Vec<Waypoint> = b.waypoints.iter().map(|w| Waypoint { lat: w.lat, lon: w.lon, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s }).collect();
+    let wps: Vec<Waypoint> = b.waypoints.iter().map(|w| Waypoint { lat: w.lat, lon: w.lon, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s, hold: w.hold }).collect();
     let names: Vec<(f64, f64, String)> = b.waypoints.iter().enumerate().map(|(i, w)| (w.lat, w.lon, w.name.clone().unwrap_or(format!("Checkpoint {}", i + 1)))).collect();
     let prof = b.settings.profile();
     let n_opts = leg_options.iter().map(|o| o.len()).max().unwrap_or(1);
@@ -781,6 +789,7 @@ async fn player_action(State(app): State<App>, Path(action): Path<String>) -> R 
         "play" => app.player.play().await.map_err(dev)?,
         "pause" => app.player.pause().await,
         "resume" => app.player.resume().await.map_err(dev)?,
+        "continue" => app.player.continue_().await.map_err(dev)?,
         "stop" => app.player.stop().await,
         "unload" => app.player.unload().await,
         _ => return Err(ApiError(404, "unknown action".into())),
@@ -805,10 +814,12 @@ struct OptionsIn {
     loop_mode: Option<String>,
     jitter_m: Option<f64>,
     tick_s: Option<f64>,
+    /// laps in loop / back-and-forth mode, 0 = no limit
+    lap_limit: Option<i64>,
 }
 
 async fn player_options(State(app): State<App>, Json(b): Json<OptionsIn>) -> R {
-    app.player.set_options(b.multiplier, b.loop_mode, b.jitter_m, b.tick_s).map_err(bad)?;
+    app.player.set_options(b.multiplier, b.loop_mode, b.jitter_m, b.tick_s, b.lap_limit).map_err(bad)?;
     Ok(Json(app.player.status()))
 }
 
@@ -983,6 +994,19 @@ mod tests {
         assert!(rows.iter().all(|r| r.as_array().unwrap().len() == 5));
         let last = rows.last().unwrap()[4].as_f64().unwrap();
         assert!((last - v["summary"]["distance_m"].as_f64().unwrap()).abs() < 0.2);
+    }
+
+    #[tokio::test]
+    async fn hold_checkpoints_and_the_simulator_version() {
+        let mut r = route();
+        r.waypoints[1].hold = true;
+        r.waypoints[1].dwell_s = 0.0;
+        let quiet: Progress = Arc::new(|_, _, _| {});
+        let v = build_route_core(app(), r, quiet).await.unwrap_or_else(|e| panic!("{}", e.1));
+        assert_eq!(v["summary"]["holds"], 1);
+        assert_eq!(crate::device::mock::SIMULATED_IOS, "27");
+        let held: WaypointIn = serde_json::from_value(json!({"lat": 1.0, "lon": 2.0, "hold": true})).unwrap();
+        assert!(held.hold && !serde_json::from_value::<WaypointIn>(json!({"lat": 1.0, "lon": 2.0})).unwrap().hold);
     }
 
     #[tokio::test]

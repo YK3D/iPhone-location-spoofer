@@ -7,6 +7,10 @@ from typing import Optional
 from .base import DeviceDriver, DeviceInfo
 
 
+# The pretend phone always reports this iOS version (the current major release).
+SIMULATED_IOS = "27"
+
+
 class MockDriver(DeviceDriver):
     key = "mock"
     label = "Simulator (no iPhone)"
@@ -18,13 +22,13 @@ class MockDriver(DeviceDriver):
         self.history: list[tuple[float, float]] = []
 
     async def list_devices(self) -> list[dict]:
-        return [{"udid": "SIMULATED-0001", "name": "Simulated iPhone", "ios_version": "26.0", "connection": "Simulated"}]
+        return [{"udid": "SIMULATED-0001", "name": "Simulated iPhone", "ios_version": SIMULATED_IOS, "connection": "Simulated"}]
 
     async def connect(self, udid: Optional[str] = None) -> DeviceInfo:
         self.info = DeviceInfo(
             udid="SIMULATED-0001",
             name="Simulated iPhone",
-            ios_version="26.0",
+            ios_version=SIMULATED_IOS,
             product_type="Simulated",
             connection="Simulated",
             transport="In-memory (nothing is sent to a phone)",

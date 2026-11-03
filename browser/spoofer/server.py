@@ -161,6 +161,7 @@ class WaypointIn(BaseModel):
     name: Optional[str] = None
     speed_kmh: Optional[float] = Field(None, ge=0, le=5000)
     dwell_s: float = Field(0, ge=0, le=86400)
+    hold: bool = False  # stop here until the user presses Continue
 
 
 class LegIn(BaseModel):
@@ -221,6 +222,7 @@ class PlayerOptionsIn(BaseModel):
     loop: Optional[Literal["once", "loop", "pingpong"]] = None
     jitter_m: Optional[float] = None
     tick_s: Optional[float] = None
+    lap_limit: Optional[int] = None  # laps in loop / back-and-forth mode, 0 = no limit
 
 
 class SeekIn(BaseModel):
@@ -378,6 +380,9 @@ async def _build_route(body: RouteIn, progress: Progress = _no_progress) -> dict
     await progress(0.01, f"Checking {len(body.waypoints)} checkpoints", 0.03)
     budget = routing.ViaBudget()
     leg_options: list[list[routing.RouteResult]] = []
+    # Option k uses alternative k on every leg that has one, so one leg with enough alternatives
+    # is enough: once some leg has them, later legs skip the (slow) detour search.
+    best = 0
     for i, li in enumerate(legs_in):
         a, b = (wps[i].lat, wps[i].lon), (wps[i + 1].lat, wps[i + 1].lon)
         p0, p1 = 0.03 + 0.72 * i / n, 0.03 + 0.72 * (i + 1) / n
@@ -392,13 +397,14 @@ async def _build_route(body: RouteIn, progress: Progress = _no_progress) -> dict
             opts = await routing.route_options(
                 a, b, li.mode, provider=body.provider, google_key=key,
                 road_data=settings.road_aware and settings.road_data,
-                count=body.alternatives, budget=budget, report=sub,
+                count=body.alternatives, budget=budget, report=sub, detours=best < body.alternatives,
             )
         except routing.RoutingError as e:
             raise routing.RoutingError(f"Leg {i + 1} ({li.mode}): {e}") from e
         leg_options.append(opts)
+        best = max(best, len(opts) - 1)
 
-    waypoints = [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s) for w in wps]
+    waypoints = [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s, w.hold) for w in wps]
     names = [(w.lat, w.lon, w.name or f"Checkpoint {i + 1}") for i, w in enumerate(wps)]
     prof = settings.to_profile()
     n_opts = max(len(o) for o in leg_options)
@@ -602,9 +608,9 @@ async def player_load(tid: str):
 
 
 @app.post("/api/player/{action}")
-async def player_action(action: Literal["play", "pause", "resume", "stop", "unload"]):
+async def player_action(action: Literal["play", "pause", "resume", "continue", "stop", "unload"]):
     p = S().player
-    await getattr(p, action)()
+    await getattr(p, "continue_" if action == "continue" else action)()
     return p.status()
 
 
@@ -616,7 +622,7 @@ async def player_seek(body: SeekIn):
 
 @app.post("/api/player-options")
 async def player_options(body: PlayerOptionsIn):
-    await S().player.set_options(body.multiplier, body.loop, body.jitter_m, body.tick_s)
+    await S().player.set_options(body.multiplier, body.loop, body.jitter_m, body.tick_s, body.lap_limit)
     return S().player.status()
 
 
