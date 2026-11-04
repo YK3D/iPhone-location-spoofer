@@ -47,6 +47,8 @@
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M19.5 4.5v4h-4"/></symbol>
     <symbol id="i-locate" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/><circle fill="currentColor" stroke="none" cx="12" cy="12" r="1.7"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="11" height="11" rx="1.6"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="M7 10l5 5 5-5"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
     <symbol id="i-phone" viewBox="0 0 24 24"><rect x="6.5" y="2.8" width="11" height="18.4" rx="2.4"/><path d="M10.5 18h3"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l4.8 4.8"/></symbol>
@@ -67,12 +69,11 @@
 <div id="app">
   <aside id="sidebar" aria-label="Controls">
     <header class="brand">
-      <img src="/static/icon-64.png" alt="" class="logo" width="28" height="28">
+      <img src="/static/icon-256.png" alt="Location Spoofer" class="logo" width="52" height="52">
       <div class="brand-text">
-        <h1>Location Spoofer</h1>
-        <span id="version" class="muted"></span>
+        <h1>Location Spoofer <span id="version" class="version"></span></h1>
+        <span id="conn-chip" class="chip" title="Device connection">Not connected</span>
       </div>
-      <span id="conn-chip" class="chip" title="Device connection">Not connected</span>
       <div class="brand-actions">
         <button id="btn-tutorial" class="icon-btn" title="Setup guide" aria-label="Open the setup guide"><svg class="ico"><use href="#i-help"/></svg></button>
         <button id="btn-shortcuts" class="icon-btn" title="Keyboard shortcuts" aria-label="Keyboard shortcuts"><svg class="ico"><use href="#i-keyboard"/></svg></button>
@@ -179,6 +180,13 @@
 
     <!-- Route -->
     <div class="tab-panel" id="tab-route" hidden>
+      <details class="section" id="sec-route-import">
+        <summary><svg class="ico sec-ico"><use href="#i-link"/></svg><span class="sec-title">Import from Google Maps</span></summary>
+        <div class="sec-body">
+          <span class="field-row"><input id="route-link" class="grow" placeholder="Paste a Google Maps directions link">
+            <button id="btn-route-link" class="fixed">Import</button></span>
+        </div>
+      </details>
       <details class="section" id="sec-route-settings" open>
         <summary><svg class="ico sec-ico"><use href="#i-gauge"/></svg><span class="sec-title">Routing &amp; speed</span><span id="route-settings-sub" class="sec-sub"></span></summary>
         <div class="sec-body">
@@ -223,27 +231,6 @@
           </div>
         </div>
       </details>
-      <details class="section" id="sec-checkpoints" open>
-        <summary><svg class="ico sec-ico"><use href="#i-flag"/></svg><span class="sec-title">Checkpoints</span><span id="wp-count" class="sec-sub"></span></summary>
-        <div class="sec-body">
-          <p class="hint">Click the map to add checkpoints. Drag markers to move them, and drag the handle in the list to reorder.</p>
-          <ol id="waypoints" class="waypoints"></ol>
-          <button id="btn-build" class="primary build" data-action="build" aria-describedby="build-status">
-            <span class="build-fill" aria-hidden="true"></span>
-            <span class="build-idle"><span class="build-label">Build route</span><span class="kbd"></span></span>
-            <span class="build-run" aria-hidden="true"><span class="build-ticker"></span><span class="build-pct">0%</span></span>
-          </button>
-          <span id="build-status" class="sr-only" role="status" aria-live="polite"></span>
-          <div class="btn-row">
-            <button id="btn-reverse" title="Reverse checkpoint order"><svg class="ico"><use href="#i-swap"/></svg>Reverse</button>
-            <button id="btn-clear-route" title="Remove all checkpoints and unload the route"><svg class="ico"><use href="#i-trash"/></svg>Clear</button>
-          </div>
-        </div>
-      </details>
-      <details class="section" id="sec-route-result" open hidden>
-        <summary><svg class="ico sec-ico"><use href="#i-chart"/></svg><span class="sec-title">Route summary</span><span id="route-result-sub" class="sec-sub"></span></summary>
-        <div class="sec-body" id="route-result"></div>
-      </details>
       <details class="section" id="experimental">
         <summary><svg class="ico sec-ico"><use href="#i-flask"/></svg><span class="sec-title">Road-aware driving</span><span class="tag">Experimental</span></summary>
         <div class="sec-body exp">
@@ -259,12 +246,28 @@
             <input id="speed-factor" type="range" min="0.6" max="1.4" step="0.05" value="1"></label>
         </div>
       </details>
-      <details class="section" id="sec-route-import">
-        <summary><svg class="ico sec-ico"><use href="#i-link"/></svg><span class="sec-title">Import from Google Maps</span></summary>
+      <details class="section" id="sec-checkpoints" open>
+        <summary><svg class="ico sec-ico"><use href="#i-flag"/></svg><span class="sec-title">Checkpoints</span><span id="wp-count" class="sec-sub"></span></summary>
         <div class="sec-body">
-          <span class="field-row"><input id="route-link" class="grow" placeholder="Paste a Google Maps directions link">
-            <button id="btn-route-link" class="fixed">Import</button></span>
+          <ol id="waypoints" class="waypoints"></ol>
+          <div id="build-row" class="build-row">
+            <button id="btn-build" class="primary build" data-action="build" aria-describedby="build-status">
+              <span class="build-fill" aria-hidden="true"></span>
+              <span class="build-idle"><span class="build-label">Build route</span><span class="kbd"></span></span>
+              <span class="build-run" aria-hidden="true"><span class="build-ticker"></span><span class="build-pct">0%</span></span>
+            </button>
+            <button id="btn-build-cancel" class="build-cancel" type="button" title="Stop building this route (Esc)" aria-label="Cancel building the route">Cancel</button>
+          </div>
+          <span id="build-status" class="sr-only" role="status" aria-live="polite"></span>
+          <div class="btn-row">
+            <button id="btn-reverse" title="Reverse checkpoint order"><svg class="ico"><use href="#i-swap"/></svg>Reverse</button>
+            <button id="btn-clear-route" title="Remove all checkpoints and unload the route"><svg class="ico"><use href="#i-trash"/></svg>Clear</button>
+          </div>
         </div>
+      </details>
+      <details class="section" id="sec-route-result" open hidden>
+        <summary><svg class="ico sec-ico"><use href="#i-chart"/></svg><span class="sec-title">Route summary</span><span id="route-result-sub" class="sec-sub"></span></summary>
+        <div class="sec-body" id="route-result"></div>
       </details>
       <details class="section" id="sec-wander">
         <summary><svg class="ico sec-ico"><use href="#i-shuffle"/></svg><span class="sec-title">Random wander</span></summary>
@@ -277,7 +280,7 @@
           <div class="btn-row"><button id="btn-wander">Generate</button></div>
         </div>
       </details>
-    </div>
+      </div>
 
     <!-- GPX -->
     <div class="tab-panel" id="tab-gpx" hidden>
@@ -321,9 +324,9 @@
           <label>Speed (km/h) <input id="joy-speed" type="number" value="5" min="0.1" step="0.5"></label>
           <div class="presets" id="joy-presets"></div>
           <div class="dpad" id="dpad">
-            <button data-b="315" aria-label="North-west">↖</button><button data-b="0" aria-label="North">↑</button><button data-b="45" aria-label="North-east">↗</button>
-            <button data-b="270" aria-label="West">←</button><button id="joy-stop" class="stop" aria-label="Stop joystick"><svg class="ico"><use href="#i-stop"/></svg></button><button data-b="90" aria-label="East">→</button>
-            <button data-b="225" aria-label="South-west">↙</button><button data-b="180" aria-label="South">↓</button><button data-b="135" aria-label="South-east">↘</button>
+            <button data-b="315" aria-label="North-west"><svg class="ico" style="rotate:315deg"><use href="#i-arrow"/></svg></button><button data-b="0" aria-label="North"><svg class="ico" style="rotate:0deg"><use href="#i-arrow"/></svg></button><button data-b="45" aria-label="North-east"><svg class="ico" style="rotate:45deg"><use href="#i-arrow"/></svg></button>
+            <button data-b="270" aria-label="West"><svg class="ico" style="rotate:270deg"><use href="#i-arrow"/></svg></button><button id="joy-stop" class="stop" aria-label="Stop joystick"><svg class="ico"><use href="#i-stop"/></svg></button><button data-b="90" aria-label="East"><svg class="ico" style="rotate:90deg"><use href="#i-arrow"/></svg></button>
+            <button data-b="225" aria-label="South-west"><svg class="ico" style="rotate:225deg"><use href="#i-arrow"/></svg></button><button data-b="180" aria-label="South"><svg class="ico" style="rotate:180deg"><use href="#i-arrow"/></svg></button><button data-b="135" aria-label="South-east"><svg class="ico" style="rotate:135deg"><use href="#i-arrow"/></svg></button>
           </div>
           <div id="joy-info" class="hint"></div>
         </div>

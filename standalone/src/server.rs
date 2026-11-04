@@ -535,6 +535,7 @@ async fn build_route_core(app: App, mut b: RouteIn, progress: Progress) -> Resul
             leg.ramp = if li.ramp == "linear" { Ramp::Linear } else { Ramp::Accel };
             leg.zones = res.zones.clone();
             leg.mode = li.mode.clone();
+            leg.roundabouts = res.roundabouts.clone();
             legs.push(leg);
             geometry.push(res.points.iter().map(|p| json!([p.0, p.1])).collect::<Vec<_>>());
             providers.push(res.provider.clone());

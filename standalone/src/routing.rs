@@ -58,6 +58,8 @@ pub struct RouteResult {
     pub exportable: bool,
     /// "main", "alternative" (offered by the provider) or "detour" (found through a via point)
     pub kind: String,
+    /// (start m, end m) along `points` of every roundabout the route drives on
+    pub roundabouts: Vec<(f64, f64)>,
 }
 
 /// How many extra (via point) routing requests one route build may still make.
@@ -254,6 +256,7 @@ struct Candidate {
     distance: f64,
     kind: &'static str,
     via_turn: f64, // turn angle at the via point, degrees (0 = straight on)
+    roundabouts: Vec<(LatLon, LatLon)>, // (entry, exit) from the OSRM maneuvers
 }
 
 impl Candidate {
@@ -301,6 +304,7 @@ fn parse_osrm(rt: &Value, kind: &'static str) -> Option<Candidate> {
     let mut speeds: Vec<Option<f64>> = Vec::new();
     let mut nodes: Vec<Vec<i64>> = Vec::new();
     let mut uturns = 0.0;
+    let mut roundabouts: Vec<(LatLon, LatLon)> = Vec::new();
     let legs: Vec<&Value> = rt["legs"].as_array().into_iter().flatten().collect();
     for leg in &legs {
         for v in leg["annotation"]["speed"].as_array().into_iter().flatten() {
@@ -309,9 +313,20 @@ fn parse_osrm(rt: &Value, kind: &'static str) -> Option<Candidate> {
         // OSRM writes node ids of 10 billion and up as rounded floats (1.134297535e+10), which no
         // longer name one node: keep their place in the list (so it lines up with the speeds) as unknown.
         nodes.push(leg["annotation"]["nodes"].as_array().into_iter().flatten().map(|n| n.as_i64().filter(|v| *v > 0).unwrap_or(UNKNOWN_NODE)).collect());
-        for st in leg["steps"].as_array().into_iter().flatten() {
+        let steps: Vec<&Value> = leg["steps"].as_array().into_iter().flatten().collect();
+        let loc = |st: &Value| Some((st["maneuver"]["location"][1].as_f64()?, st["maneuver"]["location"][0].as_f64()?));
+        for (i, st) in steps.iter().enumerate() {
             if st["maneuver"]["modifier"] == "uturn" {
                 uturns += 1.0;
+            }
+            let Some(here) = loc(st) else { continue };
+            let kind = st["maneuver"]["type"].as_str().unwrap_or("");
+            if ROUNDABOUT_STEPS.contains(&kind) {
+                // the step covers the drive round the roundabout; the next maneuver is the exit
+                let exit = steps.get(i + 1).and_then(|n| loc(n)).unwrap_or(here);
+                roundabouts.push((here, exit));
+            } else if kind == "roundabout turn" {
+                roundabouts.push((here, here)); // a mini roundabout, driven like a junction
             }
         }
     }
@@ -335,7 +350,42 @@ fn parse_osrm(rt: &Value, kind: &'static str) -> Option<Candidate> {
         distance: rt["distance"].as_f64().unwrap_or(0.0),
         kind,
         via_turn,
+        roundabouts,
     })
+}
+
+const ROUNDABOUT_STEPS: [&str; 2] = ["roundabout", "rotary"]; // OSRM step types for driving round a roundabout
+pub const MINI_ROUNDABOUT_M: f64 = 12.0; // a mini roundabout counts this far either side of its point
+
+/// (start m, end m) along `points` for each roundabout given by its entry and exit point.
+pub fn roundabout_ranges(points: &[LatLon], rings: &[(LatLon, LatLon)]) -> Vec<(f64, f64)> {
+    if rings.is_empty() || points.len() < 2 {
+        return Vec::new();
+    }
+    let mut cum = vec![0.0];
+    for w in points.windows(2) {
+        cum.push(cum.last().unwrap() + geo::haversine_m(w[0], w[1]));
+    }
+    let nearest = |from: usize, p: LatLon| {
+        (from..points.len()).min_by(|&x, &y| geo::haversine_m(points[x], p).partial_cmp(&geo::haversine_m(points[y], p)).unwrap()).unwrap_or(from)
+    };
+    let total = *cum.last().unwrap();
+    let mut out = Vec::new();
+    let mut k = 0; // roundabouts come in route order: search onwards from the last one
+    for &(entry, exit) in rings {
+        let i = nearest(k, entry);
+        let (s0, s1, j) = if entry == exit {
+            ((cum[i] - MINI_ROUNDABOUT_M).max(0.0), (cum[i] + MINI_ROUNDABOUT_M).min(total), i)
+        } else {
+            let j = nearest(i, exit);
+            (cum[i], cum[j], j)
+        };
+        if s1 > s0 {
+            out.push(((s0 * 10.0).round() / 10.0, (s1 * 10.0).round() / 10.0));
+        }
+        k = j;
+    }
+    out
 }
 
 /// Points every `step` metres along a polyline.
@@ -552,6 +602,10 @@ async fn osrm_options(a: LatLon, b: LatLon, mode: &str, road_data: bool, count: 
         }
         let (full, zones, offnet) = with_connectors(a, b, &c.pts, &speeds, mode);
         features.insert("offnet_m".into(), offnet);
+        let rings = roundabout_ranges(&full, &c.roundabouts);
+        if !rings.is_empty() {
+            features.insert("roundabouts".into(), rings.len() as f64);
+        }
         out.push(RouteResult {
             points: full,
             provider: "osrm".into(),
@@ -561,6 +615,7 @@ async fn osrm_options(a: LatLon, b: LatLon, mode: &str, road_data: bool, count: 
             notes,
             exportable: true,
             kind: c.kind.into(),
+            roundabouts: rings,
         });
     }
     Ok((out, complete))
@@ -830,11 +885,15 @@ fn google_result(a: LatLon, b: LatLon, mode: &str, route: &Value) -> Result<Rout
     }
     let dist = route["distanceMeters"].as_f64().unwrap_or_else(|| geo::polyline_length(&pts));
     let mut steps: Vec<(f64, Option<f64>, String)> = Vec::new();
+    let mut ring_m: Vec<(f64, f64)> = Vec::new(); // roundabout steps along Google's distance
     let mut s = 0.0;
     for leg in route["legs"].as_array().into_iter().flatten() {
         for st in leg["steps"].as_array().into_iter().flatten() {
             let d = st["distanceMeters"].as_f64().unwrap_or(0.0);
             let t = seconds(&st["staticDuration"]);
+            if st["navigationInstruction"]["maneuver"].as_str().unwrap_or("").starts_with("ROUNDABOUT") && d > 0.0 {
+                ring_m.push((s, s + d));
+            }
             s += d;
             steps.push((s, (t > 0.0 && d > 0.0).then(|| d / t), st["navigationInstruction"]["maneuver"].as_str().unwrap_or("").into()));
         }
@@ -857,6 +916,13 @@ fn google_result(a: LatLon, b: LatLon, mode: &str, route: &Value) -> Result<Rout
     features.insert("offnet_m".into(), offnet);
     features.insert("uturns".into(), steps.iter().filter(|x| x.2.contains("UTURN")).count() as f64);
     features.insert("ramps".into(), steps.iter().filter(|x| x.2.starts_with("RAMP") || x.2.starts_with("MERGE")).count() as f64);
+    // Google's roundabout steps run from the entry to the exit; shift by the join from the waypoint
+    let off = geo::haversine_m(a, pts[0]);
+    let roundabouts: Vec<(f64, f64)> =
+        ring_m.iter().map(|(x, y)| (((off + x * scale) * 10.0).round() / 10.0, ((off + y * scale) * 10.0).round() / 10.0)).collect();
+    if !roundabouts.is_empty() {
+        features.insert("roundabouts".into(), roundabouts.len() as f64);
+    }
     let dur = seconds(&route["duration"]);
     let stat = seconds(&route["staticDuration"]);
     Ok(RouteResult {
@@ -868,6 +934,7 @@ fn google_result(a: LatLon, b: LatLon, mode: &str, route: &Value) -> Result<Rout
         notes: route["warnings"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(String::from)).collect(),
         exportable: false,
         kind: "main".into(),
+        roundabouts,
     })
 }
 
@@ -1162,6 +1229,32 @@ mod tests {
         assert!(heading_at_fraction(&bend, 0.75).abs() < 0.5);
         assert_eq!(VIA_GRID.len(), 12);
         assert!(MAX_VIA_REQUESTS >= VIA_PER_MISSING * MAX_ALTERNATIVES);
+    }
+
+    #[test]
+    fn osrm_roundabout_steps_become_ranges() {
+        let a = (52.04, -0.77);
+        let entry = geo::destination(a, 90.0, 300.0);
+        let mid = geo::destination(entry, 20.0, 20.0);
+        let exit = geo::destination(entry, 45.0, 40.0);
+        let end = geo::destination(exit, 0.0, 300.0);
+        let c = |p: LatLon| json!([p.1, p.0]);
+        let rt = json!({"duration": 60, "distance": 650,
+            "geometry": {"coordinates": [c(a), c(entry), c(mid), c(exit), c(end)]},
+            "legs": [{"annotation": {"speed": [20, 20, 20, 20], "nodes": [1, 2, 3, 4, 5]}, "steps": [
+                {"maneuver": {"type": "depart", "location": c(a)}},
+                {"maneuver": {"type": "roundabout", "location": c(entry)}},
+                {"maneuver": {"type": "exit roundabout", "location": c(exit)}},
+                {"maneuver": {"type": "arrive", "location": c(end)}}]}]});
+        let cand = parse_osrm(&rt, "main").unwrap();
+        assert_eq!(cand.roundabouts.len(), 1);
+        let ranges = roundabout_ranges(&cand.pts, &cand.roundabouts);
+        let d01 = geo::haversine_m(a, entry);
+        let d3 = d01 + geo::haversine_m(entry, mid) + geo::haversine_m(mid, exit);
+        assert_eq!(ranges.len(), 1);
+        assert!((ranges[0].0 - d01).abs() < 0.2 && (ranges[0].1 - d3).abs() < 0.2, "{ranges:?}");
+        let mini = roundabout_ranges(&cand.pts, &[(entry, entry)]);
+        assert!((mini[0].1 - mini[0].0 - 2.0 * MINI_ROUNDABOUT_M).abs() < 0.2);
     }
 
     #[test]

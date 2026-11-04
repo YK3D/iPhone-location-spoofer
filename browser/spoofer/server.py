@@ -421,7 +421,8 @@ async def _build_route(body: RouteIn, progress: Progress = _no_progress) -> dict
         ref_complete = True
         exportable = True
         for i, (li, res) in enumerate(zip(legs_in, chosen)):
-            legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones, mode=li.mode))
+            legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones,
+                            mode=li.mode, roundabouts=res.roundabouts))
             geometry.append([[round(p[0], 7), round(p[1], 7)] for p in res.points])
             providers.append(res.provider)
             notes.extend(f"Leg {i + 1}: {nt}" for nt in res.notes)
