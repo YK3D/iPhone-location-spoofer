@@ -18,7 +18,7 @@
 - `ui/` is the one interface both editions serve (HTML, CSS, JS; no build step).
 - `browser/` is the Python edition (FastAPI); `standalone/` is the Rust edition (axum, native window). Backend behaviour must stay the same in both: port every API or engine change to the other edition, with tests.
 - `assets/icon/source.jpg` is the original icon artwork. Never edit it; `assets/icon/make_icons.py` regenerates every icon file from it.
-- `docs/screenshots/capture.js` makes the README screenshots with the default look (Graphite theme, dark map).
+- `docs/screenshots/capture.js` makes the README screenshots with the default look (Graphite theme, dark OpenFreeMap map).
 
 ## Checks before pushing
 

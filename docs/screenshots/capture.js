@@ -1,5 +1,6 @@
 // Screenshots for the README (docs/screenshots). Every shot uses the default look: the Graphite
-// theme and the dark map. Change THEME / MAP_THEME below to capture another look on purpose.
+// theme and the dark OpenFreeMap map. Change THEME / MAP_THEME / MAP_PROVIDER below to capture
+// another look on purpose.
 //
 //   1. Start the browser edition from source with an empty data folder, so the first build of each
 //      route is not cached (the progress shot needs a real build):
@@ -15,19 +16,32 @@ const { chromium } = require("playwright");
 
 const THEME = "graphite";
 const MAP_THEME = "dark";
+const MAP_PROVIDER = "openfreemap";
 const URL = process.env.URL || "http://127.0.0.1:8765/";
 const OUT = process.env.OUT || __dirname;
 const VIEW = { width: 1440, height: 900 };
 const wait = (page, ms) => page.waitForTimeout(ms);
 
 async function look(page) {
-  await page.evaluate(([theme, mapTheme]) => {
+  await page.evaluate(([theme, mapTheme, provider]) => {
     const s = settings();
     s.theme = theme;
     s.map_theme = mapTheme;
+    s.map_provider = provider;
     s.tutorial_done = true;
     applyAppearance();
-  }, [THEME, MAP_THEME]);
+  }, [THEME, MAP_THEME, MAP_PROVIDER]);
+}
+
+// The vector map draws after its tiles and fonts arrive: wait until it has finished.
+async function mapIdle(page) {
+  await page.waitForFunction(() => {
+    const l = MAP_PROVIDERS.openfreemap.layer;
+    if (!map.hasLayer(l)) return true;
+    const gl = l._glLayer && l._glLayer.getMaplibreMap();
+    return !!gl && gl.loaded() && gl.areTilesLoaded();
+  }, null, { timeout: 30000, polling: 250 }).catch(() => {});
+  await wait(page, 300);
 }
 
 async function markerPoint(page, index) {
@@ -65,6 +79,7 @@ async function markerPoint(page, index) {
   });
   await wait(page, 1600);
   await page.mouse.move(VIEW.width - 120, 80);
+  await mapIdle(page);
   await shot("teleport.png");
 
   // 2. A car route with three alternatives, labelled on the map; the build progress on the way
@@ -87,7 +102,7 @@ async function markerPoint(page, index) {
   await page.waitForFunction(() => !state.building && state.built, null, { timeout: 120000 });
   await wait(page, 2800); // the button settles back to "Build route"
   await page.evaluate(() => $("sec-route-result").scrollIntoView({ block: "start" }));
-  await wait(page, 400);
+  await mapIdle(page);
   await shot("route-alternatives.png");
 
   // 3. Right-click menu on a checkpoint
@@ -142,6 +157,7 @@ async function markerPoint(page, index) {
   await page.waitForFunction(() => state.status && state.status.player.state === "held", null, { timeout: 120000 });
   await wait(page, 1200);
   await page.mouse.move(VIEW.width - 120, 80);
+  await mapIdle(page);
   await shot("playback-hud.png");
   await page.click("#btn-stop");
   await page.evaluate(() => { $("multiplier").value = "1"; $("multiplier").dispatchEvent(new Event("change")); });
@@ -149,6 +165,7 @@ async function markerPoint(page, index) {
   // 6. Settings
   await page.click("#btn-settings");
   await wait(page, 400);
+  await mapIdle(page);
   await shot("settings.png");
 
   console.log(errors.length ? `page errors: ${JSON.stringify(errors)}` : "no page errors");

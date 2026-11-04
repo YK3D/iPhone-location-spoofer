@@ -160,17 +160,150 @@ const settings = () => state.store.settings || (state.store.settings = {});
 
 // ------------------------------------------------------------------ map
 const map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([51.505, -0.09], 13);
-const baseLayers = {
-  "Streets": L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19, attribution: "&copy; OpenStreetMap contributors", className: "osm-tiles" }),
-  "Satellite": L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
-    maxZoom: 19, attribution: "Imagery &copy; Esri" }),
-  "Topographic": L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
-    maxZoom: 17, attribution: "&copy; OpenStreetMap contributors, SRTM | &copy; OpenTopoMap (CC-BY-SA)", className: "osm-tiles" }),
+
+// Base maps. OpenFreeMap is drawn from vector data (MapLibre, loaded on first use), so it has a real
+// dark style and stays sharp at street level; free, no key, commercial use allowed. The raster maps
+// are the fallback: OpenStreetMap and the topographic map are shown inverted in dark mode (the
+// "osm-tiles" class), satellite keeps its own colours.
+let mapLibreLoading = null;
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error(`Could not load ${src}`));
+    document.head.append(s);
+  });
+}
+function loadMapLibre() {
+  if (!mapLibreLoading) {
+    const css = document.createElement("link");
+    css.rel = "stylesheet"; css.href = "/static/vendor/maplibre/maplibre-gl.css";
+    document.head.append(css);
+    mapLibreLoading = loadScript("/static/vendor/maplibre/maplibre-gl.js")
+      .then(() => loadScript("/static/vendor/maplibre/leaflet-maplibre-gl.js"));
+    mapLibreLoading.catch(() => { mapLibreLoading = null; });
+  }
+  return mapLibreLoading;
+}
+function webglAvailable() {
+  try {
+    const gl = document.createElement("canvas").getContext("webgl2") || document.createElement("canvas").getContext("webgl");
+    if (!gl) return false;
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext(); // only a probe: give the context back straight away
+    return true;
+  } catch (_) { return false; }
+}
+// OpenFreeMap's dark style is near-black with barely visible water and roads; these colours keep its
+// calm look but make water, parks, buildings, the road hierarchy and labels readable at a glance.
+// (Layers the style no longer has are skipped.)
+const DARK_MAP_PAINT = [
+  ["background", "background-color", "#14161a"],
+  ["water", "fill-color", "#0f2236"], ["waterway", "line-color", "#173250"],
+  ["water_name", "text-color", "#6d8fb3"], ["water_name", "text-halo-color", "#0b1520"],
+  ["landuse_park", "fill-color", "#15231b"], ["landcover_wood", "fill-color", "#15231b"],
+  ["landuse_residential", "fill-color", "#1a1c21"],
+  ["building", "fill-color", "#1e2126"], ["building", "fill-outline-color", "#2a2e35"],
+  ["road_area_pier", "fill-color", "#14161a"], ["road_pier", "line-color", "#14161a"],
+  ["highway_path", "line-color", "#2e333a"],
+  ["highway_minor", "line-color", "#32363e"], ["highway_minor", "line-opacity", 1],
+  ["highway_major_casing", "line-color", "#2a2e35"], ["highway_major_inner", "line-color", "#4a505a"],
+  ["highway_major_subtle", "line-color", "#3d424a"],
+  ["highway_motorway_casing", "line-color", "#2e3138"], ["highway_motorway_inner", "line-color", "#6b6250"],
+  ["highway_motorway_subtle", "line-color", "#4a4538"],
+  ["railway", "line-color", "#3b3e45"], ["railway_minor", "line-color", "#33363c"], ["railway_transit", "line-color", "#33363c"],
+  ["railway_dashline", "line-color", "#14161a"], ["railway_minor_dashline", "line-color", "#14161a"], ["railway_transit_dashline", "line-color", "#14161a"],
+  ["highway_name_other", "text-color", "#949aa3"], ["highway_name_other", "text-halo-color", "#14161a"],
+  ["highway_name_motorway", "text-color", "#a9a294"],
+  ...["place_other", "place_suburb", "place_village", "place_town", "place_city", "place_city_large", "place_state",
+    "place_country_other", "place_country_minor", "place_country_major"].flatMap((id) => [
+    [id, "text-color", "#b2b8c0"], [id, "text-halo-color", "rgba(10,11,14,.85)"]]),
+];
+function tuneDarkStyle(gl) {
+  for (const [id, prop, value] of DARK_MAP_PAINT) {
+    if (!gl.getLayer(id)) continue;
+    try { gl.setPaintProperty(id, prop, value); } catch (_) { /* the style changed shape: keep its own colour */ }
+  }
+}
+const VectorBaseMap = L.Layer.extend({
+  options: { maxZoom: 20, minZoom: 0,
+    attribution: "&copy; OpenFreeMap &copy; OpenMapTiles &copy; OpenStreetMap contributors" },
+  initialize() { this._darkStyle = true; this._glLayer = null; this._active = false; },
+  getAttribution() { return this.options.attribution; },
+  styleUrl() { return `https://tiles.openfreemap.org/styles/${this._darkStyle ? "dark" : "liberty"}`; },
+  onAdd(m) {
+    this._active = true;
+    // Everything here runs after start-up (the script loads asynchronously), so creating a WebGL
+    // context never holds up the first paint, and a fallback never switches layers inside onAdd.
+    loadMapLibre().then(() => {
+      if (!this._active || !this._map || this._glLayer) return;
+      if (!webglAvailable()) { mapProviderFailed("this computer's graphics don't support it (WebGL is off)"); return; }
+      try {
+        this._glLayer = L.maplibreGL({ style: this.styleUrl(), attributionControl: false }).addTo(m);
+      } catch (_) {
+        this._glLayer = null;
+        mapProviderFailed("this computer's graphics don't support it");
+        return;
+      }
+      const gl = this._glLayer.getMaplibreMap();
+      // the style can't be fetched (offline, service down) or tiles keep failing: fall back, once
+      let styleLoaded = false, errors = 0;
+      gl.on("style.load", () => { styleLoaded = true; if (this._darkStyle) tuneDarkStyle(gl); });
+      gl.on("error", () => {
+        errors += 1;
+        if (!styleLoaded || errors >= 8) mapProviderFailed("it could not be reached");
+      });
+    }).catch(() => mapProviderFailed("its map component could not be loaded"));
+  },
+  onRemove(m) {
+    this._active = false;
+    if (this._glLayer && m.hasLayer(this._glLayer)) m.removeLayer(this._glLayer); // also frees the WebGL map
+    this._glLayer = null;
+  },
+  setDark(dark) {
+    if (dark === this._darkStyle) return;
+    this._darkStyle = dark;
+    const gl = this._glLayer && this._glLayer.getMaplibreMap();
+    if (gl) gl.setStyle(this.styleUrl(), { diff: false }); // a full load, so "style.load" fires (and tunes the dark one)
+  },
+});
+const MAP_PROVIDERS = {
+  openfreemap: { label: "OpenFreeMap", layer: new VectorBaseMap() },
+  osm: { label: "OpenStreetMap", layer: L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "&copy; OpenStreetMap contributors", className: "osm-tiles" }) },
+  topo: { label: "Topographic", layer: L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17, attribution: "&copy; OpenStreetMap contributors, SRTM | &copy; OpenTopoMap (CC-BY-SA)", className: "osm-tiles" }) },
+  satellite: { label: "Satellite", layer: L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "Imagery &copy; Esri" }) },
 };
-baseLayers.Streets.addTo(map);
+const DEFAULT_MAP_PROVIDER = "openfreemap";
+const baseLayers = Object.fromEntries(Object.values(MAP_PROVIDERS).map((p) => [p.label, p.layer]));
+const providerOf = (layer) => Object.keys(MAP_PROVIDERS).find((k) => MAP_PROVIDERS[k].layer === layer);
+const savedProvider = (s) => (MAP_PROVIDERS[s.map_provider] ? s.map_provider : DEFAULT_MAP_PROVIDER);
+// the first paint uses the provider remembered from the last start, before the settings arrive
+let startProvider = DEFAULT_MAP_PROVIDER;
+try { startProvider = savedProvider(JSON.parse(localStorage.getItem("ls-appearance") || "{}")); } catch (_) { /* storage blocked */ }
+MAP_PROVIDERS[startProvider].layer.addTo(map);
 const layerControl = L.control.layers(baseLayers).addTo(map);
 L.control.scale().addTo(map);
+// Shows the chosen base map (unless a Google map is on screen for a Google route).
+// Switches made here (settings, fallback) are not the user's pick in the map's layer menu.
+let switchingBase = false;
+function applyMapProvider(id) {
+  const want = MAP_PROVIDERS[id].layer;
+  if (state.google.layer && map.hasLayer(state.google.layer)) return;
+  if (map.hasLayer(want)) return;
+  switchingBase = true;
+  try {
+    for (const p of Object.values(MAP_PROVIDERS)) if (p.layer !== want && map.hasLayer(p.layer)) map.removeLayer(p.layer);
+    want.addTo(map);
+  } finally { switchingBase = false; }
+}
+let providerWarned = false;
+function mapProviderFailed(why) {
+  if (!providerWarned) toast(`OpenFreeMap can't be shown: ${why}. Showing OpenStreetMap instead (Settings › Appearance › Map).`, true);
+  providerWarned = true;
+  if (map.hasLayer(MAP_PROVIDERS.openfreemap.layer)) applyMapProvider("osm");
+}
 
 // Explicit layers, bottom to top: route lines, the device trail, alternative labels, markers.
 map.createPane("routeMain").style.zIndex = 410;
@@ -199,6 +332,7 @@ map.on("click", (e) => {
   else setPicked(e.latlng.lat, lon, false);
 });
 map.on("contextmenu", guard(async (e) => {
+  if (performance.now() < suppressClickUntil) return;
   setPicked(e.latlng.lat, wrapLon(e.latlng.lng), false);
   await teleport();
 }));
@@ -253,6 +387,9 @@ map.on("baselayerchange", (e) => {
   const isGoogle = state.google.layer && e.layer === state.google.layer;
   if (isGoogle) { if (!googleAttrib._map) googleAttrib.addTo(map); refreshGoogleCopyright(); return; }
   if (googleAttrib._map) googleAttrib.remove();
+  // a map picked in the map's layer menu becomes the saved choice, like the one in Settings
+  const id = providerOf(e.layer);
+  if (id && !switchingBase && settings().map_provider !== id) { settings().map_provider = id; $("pref-map-provider").value = id; rememberAppearance(); saveSettingsSoon(); }
   // Google's terms: Google routes may only be shown on a Google map.
   if (state.built && (state.built.providers || []).includes("google")) {
     routeLayer.clearLayers();
@@ -345,7 +482,11 @@ function openSelect(sel, btn) {
     pop.append(it);
     return it;
   });
-  document.body.append(pop);
+  // A modal dialog (Settings) sits in the browser's top layer, above any z-index, and makes everything
+  // outside it inert. So the list goes inside the dialog, and as a popover it joins the top layer too:
+  // drawn above the dialog, never clipped by it, and still clickable.
+  (sel.closest("dialog[open]") || document.body).append(pop);
+  if (typeof pop.showPopover === "function") { pop.popover = "manual"; pop.showPopover(); }
   const r = btn.getBoundingClientRect();
   pop.style.minWidth = `${r.width}px`;
   const ph = Math.min(pop.scrollHeight, 300);
@@ -409,7 +550,10 @@ document.addEventListener("keydown", (e) => {
   e.stopPropagation();
 }, true);
 document.addEventListener("pointerdown", (e) => {
-  if (selOpen && !selOpen.pop.contains(e.target) && !selOpen.btn.contains(e.target)) closeSelect();
+  if (selOpen && !selOpen.pop.contains(e.target) && !selOpen.btn.contains(e.target)) {
+    closeSelect();
+    if (map.getContainer().contains(e.target)) suppressClickUntil = performance.now() + 500;
+  }
 }, true);
 window.addEventListener("resize", () => closeSelect(true));
 document.addEventListener("scroll", (e) => { if (selOpen && !selOpen.pop.contains(e.target)) closeSelect(true); }, true);
@@ -442,8 +586,16 @@ function applyAppearance() {
   document.documentElement.classList.toggle("compact", !!s.compact);
   document.querySelectorAll(".theme-card").forEach((c) => c.classList.toggle("active", c.dataset.theme === theme));
   $("pref-map-theme").value = mt;
-  // remembered for the first paint of the next start (index.html applies it before the CSS renders)
-  try { localStorage.setItem("ls-appearance", JSON.stringify({ theme, nightMap })); } catch (_) { /* storage blocked */ }
+  MAP_PROVIDERS.openfreemap.layer.setDark(nightMap);
+  const provider = savedProvider(s);
+  $("pref-map-provider").value = provider;
+  applyMapProvider(provider);
+  rememberAppearance(theme, nightMap);
+}
+// remembered for the first paint of the next start (index.html applies it before the CSS renders)
+function rememberAppearance(theme = document.documentElement.dataset.theme, nightMap = document.documentElement.classList.contains("night-map")) {
+  const data = { theme, nightMap, map_provider: savedProvider(settings()) };
+  try { localStorage.setItem("ls-appearance", JSON.stringify(data)); } catch (_) { /* storage blocked */ }
 }
 // The everyday themes up front; the colourful ones sit under "More themes".
 const MAIN_THEMES = new Set(["system", "light", "dark", "graphite", "contrast-dark", "contrast-light"]);
@@ -464,12 +616,13 @@ function renderThemeGrid() {
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyAppearance);
 $("pref-map-theme").onchange = (e) => { settings().map_theme = e.target.value; applyAppearance(); saveSettingsSoon(); };
+$("pref-map-provider").onchange = (e) => { settings().map_provider = e.target.value; providerWarned = false; applyAppearance(); saveSettingsSoon(); };
 $("pref-compact").onchange = (e) => { settings().compact = e.target.checked; applyAppearance(); saveSettingsSoon(); };
 
 // ------------------------------------------------------------------ collapsible sections (open/closed state is remembered)
 // Sections fold and unfold with a height animation; an opened section near the bottom of the side
 // menu scrolls smoothly into view.
-const ALWAYS_CLOSED_AT_START = new Set(["sec-wander"]);
+const ALWAYS_CLOSED_AT_START = new Set(["sec-route-import", "sec-route-settings", "experimental", "sec-checkpoints", "sec-wander"]);
 function toggleSection(d, open = !d.open) {
   if (d._anim) { d._anim.cancel(); d._anim = null; }
   const summary = d.querySelector(":scope > summary");
@@ -549,10 +702,16 @@ resizer.addEventListener("keydown", (e) => {
   if (e.key === "ArrowLeft") { e.preventDefault(); setSidebarWidth(w - 20); }
   if (e.key === "ArrowRight") { e.preventDefault(); setSidebarWidth(w + 20); }
 });
+// The side menu slides out and back in; the map follows its edge frame by frame.
 function setSidebarHidden(hidden) {
   document.body.classList.toggle("sidebar-hidden", hidden);
   $("btn-show-sidebar").hidden = !hidden;
-  setTimeout(() => map.invalidateSize(), 50);
+  const end = performance.now() + (reducedMotion() ? 0 : 340);
+  const follow = () => {
+    map.invalidateSize({ pan: false, animate: false });
+    if (performance.now() < end) requestAnimationFrame(follow);
+  };
+  requestAnimationFrame(follow);
 }
 $("btn-hide-sidebar").onclick = () => setSidebarHidden(true);
 $("btn-show-sidebar").onclick = () => setSidebarHidden(false);
@@ -779,6 +938,9 @@ function addWaypoint(lat, lon, extra = {}) {
   state.waypoints.push(w);
   invalidateBuilt();
   renderWaypoints({ appear: w.id });
+  // the Route sections start folded: show the list as soon as something is added to it
+  const sec = $("sec-checkpoints");
+  if (!sec.open && !sec._anim) toggleSection(sec, true);
 }
 // A route changed: the built route (and the player) no longer match it.
 function invalidateBuilt() {
@@ -809,7 +971,9 @@ function flash(elm, cls) {
   elm.classList.remove(cls);
   void elm.offsetWidth;
   elm.classList.add(cls);
-  elm.addEventListener("animationend", () => elm.classList.remove(cls), { once: true });
+  // only this element's own animation ends the effect (animations of its children bubble up too)
+  const end = (e) => { if (e.target !== elm) return; elm.classList.remove(cls); elm.removeEventListener("animationend", end); };
+  elm.addEventListener("animationend", end);
 }
 
 // ---- checkpoint markers: kept by id, so a dropped marker can finish its settle animation
@@ -1032,10 +1196,14 @@ ctxMenu.addEventListener("keydown", (e) => {
     btns[(i + (e.key === "ArrowDown" ? 1 : -1) + n) % n].focus();
   }
 });
+// A click outside an open menu only closes it: on the map it must not also add a checkpoint or pick a point.
+function swallowMapClick(e) {
+  if (map.getContainer().contains(e.target)) suppressClickUntil = performance.now() + 500;
+}
 document.addEventListener("pointerdown", (e) => {
-  if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) ctxMenu.hidden = true;
+  if (!ctxMenu.hidden && !ctxMenu.contains(e.target)) { ctxMenu.hidden = true; swallowMapClick(e); }
   const pop = $("wait-pop");
-  if (!pop.hidden && !pop.contains(e.target)) pop.hidden = true;
+  if (!pop.hidden && !pop.contains(e.target)) { pop.hidden = true; swallowMapClick(e); }
 }, true);
 function openWaypointMenu(id, x, y) {
   const i = state.waypoints.findIndex((w) => w.id === id);
@@ -2363,8 +2531,8 @@ function openShortcutHelp() {
   $("shortcut-help").showModal();
 }
 $("btn-shortcuts").onclick = openShortcutHelp;
-$("btn-shortcut-help-close").onclick = () => $("shortcut-help").close();
-$("btn-shortcut-customize").onclick = () => { $("shortcut-help").close(); openSettings("keys"); };
+$("btn-shortcut-help-close").onclick = () => closeDialog($("shortcut-help"));
+$("btn-shortcut-customize").onclick = async () => { await closeDialog($("shortcut-help")); openSettings("keys"); };
 
 // ------------------------------------------------------------------ saved data
 async function loadStore() {
@@ -2498,13 +2666,44 @@ $("import-data").onchange = guard(async (e) => {
   toast("Imported");
 });
 
-// ------------------------------------------------------------------ settings dialog
+// ------------------------------------------------------------------ dialogs
+// Dialogs fade and scale in and out (CSS), and when their content changes (another Settings page, the
+// next tutorial step) their height glides to the new size instead of jumping.
+function morphHeight(dlg, change) {
+  if (!dlg.open || reducedMotion()) { change(); return; }
+  if (dlg._morph) dlg._morph.cancel();
+  const from = dlg.getBoundingClientRect().height;
+  change();
+  const to = dlg.getBoundingClientRect().height;
+  if (Math.abs(to - from) < 1) return;
+  dlg.classList.add("morphing");
+  const anim = dlg.animate([{ height: `${from}px` }, { height: `${to}px` }], { duration: 280, easing: "cubic-bezier(.2,.8,.2,1)" });
+  dlg._morph = anim;
+  const done = () => { if (dlg._morph === anim) { dlg._morph = null; dlg.classList.remove("morphing"); } };
+  anim.onfinish = done;
+  anim.oncancel = done;
+}
+function closeDialog(dlg) {
+  if (!dlg.open || dlg.classList.contains("closing")) return Promise.resolve();
+  if (reducedMotion()) { dlg.close(); return Promise.resolve(); }
+  dlg.classList.add("closing");
+  return new Promise((resolve) => {
+    setTimeout(() => { dlg.classList.remove("closing"); dlg.close(); resolve(); }, 170);
+  });
+}
+for (const dlg of document.querySelectorAll("dialog.modal")) {
+  // Esc and the dialog's own close button animate out too
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); if (dlg.id === "tutorial") finishTutorial(); else closeDialog(dlg); });
+}
 const settingsDlg = $("settings-dialog");
+settingsDlg.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); closeDialog(settingsDlg); });
 function openSettings(pane = "appearance") {
   $("key-status").textContent = "";
-  document.querySelectorAll("#settings-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
-  document.querySelectorAll("#settings-dialog .pane").forEach((p) => (p.hidden = p.dataset.pane !== pane));
-  if (pane === "keys") renderShortcutEditor();
+  morphHeight(settingsDlg, () => {
+    document.querySelectorAll("#settings-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
+    document.querySelectorAll("#settings-dialog .pane").forEach((p) => (p.hidden = p.dataset.pane !== pane));
+    if (pane === "keys") renderShortcutEditor();
+  });
   if (!settingsDlg.open) settingsDlg.showModal();
 }
 document.querySelectorAll("#settings-tabs button").forEach((b) => (b.onclick = () => openSettings(b.dataset.pane)));
@@ -2530,7 +2729,7 @@ $("btn-key-test").onclick = busy($("btn-key-test"), "Testing…", async () => {
 });
 $("pref-channel").onchange = () => { settings().update_channel = $("pref-channel").value; saveSettingsSoon(); };
 settingsDlg.addEventListener("close", () => { listeningFor = null; guard(saveKey)(); });
-$("btn-tutorial-again").onclick = () => { settingsDlg.close(); openTutorial(0); };
+$("btn-tutorial-again").onclick = async () => { await closeDialog(settingsDlg); openTutorial(0); };
 async function refreshGoogleStatus() {
   try { state.google.configured = (await api("/api/google/status")).configured; } catch (_) { state.google.configured = false; }
   const opt = $("provider").querySelector('option[value="google"]');
@@ -2545,34 +2744,72 @@ const TUTORIAL = [
       "This app sets your iPhone's location from this computer over a USB cable: jump to any place, follow routes at realistic speeds, or replay GPX files.",
       "Use it only where it is allowed, for example testing your own apps. Games and dating, school or work apps often ban fake locations and can suspend accounts.",
       ["By continuing you agree to the ", ["Terms of Use", `${REPO}/TERMS.md`], ". The ", ["Privacy Policy", `${REPO}/PRIVACY.md`], " explains which online map services the app contacts. Nothing is collected by the app's authors."],
-      "Want to look around first? Pick “Simulator (no iPhone)” as the connection and skip ahead." ] },
+      "Want to look around first? Pick “Simulator (no iPhone)” as the connection and skip ahead." ], art: "welcome" },
   { title: "1 · Install Apple's device software", body: [
       "Windows needs Apple's iPhone drivers. Open the Microsoft Store, search for “Apple Devices” and install it (iTunes also works).",
       "Leave it installed; it runs in the background while you use this app.",
-      "macOS: nothing to install. Linux: install the usbmuxd package." ] },
+      "macOS: nothing to install. Linux: install the usbmuxd package." ], art: "install" },
   { title: "2 · Connect and trust", body: [
       "Plug the iPhone in with a cable and unlock it.",
       "When the phone asks “Trust This Computer?”, tap Trust and enter your passcode.",
-      "Then press the refresh button next to the Device list: your iPhone should appear in it." ],
+      "Then press the refresh button next to the Device list: your iPhone should appear in it." ], art: "trust",
     action: { label: "Look for devices now", run: () => refreshDevices(true) } },
   { title: "3 · Turn on Developer Mode", body: [
       "iOS only lets a computer change the location when Developer Mode is on. Press the button below (iPhone plugged in and unlocked) to make the switch appear.",
       "On the iPhone: Settings › Privacy & Security › Developer Mode → On → Restart. After the restart, unlock and tap Turn On.",
-      "You only do this once per phone." ],
+      "You only do this once per phone." ], art: "devmode",
     action: { label: "Reveal Developer Mode", run: revealDevMode } },
   { title: "4 · Connect in this app", body: [
       "Choose “Direct (recommended)” as the connection and press Connect. The first connection to iOS 17 or newer can take up to 30 seconds.",
-      "If it fails, the message says what is missing. The grey (i) buttons explain every device tool." ],
+      "If it fails, the message says what is missing. The help icons next to each tool explain what it does." ], art: "connect",
     action: { label: "Connect now", run: connectNow } },
   { title: "5 · Move your iPhone", body: [
       "Teleport: click the map (or paste a Google Maps link) and press Teleport here. Right-click the map to jump instantly.",
       "Route: click checkpoints, choose roads, footpaths or sea lanes, set speeds, Build route, then Play. The line's colour shows the speed.",
       "Every section can be folded away, the side menu can be resized by dragging its edge, and Settings has themes and keyboard shortcuts (press H to see them).",
-      "When you're done, press “Stop spoofing — back to real location”." ] },
+      "When you're done, press “Stop spoofing — back to real location”." ], art: "move" },
 ];
+// Small animated illustrations for the tutorial steps (drawn with the theme's colours, see style.css).
+const PIN = (x, y) => `<path class="ta-pin" d="M${x} ${y} C${x - 9} ${y - 9} ${x - 14} ${y - 15} ${x - 14} ${y - 22} A14 14 0 0 1 ${x + 14} ${y - 22} C${x + 14} ${y - 15} ${x + 9} ${y - 9} ${x} ${y}Z"/><circle class="ta-pin-dot" cx="${x}" cy="${y - 22}" r="5"/>`;
+const ROADS = '<path class="ta-road" d="M20 52H300M20 94H300M92 10V122M204 10V122M20 118L140 10M176 122L300 34"/>';
+const TUT_ART = {
+  welcome: `<rect class="ta-card" x="20" y="10" width="280" height="112" rx="12"/>${ROADS}
+    <path class="ta-route ta-draw" d="M60 100C100 100 112 64 150 62S222 34 250 42"/><circle class="ta-start" cx="60" cy="100" r="6"/>
+    <g class="ta-drop">${PIN(250, 42)}</g>`,
+  install: `<rect class="ta-win" x="70" y="12" width="180" height="108" rx="9"/><path class="ta-line" d="M70 32H250"/>
+    <circle class="ta-dotc" cx="84" cy="22" r="3"/><circle class="ta-dotc" cx="95" cy="22" r="3"/><circle class="ta-dotc" cx="106" cy="22" r="3"/>
+    <rect class="ta-tile" x="118" y="48" width="46" height="46" rx="11"/><rect class="ta-glyph" x="133" y="55" width="16" height="31" rx="4"/>
+    <g class="ta-down"><path class="ta-acc-s" d="M200 46v28M189 63l11 11 11-11"/></g><path class="ta-line" d="M186 92h28"/>
+    <g class="ta-pop"><circle class="ta-ok" cx="164" cy="48" r="10"/><path class="ta-tick" d="M159 48l3.5 3.5 6.5-7"/></g>`,
+  trust: `<rect class="ta-win" x="30" y="30" width="100" height="64" rx="7"/><path class="ta-line" d="M20 102h120"/>
+    <path class="ta-cable ta-flow" d="M130 82C160 82 160 100 190 100"/>
+    <rect class="ta-phone" x="190" y="10" width="68" height="114" rx="13"/>
+    <rect class="ta-dialog" x="198" y="42" width="52" height="46" rx="7"/><path class="ta-line" d="M206 53h36M209 61h30"/>
+    <rect class="ta-btn ta-pulse" x="206" y="70" width="36" height="11" rx="5.5"/>`,
+  devmode: `<rect class="ta-phone" x="116" y="6" width="88" height="120" rx="15"/>
+    <rect class="ta-row" x="126" y="26" width="68" height="18" rx="5"/><rect class="ta-row ta-row-hi" x="126" y="50" width="68" height="18" rx="5"/>
+    <rect class="ta-row" x="126" y="74" width="68" height="18" rx="5"/><rect class="ta-row" x="126" y="98" width="68" height="18" rx="5"/>
+    <path class="ta-line" d="M132 35h22M132 59h26M132 83h20M132 107h16"/>
+    <rect class="ta-switch" x="172" y="53" width="18" height="12" rx="6"/><circle class="ta-knob" cx="178" cy="59" r="4.5"/>`,
+  connect: `<rect class="ta-win" x="26" y="22" width="124" height="88" rx="9"/><circle class="ta-status" cx="46" cy="44" r="5"/><path class="ta-line" d="M58 44h74"/>
+    <rect class="ta-btn" x="48" y="70" width="80" height="20" rx="6"/>
+    <circle class="ta-sig s1" cx="172" cy="66" r="4"/><circle class="ta-sig s2" cx="188" cy="66" r="4"/><circle class="ta-sig s3" cx="204" cy="66" r="4"/>
+    <rect class="ta-phone" x="222" y="16" width="62" height="104" rx="12"/><g transform="translate(0 4)">${PIN(253, 76)}</g>`,
+  move: `<rect class="ta-card" x="20" y="10" width="280" height="112" rx="12"/>${ROADS}
+    <path id="tut-route" class="ta-route" d="M40 104C80 104 92 72 130 68S192 94 222 62S262 26 284 32"/>
+    <circle class="ta-cp" cx="40" cy="104" r="6"/><circle class="ta-cp" cx="130" cy="68" r="6"/><circle class="ta-cp" cx="284" cy="32" r="6"/>
+    <circle class="ta-dev" r="6.5"><animateMotion dur="5s" repeatCount="indefinite"><mpath href="#tut-route"/></animateMotion></circle>`,
+};
+function tutArt(name) {
+  const fig = el("figure", { class: "tut-art", "aria-hidden": "true" });
+  fig.innerHTML = `<svg viewBox="0 0 320 132" xmlns="http://www.w3.org/2000/svg">${TUT_ART[name] || ""}</svg>`;
+  if (reducedMotion()) fig.firstChild.pauseAnimations(); // the moving dot is SVG animation, not CSS
+  return fig;
+}
 let tutIndex = 0;
 const tutDlg = $("tutorial");
 function openTutorial(i = 0) { tutIndex = i; renderTutorial(); if (!tutDlg.open) tutDlg.showModal(); }
+function stepTutorial(i) { morphHeight(tutDlg, () => { tutIndex = i; renderTutorial(); }); }
 function richParagraph(p) {
   if (typeof p === "string") return el("p", { textContent: p });
   return el("p", {}, ...p.map((part) => (Array.isArray(part) ? el("a", { href: part[1], target: "_blank", rel: "noopener", textContent: part[0] }) : part)));
@@ -2582,7 +2819,9 @@ function renderTutorial() {
   $("tut-step").textContent = `Step ${tutIndex + 1} of ${TUTORIAL.length}`;
   $("tut-bar").style.width = `${((tutIndex + 1) / TUTORIAL.length) * 100}%`;
   $("tut-title").textContent = step.title;
+  $("tut-art").replaceChildren(tutArt(step.art));
   $("tut-body").replaceChildren(...step.body.map(richParagraph));
+  for (const e of [$("tut-art"), $("tut-title"), $("tut-body")]) flash(e, "step-in");
   const act = $("tut-action");
   act.replaceChildren();
   if (step.action) {
@@ -2595,14 +2834,13 @@ function renderTutorial() {
   $("tut-next").textContent = tutIndex === TUTORIAL.length - 1 ? "Start using the app" : "Next";
 }
 function finishTutorial() {
-  tutDlg.close();
+  closeDialog(tutDlg);
   settings().tutorial_done = true;
   saveStore().catch(() => {});
 }
-$("tut-back").onclick = () => { if (tutIndex > 0) { tutIndex--; renderTutorial(); } };
-$("tut-next").onclick = () => { if (tutIndex < TUTORIAL.length - 1) { tutIndex++; renderTutorial(); } else finishTutorial(); };
+$("tut-back").onclick = () => { if (tutIndex > 0) stepTutorial(tutIndex - 1); };
+$("tut-next").onclick = () => { if (tutIndex < TUTORIAL.length - 1) stepTutorial(tutIndex + 1); else finishTutorial(); };
 $("tut-skip").onclick = finishTutorial;
-tutDlg.addEventListener("cancel", (e) => { e.preventDefault(); finishTutorial(); });
 $("btn-tutorial").onclick = () => openTutorial(0);
 
 // ------------------------------------------------------------------ updates

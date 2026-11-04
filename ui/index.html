@@ -187,7 +187,7 @@
             <button id="btn-route-link" class="fixed">Import</button></span>
         </div>
       </details>
-      <details class="section" id="sec-route-settings" open>
+      <details class="section" id="sec-route-settings">
         <summary><svg class="ico sec-ico"><use href="#i-gauge"/></svg><span class="sec-title">Routing &amp; speed</span><span id="route-settings-sub" class="sec-sub"></span></summary>
         <div class="sec-body">
           <div class="grid2">
@@ -246,7 +246,7 @@
             <input id="speed-factor" type="range" min="0.6" max="1.4" step="0.05" value="1"></label>
         </div>
       </details>
-      <details class="section" id="sec-checkpoints" open>
+      <details class="section" id="sec-checkpoints">
         <summary><svg class="ico sec-ico"><use href="#i-flag"/></svg><span class="sec-title">Checkpoints</span><span id="wp-count" class="sec-sub"></span></summary>
         <div class="sec-body">
           <ol id="waypoints" class="waypoints"></ol>
@@ -454,14 +454,24 @@
     <section class="pane" data-pane="appearance">
       <h3>Theme</h3>
       <div id="theme-grid" class="theme-grid"></div>
-      <label>Map theme
-        <select id="pref-map-theme">
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
-          <option value="auto">Match the app theme</option>
-        </select>
-      </label>
-      <p class="hint">Applies to the OpenStreetMap street and topographic layers. Satellite and Google maps keep their own colours.</p>
+      <div class="grid2">
+        <label>Map
+          <select id="pref-map-provider">
+            <option value="openfreemap">OpenFreeMap (sharp, true dark style)</option>
+            <option value="osm">OpenStreetMap</option>
+            <option value="topo">Topographic (OpenTopoMap)</option>
+            <option value="satellite">Satellite (Esri)</option>
+          </select>
+        </label>
+        <label>Map theme
+          <select id="pref-map-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="auto">Match the app theme</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">OpenFreeMap has a real dark style. OpenStreetMap and the topographic map are shown with inverted colours in dark mode. Satellite and Google maps keep their own colours. The map's layer button switches maps too.</p>
       <label class="check"><input id="pref-compact" type="checkbox"> Compact layout</label>
     </section>
     <section class="pane" data-pane="keys" hidden>
@@ -523,6 +533,7 @@
       <button id="tut-skip" type="button" class="link-btn">Skip</button>
     </div>
     <div class="tut-progress"><span id="tut-bar"></span></div>
+    <div id="tut-art" class="tut-art-wrap"></div>
     <h2 id="tut-title"></h2>
     <div id="tut-body" class="tut-body"></div>
     <div id="tut-action" class="btn-row"></div>

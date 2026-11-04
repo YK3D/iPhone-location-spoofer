@@ -8,6 +8,10 @@ Test builds from the `dev` branch are marked as pre-releases.
 ## Unreleased (dev)
 
 ### New
+- A real dark map: the default map is now OpenFreeMap, drawn from vector data, so it is sharp at every zoom and has a true dark style (with colours tuned so water, parks, the road hierarchy and labels stand out) and a light style. Free, no account or key. Choose the map in *Settings › Appearance › Map* (OpenFreeMap, OpenStreetMap, Topographic, Satellite) or with the map's layer button; the choice is remembered. Without WebGL, or if OpenFreeMap can't be reached, the app says so and shows OpenStreetMap.
+- The tutorial has an animated drawing for each step (the route being drawn, the cable and Trust prompt, the Developer Mode switch, a position moving along a route), and each step slides in.
+- Dialogs (Settings, tutorial, shortcuts) fade and rise in and sink out when closed (also with Esc), and their height glides to the new size when you switch Settings pages or tutorial steps.
+- Hiding the side menu slides it out to the left while the map widens with it (and back in).
 - Cornering physics (tested on `feature-testing`, now standard): every bend is now taken at the speed its radius allows for the vehicle on that leg, v = √(lateral acceleration × radius), instead of a fixed slowdown. Bends are found as runs of heading change, so long curves count as one bend and S-bends as two. A junction that the map draws as a sharp corner is rounded the way drivers cut it (wider on faster roads), a curve keeps its drawn radius, and a U-turn follows the vehicle's turning circle. Comfortable lateral acceleration falls with speed and never exceeds a safe share of tyre grip. Cars, bikes, walkers and boats have their own limits; straight legs guess the vehicle from their speed, and planes are not slowed. Examples for a car: a 90° junction at about 18 km/h on a 50 km/h road (14 km/h on a 30 km/h street), a roundabout at about 22 km/h, a 300 m motorway curve at about 88 km/h.
 - "Slow down for turns and U-turns" is on by default, and Route summary shows the sharpest bend (angle, radius and speed).
 - Cancel a route build with the Cancel button beside the progress bar (or Esc). A build also cancels itself when you change the checkpoints or the route settings.
@@ -36,6 +40,8 @@ Test builds from the `dev` branch are marked as pre-releases.
 - Update channels: stable releases, or opt-in test builds.
 
 ### Fixed
+- With a checkpoint's right-click menu open, a left click elsewhere on the map added a checkpoint. It now only closes the menu (the same for the wait popover and open dropdowns).
+- Dropdowns in Settings opened behind the Settings window and could not be clicked. They now open above it.
 - Roundabouts were driven at the road's speed (70 km/h and more, faster than the approach when the roundabout belongs to a bigger road). They are now recognised from the routing service's own directions and always driven at a normal roundabout speed for their size: about 20 km/h for a small one up to 40 km/h for a large gyratory by car, 10–22 km/h by bike.
 - Changing the default speed now marks a built route as out of date (its legs without their own speed used the old one).
 - Asking for three alternative routes often gave only one or two. The detour search now tries via points along the whole route, not just at its middle, follows the route's own direction, and if needed fills the last places with near misses that are only a little slower. A route with several legs no longer spends the search on legs that don't need it.
@@ -54,7 +60,7 @@ Test builds from the `dev` branch are marked as pre-releases.
 
 ### Changed
 - Sections are cards with an icon badge, set apart on the side menu's background; the tabs are a segmented control; the title bar is taller with a larger logo and toolbar icons.
-- Route tab order: Import from Google Maps, Routing & speed, Road-aware driving, Checkpoints (then Route summary), Random wander. Random wander always starts folded.
+- Route tab order: Import from Google Maps, Routing & speed, Road-aware driving, Checkpoints (then Route summary), Random wander. Every Route section starts folded; Checkpoints opens by itself when you add one.
 - Shortcut letters are no longer printed on buttons (they're in the tooltips and the shortcut list, H); help icons replace the "(i)" buttons; the D-pad uses drawn arrows; the colourful themes moved under "More themes".
 - Clearer layout: every section has its own header bar with an icon, sections sit apart on a darker background, field labels and dividers have more contrast, and the inputs inside the checkpoint list stay quiet until you point at them. The Route tab now lists Routing & speed, Checkpoints and Route summary first, then the extras.
 - Graphite is the default theme and the map is dark by default.
