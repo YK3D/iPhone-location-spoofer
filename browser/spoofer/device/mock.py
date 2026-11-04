@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .base import DeviceDriver, DeviceInfo
+from .base import DeviceDriver, DeviceError, DeviceInfo
+
+
+# The pretend phones always report this iOS version (the current major release).
+SIMULATED_IOS = "27"
+# Two pretend phones, so several iPhones at once can be tried without hardware.
+SIMULATED_DEVICES = {"SIMULATED-0001": "Simulated iPhone", "SIMULATED-0002": "Simulated iPhone 2"}
 
 
 class MockDriver(DeviceDriver):
@@ -18,13 +24,17 @@ class MockDriver(DeviceDriver):
         self.history: list[tuple[float, float]] = []
 
     async def list_devices(self) -> list[dict]:
-        return [{"udid": "SIMULATED-0001", "name": "Simulated iPhone", "ios_version": "26.0", "connection": "Simulated"}]
+        return [{"udid": udid, "name": name, "ios_version": SIMULATED_IOS, "connection": "Simulated", "connections": ["Simulated"]}
+                for udid, name in SIMULATED_DEVICES.items()]
 
-    async def connect(self, udid: Optional[str] = None) -> DeviceInfo:
+    async def connect(self, udid: Optional[str] = None, connection: str = "auto") -> DeviceInfo:
+        udid = udid or next(iter(SIMULATED_DEVICES))
+        if udid not in SIMULATED_DEVICES:
+            raise DeviceError("No such simulated iPhone")
         self.info = DeviceInfo(
-            udid="SIMULATED-0001",
-            name="Simulated iPhone",
-            ios_version="26.0",
+            udid=udid,
+            name=SIMULATED_DEVICES[udid],
+            ios_version=SIMULATED_IOS,
             product_type="Simulated",
             connection="Simulated",
             transport="In-memory (nothing is sent to a phone)",
@@ -48,3 +58,6 @@ class MockDriver(DeviceDriver):
 
     async def mount_developer_image(self) -> str:
         return "Simulator: nothing to mount."
+
+    async def enable_wifi(self, udid: Optional[str] = None) -> str:
+        return "Simulator: nothing to do."

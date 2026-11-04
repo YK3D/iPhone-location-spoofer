@@ -14,6 +14,8 @@ Location Spoofer is built on open-source software and public data services. This
 | Component | Use | Licence |
 |---|---|---|
 | [Leaflet](https://leafletjs.com/) 1.9.4 (`ui/vendor/leaflet`) | Interactive map | BSD-2-Clause, © 2010–2023 Volodymyr Agafonkin, © 2010–2011 CloudMade. See `ui/vendor/leaflet/LICENSE` |
+| [MapLibre GL JS](https://maplibre.org/) 5.24.0 (`ui/vendor/maplibre`) | Draws the OpenFreeMap vector map | BSD-3-Clause, © MapLibre contributors, © Mapbox. See `ui/vendor/maplibre/LICENSE-maplibre-gl.txt` |
+| [MapLibre GL Leaflet](https://github.com/maplibre/maplibre-gl-leaflet) 0.1.4 (`ui/vendor/maplibre`) | Shows the MapLibre map inside Leaflet | ISC, © MapLibre contributors. See `ui/vendor/maplibre/LICENSE-maplibre-gl-leaflet.txt` |
 | Marine network from [searoute](https://github.com/genthalili/searoute-py) (`standalone/data/marnet_searoute.geojson`; bundled with the `searoute` package in the browser version) | Sea-lane routing | Apache-2.0 (searoute). The network derives from Eurostat's [SeaRoute](https://github.com/eurostat/searoute) (EUPL-1.2) |
 
 ## Standalone app (`LocationSpooferStandalone.exe`)
@@ -53,7 +55,8 @@ See [PRIVACY.md](PRIVACY.md) for what each one receives.
 
 | Service | Used for | Terms |
 |---|---|---|
-| OpenStreetMap tiles, Nominatim | Streets map, place search | [Tile policy](https://operations.osmfoundation.org/policies/tiles/), [Nominatim policy](https://operations.osmfoundation.org/policies/nominatim/). Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright) |
+| OpenFreeMap | Default map (vector tiles, dark and light styles) | [Terms of service](https://openfreemap.org/tos/). © OpenMapTiles, map data © OpenStreetMap contributors |
+| OpenStreetMap tiles, Nominatim | OpenStreetMap map, place search | [Tile policy](https://operations.osmfoundation.org/policies/tiles/), [Nominatim policy](https://operations.osmfoundation.org/policies/nominatim/). Map data © OpenStreetMap contributors, [ODbL](https://www.openstreetmap.org/copyright) |
 | routing.openstreetmap.de (FOSSGIS e.V.) | Road, cycle and foot routing | [Service info](https://routing.openstreetmap.de/about.html) |
 | Overpass API | Optional speed limits | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) |
 | Esri World Imagery | Satellite layer | Esri terms of use |

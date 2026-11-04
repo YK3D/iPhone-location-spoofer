@@ -12,6 +12,11 @@ use serde::Serialize;
 const KMH: f64 = 1.0 / 3.6;
 const MIN_MOVING_SPEED: f64 = 0.05;
 const MAX_NODES: f64 = 60_000.0;
+// The heading while moving is the path's direction over a short window around the current spot
+// (a car turns over several metres, not at a polyline vertex): about 0.8 s of travel.
+const HEADING_WINDOW_S: f64 = 0.8;
+const HEADING_WINDOW_MIN_M: f64 = 2.0;
+const HEADING_WINDOW_MAX_M: f64 = 12.0;
 
 #[derive(Clone, Debug)]
 pub struct Waypoint {
@@ -19,11 +24,13 @@ pub struct Waypoint {
     pub lon: f64,
     pub speed_kmh: Option<f64>,
     pub dwell_s: f64,
+    /// Stop here and wait until the user presses Continue (then any dwell_s).
+    pub hold: bool,
 }
 
 impl Waypoint {
     pub fn at(p: LatLon) -> Self {
-        Self { lat: p.0, lon: p.1, speed_kmh: None, dwell_s: 0.0 }
+        Self { lat: p.0, lon: p.1, speed_kmh: None, dwell_s: 0.0, hold: false }
     }
     fn ll(&self) -> LatLon {
         (self.lat, self.lon)
@@ -43,11 +50,16 @@ pub struct Leg {
     pub ramp: Ramp,
     /// Road-aware mode: typical speed (m/s) up to each distance along the leg.
     pub zones: Option<Vec<(f64, Option<f64>)>>,
+    /// How the leg is travelled (car, bike, foot, sea, straight): picks the vehicle whose cornering
+    /// limits apply. Straight legs guess the vehicle from their speed.
+    pub mode: String,
+    /// (start m, end m) along the leg of each roundabout; always driven at roundabout speed.
+    pub roundabouts: Vec<(f64, f64)>,
 }
 
 impl Leg {
     pub fn new(points: Vec<LatLon>) -> Self {
-        Self { points, cruise_kmh: None, ramp: Ramp::Accel, zones: None }
+        Self { points, cruise_kmh: None, ramp: Ramp::Accel, zones: None, mode: "straight".into(), roundabouts: Vec::new() }
     }
 }
 
@@ -61,8 +73,12 @@ pub struct ProfileSettings {
     pub max_step_m: f64,
     pub road_aware: bool,
     pub speed_factor: f64,
+    /// Take every bend at the speed its radius and the vehicle allow.
     pub corner_slowdown: bool,
-    pub lateral_accel_ms2: f64,
+    /// Override of the vehicle's comfortable lateral acceleration at low speed (m/s²); None = the
+    /// vehicle's own (see VEHICLES). Its fall-off at speed scales along.
+    pub lateral_accel_ms2: Option<f64>,
+    /// Optional floor for planned turn speeds.
     pub min_corner_kmh: f64,
 }
 
@@ -78,8 +94,8 @@ impl Default for ProfileSettings {
             road_aware: false,
             speed_factor: 1.0,
             corner_slowdown: false,
-            lateral_accel_ms2: 2.0,
-            min_corner_kmh: 8.0,
+            lateral_accel_ms2: None,
+            min_corner_kmh: 0.0,
         }
     }
 }
@@ -113,13 +129,74 @@ pub struct Timeline {
     pub warnings: Vec<String>,
     pub dwell_total: f64,
     pub corners_slowed: usize,
+    /// every bend found (see apply_turn_caps)
+    pub turns: Vec<Turn>,
+    /// (radius m, speed km/h) of each roundabout
+    pub roundabouts: Vec<(f64, f64)>,
+    /// (time, waypoint index) of every "hold until Continue" checkpoint: the moment the device
+    /// comes to a stop there, before any wait time.
+    pub holds: Vec<(f64, usize)>,
     t0s: Vec<f64>,
+    /// indexes of the moving segments and their start distances, for the heading window
+    moving: Vec<usize>,
+    s0s: Vec<f64>,
 }
 
 impl Timeline {
     pub fn new(segments: Vec<Segment>, waypoint_times: Vec<f64>, warnings: Vec<String>) -> Self {
         let t0s = segments.iter().map(|s| s.t0).collect();
-        Self { segments, waypoint_times, warnings, dwell_total: 0.0, corners_slowed: 0, t0s }
+        let moving: Vec<usize> = (0..segments.len()).filter(|&i| segments[i].ds > 0.0).collect();
+        let s0s = moving.iter().map(|&i| segments[i].s0).collect();
+        Self { segments, waypoint_times, warnings, dwell_total: 0.0, corners_slowed: 0, turns: Vec::new(), roundabouts: Vec::new(), holds: Vec::new(), t0s, moving, s0s }
+    }
+
+    /// The first hold strictly after t (before t when going backwards).
+    pub fn next_hold(&self, t: f64, forward: bool) -> Option<(f64, usize)> {
+        if forward {
+            self.holds.iter().copied().find(|h| h.0 > t + 1e-9)
+        } else {
+            self.holds.iter().rev().copied().find(|h| h.0 < t - 1e-9)
+        }
+    }
+
+    /// Position at distance s (m) along the path, clamped to it.
+    pub fn point_at_distance(&self, s: f64) -> Option<LatLon> {
+        if self.moving.is_empty() {
+            return None;
+        }
+        let s = s.clamp(0.0, self.distance());
+        let i = match self.s0s.partition_point(|&x| x <= s) {
+            0 => 0,
+            n => n - 1,
+        };
+        let seg = &self.segments[self.moving[i]];
+        Some(geo::interpolate(seg.p0, seg.p1, ((s - seg.s0) / seg.ds).clamp(0.0, 1.0)))
+    }
+
+    /// Direction of travel at distance s: the path's bearing over a short window, so the heading
+    /// turns smoothly through corners instead of jumping at each polyline vertex. Standing still,
+    /// the device faces the way it arrived (or, at the start, the way it leaves).
+    pub fn heading_at(&self, s: f64, speed_ms: f64, moving: bool) -> Option<f64> {
+        if self.moving.is_empty() {
+            return None;
+        }
+        let w = (speed_ms * HEADING_WINDOW_S).clamp(HEADING_WINDOW_MIN_M, HEADING_WINDOW_MAX_M);
+        let (a, b) = if moving {
+            (s - w, s + w)
+        } else if s - 2.0 * w >= 0.0 {
+            (s - 2.0 * w, s)
+        } else {
+            (s, s + 2.0 * w)
+        };
+        let (a, b) = (a.max(0.0), b.min(self.distance()));
+        if b - a < 0.5 {
+            return None;
+        }
+        let (pa, pb) = (self.point_at_distance(a)?, self.point_at_distance(b)?);
+        if geo::haversine_m(pa, pb) < 0.3 {
+            return None;
+        }
+        Some(geo::bearing_deg(pa, pb))
     }
 
     pub fn duration(&self) -> f64 {
@@ -153,8 +230,11 @@ impl Timeline {
         };
         let f = if seg.ds > 0.0 { s / seg.ds } else { 0.0 };
         let (lat, lon) = geo::interpolate(seg.p0, seg.p1, f);
-        let course = if seg.ds > 0.0 { geo::bearing_deg(seg.p0, seg.p1) } else { self.last_course(i) };
-        TimelinePoint { t, lat, lon, speed_ms: v.max(0.0), course, distance_m: seg.s0 + s }
+        let v = v.max(0.0);
+        let course = self.heading_at(seg.s0 + s, v, v > MIN_MOVING_SPEED).unwrap_or_else(|| {
+            if seg.ds > 0.0 { geo::bearing_deg(seg.p0, seg.p1) } else { self.last_course(i) }
+        });
+        TimelinePoint { t, lat, lon, speed_ms: v, course, distance_m: seg.s0 + s }
     }
 
     fn last_course(&self, i: usize) -> f64 {
@@ -183,6 +263,11 @@ impl Timeline {
         out
     }
 
+    /// Holds as [time, waypoint index] pairs (for the status API).
+    pub fn holds_json(&self) -> Vec<serde_json::Value> {
+        self.holds.iter().map(|(t, i)| serde_json::json!([(t * 100.0).round() / 100.0, i])).collect()
+    }
+
     pub fn summary(&self) -> serde_json::Value {
         let d = self.duration();
         serde_json::json!({
@@ -193,6 +278,10 @@ impl Timeline {
             "waypoint_times_s": self.waypoint_times.iter().map(|t| round1(*t)).collect::<Vec<_>>(),
             "moving_time_s": round1(d - self.dwell_total),
             "corners_slowed": self.corners_slowed,
+            "turns": self.turns.len(),
+            "sharpest_turn": sharpest(&self.turns),
+            "roundabouts": self.roundabouts.iter().map(|(r, v)| serde_json::json!({"radius_m": r, "speed_kmh": v})).collect::<Vec<_>>(),
+            "holds": self.holds.len(),
             "warnings": self.warnings,
         })
     }
@@ -220,6 +309,64 @@ fn leg_points(wa: &Waypoint, wb: &Waypoint, leg: &Leg) -> Vec<LatLon> {
         pts[last] = b;
     }
     pts
+}
+
+// Roundabouts are always driven at roundabout speed, whatever the road's own speed and whether or not
+// "slow down for turns" is on (same rule as profile.py): v = sqrt(a · R) within a normal range.
+const ROUNDABOUT_DEFAULT_R: f64 = 12.0;
+
+/// Speed (m/s) for driving round a roundabout of this radius; None when the mode isn't slowed.
+pub fn roundabout_speed(mode: &str, radius_m: f64) -> Option<f64> {
+    let (a, lo, hi) = match mode {
+        "car" | "straight" => (2.5, 15.0, 40.0),
+        "bike" => (2.0, 10.0, 22.0),
+        _ => return None,
+    };
+    Some(((a * radius_m.max(4.0)).sqrt() * 3.6).clamp(lo, hi) / 3.6)
+}
+
+fn ring_radius(nodes: &[LatLon], cum: &[f64], k0: usize, k1: usize) -> f64 {
+    let (mut left, mut right) = (0.0, 0.0);
+    let mut prev: Option<f64> = None;
+    for k in k0..k1 {
+        if cum[k + 1] - cum[k] <= 0.05 {
+            continue;
+        }
+        let b = geo::bearing_deg(nodes[k], nodes[k + 1]);
+        if let Some(p) = prev {
+            let d = (b - p + 540.0).rem_euclid(360.0) - 180.0;
+            if d > 0.0 { right += d } else { left -= d }
+        }
+        prev = Some(b);
+    }
+    let turned = f64::max(left, right).to_radians();
+    let length = cum[k1] - cum[k0];
+    if turned < 25f64.to_radians() || length < 5.0 {
+        return ROUNDABOUT_DEFAULT_R;
+    }
+    (length / turned).clamp(5.0, 60.0)
+}
+
+fn apply_roundabout_caps(nodes: &[LatLon], cum: &[f64], cap: &mut [f64], legs: &[Leg], wp_node: &[usize]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (li, leg) in legs.iter().enumerate() {
+        let base = cum[wp_node[li]];
+        for &(s0, s1) in &leg.roundabouts {
+            // the nodes at or just outside each end, so the whole ring is covered
+            let k0 = cum.partition_point(|&x| x <= base + s0).saturating_sub(1);
+            let k1 = cum.partition_point(|&x| x < base + s1).max(k0).min(cum.len() - 1);
+            if k1 <= k0 {
+                continue;
+            }
+            let radius = if s1 - s0 > 25.0 { ring_radius(nodes, cum, k0, k1) } else { ROUNDABOUT_DEFAULT_R };
+            let Some(v) = roundabout_speed(&leg.mode, radius) else { continue };
+            for c in &mut cap[k0..=k1] {
+                *c = c.min(v);
+            }
+            out.push(((radius * 10.0).round() / 10.0, (v * 36.0).round() / 10.0));
+        }
+    }
+    out
 }
 
 fn zone_speed(zones: &[(f64, Option<f64>)], s: f64) -> Option<f64> {
@@ -311,12 +458,19 @@ pub fn build_timeline(waypoints: &[Waypoint], legs: &[Leg], settings: &ProfileSe
         cap[k] = cap[k].min(c);
         cap[k + 1] = cap[k + 1].min(c);
     }
-    let corners = if settings.corner_slowdown { apply_corner_caps(&nodes, &cum, &mut cap, settings) } else { 0 };
+    let rings = apply_roundabout_caps(&nodes, &cum, &mut cap, legs, &wp_node);
+    let turns = if settings.corner_slowdown {
+        let modes: Vec<&str> = node_leg.iter().map(|&i| legs[i].mode.as_str()).collect();
+        apply_turn_caps(&nodes, &cum, &mut cap, &modes, settings)
+    } else {
+        Vec::new()
+    };
+    let corners = turns.iter().filter(|t| t.slowed).count();
 
     let mut pinned: Vec<(usize, f64)> = Vec::new();
     for (i, wp) in waypoints.iter().enumerate() {
         let k = wp_node[i];
-        let v = if wp.dwell_s > 0.0 {
+        let v = if wp.dwell_s > 0.0 || wp.hold {
             Some(0.0)
         } else if let Some(s) = wp.speed_kmh {
             Some(s * KMH)
@@ -430,55 +584,215 @@ pub fn build_timeline(waypoints: &[Waypoint], legs: &[Leg], settings: &ProfileSe
     let mut tl = Timeline::new(segments, wp_node.iter().map(|&k| node_arrival[k]).collect(), warnings);
     tl.dwell_total = dwell_at.iter().sum();
     tl.corners_slowed = corners;
+    tl.turns = turns;
+    tl.roundabouts = rings;
+    tl.holds = waypoints.iter().enumerate().filter(|(_, w)| w.hold).map(|(i, _)| (node_arrival[wp_node[i]], i)).collect();
+    tl.holds.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     Ok(tl)
 }
 
-/// Heading change between the path ~15 m before and after a node gives a turn radius
-/// R ~ L / angle; a comfortable lateral acceleration a gives v = sqrt(a * R).
-fn apply_corner_caps(nodes: &[LatLon], cum: &[f64], cap: &mut [f64], s: &ProfileSettings) -> usize {
-    let n = nodes.len();
-    if n < 3 {
-        return 0;
+// ---------------------------------------------------------------- cornering physics (same model as profile.py)
+const G: f64 = 9.81;
+
+/// What a vehicle can do in a turn (see profile.py for the meaning of each value).
+/// * a_lat_low / a_lat_high: comfortable sideways acceleration at walking pace and at v_high m/s and
+///   above, falling linearly in between;
+/// * grip × safety: share of the tyre friction a careful driver uses (the turn speed never exceeds
+///   sqrt(grip · safety · g · R));
+/// * min_radius: tightest circle it can drive (a U-turn is planned on it);
+/// * cut_junction / cut_lane: how far the driven line may stray inside the drawn one at a junction
+///   drawn as a sharp corner / on a curve drawn as a curve; junctions scale with road speed / v_typical.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Vehicle {
+    pub a_lat_low: f64,
+    pub a_lat_high: f64,
+    pub v_high: f64,
+    pub grip: f64,
+    pub safety: f64,
+    pub min_radius: f64,
+    pub cut_junction: f64,
+    pub cut_lane: f64,
+    pub v_typical: f64,
+}
+
+pub const CAR: Vehicle = Vehicle { a_lat_low: 2.8, a_lat_high: 1.8, v_high: 30.0, grip: 0.7, safety: 0.55, min_radius: 5.5, cut_junction: 4.0, cut_lane: 1.0, v_typical: 13.9 };
+pub const BIKE: Vehicle = Vehicle { a_lat_low: 2.4, a_lat_high: 2.0, v_high: 10.0, grip: 0.6, safety: 0.5, min_radius: 2.5, cut_junction: 1.5, cut_lane: 0.5, v_typical: 5.0 };
+pub const FOOT: Vehicle = Vehicle { a_lat_low: 1.6, a_lat_high: 1.6, v_high: 3.0, grip: 0.6, safety: 0.6, min_radius: 0.5, cut_junction: 0.4, cut_lane: 0.2, v_typical: 1.4 };
+pub const SEA: Vehicle = Vehicle { a_lat_low: 0.6, a_lat_high: 0.4, v_high: 15.0, grip: 1.0, safety: 1.0, min_radius: 40.0, cut_junction: 40.0, cut_lane: 15.0, v_typical: 10.0 };
+const JUNCTION_LEN: f64 = 8.0; // a bend drawn shorter than this many cut_junction lengths counts as a junction
+const TURN_MIN_DEG: f64 = 10.0; // gentler bends slow nobody down
+const TURN_NOISE_DEG: f64 = 0.3; // smaller heading changes at a node are digitising noise
+const TURN_WOBBLE_DEG: f64 = 4.0; // a small kink the other way inside a bend doesn't end it
+const TURN_GAP_S: f64 = 1.0; // a bend continues across straight bits shorter than this much travel ...
+const TURN_GAP_MIN_M: f64 = 10.0;
+const TURN_GAP_MAX_M: f64 = 40.0; // ... clamped to these lengths
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Turn {
+    /// distance along the route at the middle of the bend (m)
+    pub s: f64,
+    /// how far the heading turns; positive = to the right (clockwise)
+    pub angle_deg: f64,
+    /// radius of the arc the vehicle drives
+    pub radius_m: f64,
+    /// speed it takes the bend at
+    pub speed_kmh: f64,
+    /// whether that is slower than the road or leg allows there
+    pub slowed: bool,
+}
+
+/// The vehicle whose limits apply on a leg. Straight legs guess it from the speed; very fast ones
+/// (trains, planes between far-apart checkpoints) are not slowed for their corners.
+pub fn vehicle_for(mode: &str, cruise_ms: f64) -> Option<Vehicle> {
+    match mode {
+        "car" => Some(CAR),
+        "bike" => Some(BIKE),
+        "foot" => Some(FOOT),
+        "sea" => Some(SEA),
+        _ => {
+            let kmh = cruise_ms * 3.6;
+            if kmh <= 8.0 {
+                Some(FOOT)
+            } else if kmh <= 30.0 {
+                Some(BIKE)
+            } else if kmh <= 150.0 {
+                Some(CAR)
+            } else {
+                None
+            }
+        }
     }
-    let look = 15.0;
-    let a_lat = s.lateral_accel_ms2.max(0.2);
-    let v_min = s.min_corner_kmh / 3.6;
-    let mut count = 0;
-    let mut in_corner = false;
-    for k in 1..n - 1 {
-        let j = match cum.partition_point(|&x| x <= cum[k] - look) {
-            0 => {
-                in_corner = false;
+}
+
+/// Fastest speed (m/s) at which the vehicle takes a turn of this radius comfortably and safely:
+/// v = sqrt(a_lat(v) · R), a_lat falling linearly from a_lat_low to a_lat_high at v_high, capped by grip.
+pub fn turn_speed(veh: &Vehicle, radius_m: f64, a_scale: f64) -> f64 {
+    let r = radius_m.max(veh.min_radius);
+    let (a0, a1) = (veh.a_lat_low * a_scale, veh.a_lat_high * a_scale);
+    let k = (a0 - a1) / veh.v_high;
+    // v² = (a0 - k v) R  ->  v² + kR v - a0 R = 0, valid while v <= v_high
+    let mut v = (-k * r + ((k * r).powi(2) + 4.0 * a0 * r).sqrt()) / 2.0;
+    if v > veh.v_high {
+        v = (a1 * r).sqrt();
+    }
+    v.min((veh.grip * veh.safety * G * r).sqrt())
+}
+
+/// Radius of the arc driven through a bend of `theta_deg` drawn over `length` m: the drawn radius,
+/// straightened by up to `e` m inside the drawn line (cut_junction for a corner drawn sharp, blending to
+/// cut_lane for a drawn curve), fitted into the straight road available either side (`room`), and never
+/// tighter than the turning circle.
+pub fn driven_radius(veh: &Vehicle, theta_deg: f64, length: f64, v_ref: f64, room: f64) -> f64 {
+    let th = theta_deg.min(179.9).to_radians();
+    let r_drawn = length / theta_deg.to_radians();
+    let junction = (1.0 - length / (JUNCTION_LEN * veh.cut_junction)).clamp(0.0, 1.0);
+    let scale = (v_ref / veh.v_typical).clamp(0.6, 2.0);
+    let e = (veh.cut_lane + (veh.cut_junction - veh.cut_lane) * junction) * scale;
+    let sec_1 = 1.0 / (th / 2.0).cos() - 1.0;
+    let r_cut = r_drawn + e / sec_1;
+    let r_fit = (room + length / 2.0) / (th / 2.0).tan();
+    veh.min_radius.max(r_drawn).max(r_cut.min(r_fit))
+}
+
+/// Bends along the path as (first node, last node, signed heading change in degrees).
+fn bends(nodes: &[LatLon], cum: &[f64], gap_m: &dyn Fn(usize) -> f64) -> Vec<(usize, usize, f64)> {
+    let n = nodes.len();
+    let mut delta = vec![0.0; n];
+    let mut prev_b: Option<f64> = None;
+    for k in 0..n.saturating_sub(1) {
+        if cum[k + 1] - cum[k] <= 0.05 {
+            continue;
+        }
+        let b = geo::bearing_deg(nodes[k], nodes[k + 1]);
+        if let Some(p) = prev_b {
+            delta[k] = (b - p + 540.0).rem_euclid(360.0) - 180.0;
+        }
+        prev_b = Some(b);
+    }
+    let mut out = Vec::new();
+    let mut cur: Option<(usize, usize, f64, f64)> = None; // first, last, sum, sign
+    for k in 1..n.saturating_sub(1) {
+        let d = delta[k];
+        if d.abs() < TURN_NOISE_DEG {
+            continue;
+        }
+        let sign = if d > 0.0 { 1.0 } else { -1.0 };
+        if let Some(c) = cur.as_mut() {
+            if cum[k] - cum[c.1] <= gap_m(k) && (sign == c.3 || d.abs() <= TURN_WOBBLE_DEG) {
+                c.1 = k;
+                c.2 += d;
                 continue;
             }
-            p => p - 1,
-        };
-        let m = cum.partition_point(|&x| x < cum[k] + look);
-        if m >= n || j == k || m == k {
-            in_corner = false;
-            continue;
+            out.push((c.0, c.1, c.2));
         }
-        if cum[k] - cum[j] < 1.0 || cum[m] - cum[k] < 1.0 {
-            continue;
-        }
-        let b1 = geo::bearing_deg(nodes[j], nodes[k]);
-        let b2 = geo::bearing_deg(nodes[k], nodes[m]);
-        let theta = ((b2 - b1 + 180.0).rem_euclid(360.0) - 180.0).abs().to_radians();
-        if theta < 20f64.to_radians() {
-            in_corner = false;
-            continue;
-        }
-        let span = ((cum[k] - cum[j]) + (cum[m] - cum[k])) / 2.0;
-        let v = (a_lat * span / theta).sqrt().max(v_min);
-        if v < cap[k] {
-            cap[k] = v;
-            if !in_corner {
-                count += 1;
-            }
-            in_corner = true;
-        }
+        cur = Some((k, k, d, sign));
     }
-    count
+    if let Some(c) = cur {
+        out.push((c.0, c.1, c.2));
+    }
+    out
+}
+
+/// Find every bend and cap the speed through its driven arc at what its radius and the vehicle allow.
+/// The backward pass then brakes in time for it, the forward pass accelerates out of it.
+fn apply_turn_caps(nodes: &[LatLon], cum: &[f64], cap: &mut [f64], modes: &[&str], s: &ProfileSettings) -> Vec<Turn> {
+    let n = nodes.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let reference: Vec<f64> = cap.iter().map(|c| if c.is_finite() { *c } else { 0.0 }).collect();
+    let gap = |k: usize| (TURN_GAP_S * reference[k]).clamp(TURN_GAP_MIN_M, TURN_GAP_MAX_M);
+    let found: Vec<(usize, usize, f64)> = bends(nodes, cum, &gap).into_iter().filter(|b| b.2.abs() >= TURN_MIN_DEG).collect();
+    let a_scale = if s.road_aware { s.speed_factor * s.speed_factor } else { 1.0 };
+    let total = *cum.last().unwrap();
+    let floor = s.min_corner_kmh / 3.6;
+    let mut turns = Vec::new();
+    for (j, &(k0, k1, ang)) in found.iter().enumerate() {
+        let v_ref = reference[k0..=k1].iter().cloned().fold(f64::INFINITY, f64::min);
+        let Some(mut veh) = vehicle_for(modes[k0], v_ref) else { continue };
+        if v_ref <= 0.0 {
+            continue;
+        }
+        if let Some(a0) = s.lateral_accel_ms2.filter(|a| *a > 0.0) {
+            veh.a_lat_high = a0 * veh.a_lat_high / veh.a_lat_low;
+            veh.a_lat_low = a0;
+        }
+        // straight road available before and after: up to halfway to the neighbouring bends
+        let before = if j > 0 { (cum[k0] - cum[found[j - 1].1]) / 2.0 } else { cum[k0] };
+        let after = if j + 1 < found.len() { (cum[found[j + 1].0] - cum[k1]) / 2.0 } else { total - cum[k1] };
+        let room = before.min(after).max(0.0);
+        let theta = ang.abs();
+        let length = cum[k1] - cum[k0];
+        let radius = driven_radius(&veh, theta, length, v_ref, room);
+        let v = turn_speed(&veh, radius, a_scale).max(floor.min(v_ref));
+        // the limit holds along the whole driven arc (at least the drawn bend)
+        let mid = (cum[k0] + cum[k1]) / 2.0;
+        let half = (length / 2.0).max(radius * theta.to_radians() / 2.0);
+        let lo = cum.partition_point(|&x| x < mid - half);
+        let hi = cum.partition_point(|&x| x <= mid + half);
+        let mut slowed = false;
+        for c in cap.iter_mut().take(hi).skip(lo) {
+            if v < *c - 1e-9 {
+                *c = v;
+                slowed = true;
+            }
+        }
+        turns.push(Turn {
+            s: mid,
+            angle_deg: (ang * 10.0).round() / 10.0,
+            radius_m: (radius * 10.0).round() / 10.0,
+            speed_kmh: (v.min(v_ref) * 3.6 * 10.0).round() / 10.0,
+            slowed,
+        });
+    }
+    turns
+}
+
+fn sharpest(turns: &[Turn]) -> serde_json::Value {
+    match turns.iter().filter(|t| t.slowed).min_by(|a, b| a.speed_kmh.partial_cmp(&b.speed_kmh).unwrap_or(std::cmp::Ordering::Equal)) {
+        Some(t) => serde_json::json!({"angle_deg": t.angle_deg.abs(), "radius_m": t.radius_m, "speed_kmh": t.speed_kmh, "distance_m": round1(t.s)}),
+        None => serde_json::Value::Null,
+    }
 }
 
 /// Road-aware timeline whose moving time lands near a routing service's ETA (a reference,
@@ -603,6 +917,160 @@ mod tests {
         let target = tl.duration() * 1.25;
         let (tl2, f) = build_matching_eta(&[Waypoint::at(A), Waypoint::at(b)], &[leg], &s, target).unwrap();
         assert!(f < 1.0 && ((tl2.duration() - target) / target).abs() < 0.04);
+    }
+
+    fn corner(hold_at: Option<usize>, dwell: f64) -> Timeline {
+        let b = geo::destination(A, 90.0, 200.0);
+        let c = geo::destination(b, 0.0, 200.0);
+        let mut w = vec![Waypoint::at(A), Waypoint::at(b), Waypoint::at(c)];
+        if let Some(i) = hold_at {
+            w[i].hold = true;
+        }
+        w[1].dwell_s = dwell;
+        let s = ProfileSettings { default_cruise_kmh: 36.0, accel_ms2: 2.0, decel_ms2: 2.0, ..Default::default() };
+        build_timeline(&w, &[Leg::new(vec![A, b]), Leg::new(vec![b, c])], &s).unwrap()
+    }
+
+    #[test]
+    fn hold_checkpoint_stops_there() {
+        let tl = corner(Some(1), 0.0);
+        assert_eq!(tl.holds.len(), 1);
+        let (h, i) = tl.holds[0];
+        assert_eq!(i, 1);
+        assert!((h - tl.waypoint_times[1]).abs() < 1e-9);
+        let p = tl.at(h);
+        assert!(p.speed_ms.abs() < 1e-6);
+        assert!(geo::haversine_m((p.lat, p.lon), geo::destination(A, 90.0, 200.0)) < 0.05);
+        assert!((p.course - 90.0).abs() < 1.0, "stopped: faces the way it arrived, got {}", p.course);
+        assert_eq!(tl.next_hold(0.0, true), Some((h, 1)));
+        assert_eq!(tl.next_hold(h, true), None);
+        assert_eq!(tl.next_hold(h + 1.0, false), Some((h, 1)));
+        assert_eq!(tl.summary()["holds"], 1);
+        let tl2 = corner(Some(1), 10.0); // the wait runs after the hold
+        assert!((tl2.holds[0].0 - tl2.waypoint_times[1]).abs() < 1e-9);
+        assert_eq!(tl2.at(tl2.holds[0].0 + 5.0).speed_ms, 0.0);
+    }
+
+    #[test]
+    fn heading_turns_smoothly_through_a_corner() {
+        let tl = corner(None, 0.0);
+        let tb = tl.waypoint_times[1];
+        let p = tl.at(tb);
+        assert!(p.speed_ms > 5.0 && p.course > 20.0 && p.course < 70.0, "{p:?}");
+        assert!((tl.at(tb * 0.5).course - 90.0).abs() < 0.5);
+        assert!((tl.at((tb + tl.duration()) / 2.0).course - 0.0).abs() < 0.5);
+        let c: Vec<f64> = [-1.0, -0.5, 0.0, 0.5, 1.0].iter().map(|dt| tl.at(tb + dt).course).collect();
+        let d: Vec<f64> = c.windows(2).map(|w| ((w[1] - w[0] + 540.0).rem_euclid(360.0) - 180.0).abs()).collect();
+        assert!(d.iter().cloned().fold(0.0, f64::max) < 60.0);
+        assert!((d.iter().sum::<f64>() - 90.0).abs() < 3.0);
+        assert!((tl.at(0.0).course - 90.0).abs() < 0.5); // at the start: the way it leaves
+    }
+
+    fn junction(angle: f64, cruise: f64, mode: &str, len: f64) -> (Timeline, LatLon) {
+        let corner = geo::destination(A, 90.0, len);
+        let end = geo::destination(corner, 90.0 + angle, len);
+        let mut leg = Leg::new(vec![A, corner, end]);
+        leg.cruise_kmh = Some(cruise);
+        leg.mode = mode.into();
+        let s = ProfileSettings { accel_ms2: 2.0, decel_ms2: 2.0, corner_slowdown: true, ..Default::default() };
+        (build_timeline(&[Waypoint::at(A), Waypoint::at(end)], &[leg], &s).unwrap(), corner)
+    }
+
+    fn min_speed_near(tl: &Timeline, p: LatLon, within: f64) -> f64 {
+        tl.sample(0.25, 0.0).iter().filter(|q| geo::haversine_m((q.lat, q.lon), p) < within).map(|q| q.speed_ms).fold(f64::INFINITY, f64::min) * 3.6
+    }
+
+    #[test]
+    fn turn_speed_follows_radius_and_vehicle() {
+        let kmh = |v: f64| v * 3.6;
+        assert!((15.0..22.0).contains(&kmh(turn_speed(&CAR, 9.7, 1.0))));
+        assert!((11.0..16.0).contains(&kmh(turn_speed(&CAR, 0.0, 1.0)))); // U-turn on the turning circle
+        assert!((19.0..27.0).contains(&kmh(turn_speed(&CAR, 15.0, 1.0)))); // roundabout
+        assert!((78.0..92.0).contains(&kmh(turn_speed(&CAR, 300.0, 1.0)))); // motorway curve
+        assert!(kmh(turn_speed(&CAR, 600.0, 1.0)) > 115.0);
+        assert!((7.0..12.0).contains(&kmh(turn_speed(&BIKE, 3.0, 1.0))));
+        assert!((3.5..5.0).contains(&kmh(turn_speed(&FOOT, 0.83, 1.0))));
+        for r in [5.0, 50.0, 500.0, 5000.0] {
+            assert!(turn_speed(&CAR, r, 1.0) <= (CAR.grip * CAR.safety * G * r).sqrt() + 1e-9);
+        }
+        assert!(turn_speed(&CAR, 30.0, 1.44) > turn_speed(&CAR, 30.0, 1.0));
+    }
+
+    #[test]
+    fn junctions_curves_and_vehicles() {
+        let (tl, c) = junction(90.0, 50.0, "car", 400.0);
+        assert_eq!((tl.corners_slowed, tl.turns.len()), (1, 1));
+        let t = &tl.turns[0];
+        assert!((t.angle_deg - 90.0).abs() < 1.0 && t.radius_m > 6.0 && t.radius_m < 14.0, "{t:?}");
+        let v = min_speed_near(&tl, c, 15.0);
+        assert!((14.0..23.0).contains(&v), "{v}");
+        assert_eq!(tl.summary()["turns"], 1);
+        assert!(tl.summary()["sharpest_turn"]["speed_kmh"].as_f64().unwrap() < 23.0);
+        // faster roads have bigger junctions
+        let slow = junction(90.0, 30.0, "car", 400.0).0.turns[0].clone();
+        let fast = junction(90.0, 80.0, "car", 400.0).0.turns[0].clone();
+        assert!(slow.radius_m < t.radius_m && t.radius_m < fast.radius_m);
+        // gentle kinks are not turns; shallow angles are taken faster
+        assert!(junction(6.0, 50.0, "car", 400.0).0.turns.is_empty());
+        assert!(junction(45.0, 50.0, "car", 400.0).0.turns[0].speed_kmh > t.speed_kmh + 10.0);
+        // the leg mode picks the vehicle; a plane on a straight leg is not slowed
+        assert!(junction(90.0, 18.0, "bike", 400.0).0.turns[0].speed_kmh < 12.0);
+        let walk = junction(90.0, 5.0, "foot", 400.0).0.turns[0].speed_kmh;
+        assert!(walk > 3.0 && walk < 5.0);
+        let (plane, pc) = junction(90.0, 850.0, "straight", 40000.0);
+        assert!(plane.turns.is_empty() && min_speed_near(&plane, pc, 400.0) > 800.0);
+        assert_eq!(vehicle_for("straight", 50.0 / 3.6), Some(CAR));
+        // a drawn curve keeps (about) its own radius
+        let mut pts = vec![A, geo::destination(A, 90.0, 400.0)];
+        let centre = geo::destination(pts[1], 180.0, 120.0);
+        for i in 1..=19 {
+            pts.push(geo::destination(centre, 90.0 * i as f64 / 19.0, 120.0));
+        }
+        let last = *pts.last().unwrap();
+        pts.push(geo::destination(last, 180.0, 400.0));
+        let end = *pts.last().unwrap();
+        let mut leg = Leg::new(pts);
+        leg.cruise_kmh = Some(90.0);
+        leg.mode = "car".into();
+        let s = ProfileSettings { accel_ms2: 2.0, decel_ms2: 2.0, corner_slowdown: true, ..Default::default() };
+        let tl = build_timeline(&[Waypoint::at(A), Waypoint::at(end)], &[leg], &s).unwrap();
+        assert_eq!(tl.turns.len(), 1);
+        assert!((tl.turns[0].radius_m - 120.0).abs() < 18.0, "{:?}", tl.turns[0]);
+        assert!((tl.turns[0].speed_kmh - turn_speed(&CAR, tl.turns[0].radius_m, 1.0) * 3.6).abs() < 0.2);
+    }
+
+    #[test]
+    fn roundabouts_are_driven_at_roundabout_speed() {
+        let entry = geo::destination(A, 90.0, 400.0);
+        let centre = geo::destination(entry, 0.0, 20.0);
+        let ring: Vec<LatLon> = (0..=24).map(|i| geo::destination(centre, (180.0 - 270.0 * i as f64 / 24.0).rem_euclid(360.0), 20.0)).collect();
+        let out = geo::destination(*ring.last().unwrap(), 0.0, 400.0);
+        let mut pts = vec![A, entry];
+        pts.extend_from_slice(&ring[1..]);
+        pts.push(out);
+        let mut cum = vec![0.0];
+        for w in pts.windows(2) {
+            cum.push(cum.last().unwrap() + geo::haversine_m(w[0], w[1]));
+        }
+        let (s0, s1) = (cum[1], cum[ring.len()]);
+        let s = ProfileSettings { default_cruise_kmh: 70.0, accel_ms2: 2.0, decel_ms2: 2.0, ..Default::default() };
+        let mut leg = Leg::new(pts);
+        leg.mode = "car".into();
+        leg.cruise_kmh = Some(70.0);
+        let plain = build_timeline(&[Waypoint::at(A), Waypoint::at(out)], &[leg.clone()], &s).unwrap();
+        leg.roundabouts = vec![(s0, s1)];
+        let tl = build_timeline(&[Waypoint::at(A), Waypoint::at(out)], &[leg], &s).unwrap();
+        let on = |t: &Timeline| t.sample(0.2, 0.0).into_iter().filter(|p| p.distance_m > s0 + 1.0 && p.distance_m < s1 - 1.0).map(|p| p.speed_ms * 3.6).collect::<Vec<_>>();
+        assert!(on(&plain).iter().cloned().fold(0.0, f64::max) > 60.0);
+        let ring_v = on(&tl);
+        let (lo, hi) = (ring_v.iter().cloned().fold(f64::INFINITY, f64::min), ring_v.iter().cloned().fold(0.0, f64::max));
+        assert_eq!(tl.roundabouts.len(), 1);
+        let (radius, kmh) = tl.roundabouts[0];
+        assert!((radius - 20.0).abs() < 3.0 && kmh > 20.0 && kmh < 30.0, "{radius} {kmh}");
+        assert!(hi <= kmh + 0.5 && hi - lo < 1.0, "{lo}..{hi}");
+        assert!((roundabout_speed("car", 500.0).unwrap() * 3.6 - 40.0).abs() < 1e-9);
+        assert!(roundabout_speed("car", 5.0).unwrap() * 3.6 < 18.0);
+        assert!(roundabout_speed("foot", 20.0).is_none());
     }
 
     #[test]

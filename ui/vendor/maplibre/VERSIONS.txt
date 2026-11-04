@@ -1,0 +1,3 @@
+maplibre-gl 5.24.0 (dist/maplibre-gl.js, dist/maplibre-gl.css; source-map comment removed)
+@maplibre/maplibre-gl-leaflet 0.1.4 (dist/leaflet-maplibre-gl.js)
+Both from npm. Loaded on demand by app.js for the OpenFreeMap vector map.

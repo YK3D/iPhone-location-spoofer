@@ -13,7 +13,24 @@ Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk 
   <a href="TERMS.md">Terms</a>
 </p>
 
+<p align="center"><img src="docs/screenshots/route-alternatives.webp" width="900" alt="Route tab: the main route and three alternatives, labelled on the map with their extra time"></p>
+
 > **Use it responsibly.** Location simulation is meant for testing your own apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the [Terms of Use](TERMS.md).
+
+## Screenshots
+
+| | |
+|---|---|
+| <img src="docs/screenshots/teleport.webp" alt="Teleport tab with a picked point and the spoofed position on the map"> | <img src="docs/screenshots/playback-hud.webp" alt="Playback waiting at a hold checkpoint, with the live speed and heading on the map"> |
+| **Teleport:** pick a point, see the jump distance, teleport. | **Playback:** waiting at a "hold until Continue" checkpoint; the map shows live speed and heading. |
+| <img src="docs/screenshots/build-progress.png" width="320" alt="Build route button showing its progress and current step"> | <img src="docs/screenshots/drag-reorder.png" width="320" alt="A checkpoint being dragged to a new place in the list"> |
+| **Building a route:** the button shows each step and how far along it is. | **Reordering:** drag a checkpoint by its handle; the others slide out of the way. |
+| <img src="docs/screenshots/context-menu.png" width="300" alt="Right-click menu on a checkpoint: Delete, Insert after, Set wait, Make start"> | |
+| **Checkpoint menu:** right-click a checkpoint on the map or in the list. | |
+
+<p align="center"><img src="docs/screenshots/settings.webp" width="720" alt="Settings window with the theme picker and the map theme"></p>
+
+The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/capture.js) with the default look (Graphite theme, dark OpenFreeMap map).
 
 ## Which edition should I use?
 
@@ -31,27 +48,33 @@ Both editions have the same interface and features. They update themselves from 
 
 ## Features
 
-* **Map:** streets, satellite and topographic views. Click to pick a point; right-click to jump there instantly.
+* **Map:** a sharp vector map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps; pick one in *Settings › Appearance* or with the map's layer button. Click to pick a point; right-click to jump there instantly.
 * **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
 * **Routes:**
-  * add checkpoints on the map;
+  * add checkpoints on the map, then drag them on the map or in the list to move and reorder them;
+  * drag the route line to add a checkpoint there (the route rebuilds itself), double-click a checkpoint to delete it, or right-click it for **Delete**, **Insert after**, **Set wait** and **Make start**;
+  * a checkpoint can **hold until you press Continue** (or **N**), for example to wait at a door until your test is ready;
   * each leg follows roads, cycle paths, footpaths, sea lanes or a straight line, routed by OpenStreetMap or by Google with your own API key;
   * set a speed per leg, an exact speed at chosen checkpoints, and wait times;
   * acceleration and braking change speed smoothly;
-  * the route line is coloured by speed, with a speed chart.
+  * ask for up to three alternative routes, labelled on the map with their extra time, and pick one in the list or on the map;
+  * the Build route button shows each step as it happens (routing each leg, speed limits, turns, ETA) and how far along it is; Cancel (or Esc) stops it, and changing the route or its settings cancels it by itself;
+  * the route line is outlined so it stands out from the roads, and coloured by speed in a smooth gradient, with a speed chart;
+  * hover a checkpoint in the list to highlight it on the map.
+* **Roundabouts:** always driven at a normal roundabout speed for their size (about 20–40 km/h by car), whatever the road's own speed.
 * **Road-aware driving (experimental):**
-  * follows each road's typical speed and public speed limits;
-  * slows for bends, roundabouts and U-turns, and on private or gated roads;
+  * follows each road's typical speed, and optionally public speed limits (not recommended: the public service is slow and often incomplete);
+  * takes every bend at the speed its radius allows for the vehicle (cars, bikes, walkers and boats differ), and slows on private or gated roads;
   * aims for the same trip time (ETA) as Google Maps or OpenStreetMap, shown side by side.
 * **GPX files:** drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes can be exported as GPX.
-* **Playback:** play, pause, seek, 0.25×–30× speed, loop or back-and-forth, and optional GPS jitter.
+* **Playback:** play, pause, seek, 0.25×–30× speed, loop or back-and-forth with an optional number of laps, optional GPS jitter, and a live speed and heading display on the map.
 * **Joystick:** walk or drive live with W A S D, the arrow keys or the on-screen pad.
 * **Stop spoofing:** one click returns the iPhone to its real GPS and shows your computer's real location on the map.
 * **Made to be comfortable:**
-  * 17 colour themes;
+  * 17 colour themes (Graphite by default) and a dark or light map;
   * folding sections, and a side menu you can resize or hide;
   * single-key keyboard shortcuts that you can change (press **H** to see them);
-  * a setup guide on first run, and **(i)** buttons that explain every tool;
+  * a setup guide on first run, and help icons that explain every tool;
   * favourites, saved routes, and backup or restore.
 
 ## Getting started
@@ -80,6 +103,8 @@ Both editions have the same interface and features. They update themselves from 
 | "Tap Trust on the iPhone" | Unlock the phone, tap Trust and enter the passcode |
 | "Developer Mode is off" | Device tools › Reveal Developer Mode, then turn it on in Settings on the iPhone |
 | Location doesn't change in an app | Check Apple Maps first, then fully close and reopen the app |
+| A speedometer app on the iPhone shows 0, or the heading arrow doesn't turn | Apple's location simulation only carries a position, so iOS reports no speed or course for it. Apps that work out speed from movement (navigation apps, most games) are fine. The app's own map shows the simulated speed and heading |
+| "My real location" says Windows blocked it | Turn on *Settings › Privacy & security › Location* and "Let desktop apps access your location" (the message has a button for it) |
 | Location stays wrong after you finish | Press **Stop spoofing**, or restart the iPhone |
 | The app shows an older version number | An older copy is still running in the background. Close every Location Spoofer window, end any **location-spoofer** or **LocationSpooferStandalone** task in Task Manager, then open the new file. Version 0.2.4 and newer close older copies by themselves |
 

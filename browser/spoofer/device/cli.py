@@ -169,7 +169,7 @@ class CliDriver(DeviceDriver):
             if isinstance(d, dict)
         ]
 
-    async def connect(self, udid: Optional[str] = None) -> DeviceInfo:
+    async def connect(self, udid: Optional[str] = None, connection: str = "auto") -> DeviceInfo:
         devices = await self.list_devices()
         if not devices:
             raise DeviceError("No iPhone found. Plug it in, unlock it, tap Trust and keep the Apple Devices app open.")
