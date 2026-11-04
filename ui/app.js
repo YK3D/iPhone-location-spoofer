@@ -52,8 +52,8 @@ async function api(path, opts = {}) {
 
 // POST that streams NDJSON progress lines ({type: "progress" | "result" | "error"}); returns the result.
 // A plain JSON answer (a validation error, or a server without streaming) is handled like api().
-async function apiStream(path, body, onProgress) {
-  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+async function apiStream(path, body, onProgress, signal) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
   const ct = r.headers.get("content-type") || "";
   if (!ct.includes("ndjson") || !r.body) {
     const data = ct.includes("json") ? await r.json() : await r.text();
@@ -281,6 +281,7 @@ function wireInfoButtons(root = document) {
   root.querySelectorAll("button.info:not([data-wired])").forEach((b) => {
     b.dataset.wired = "1";
     b.setAttribute("aria-label", "More information");
+    b.replaceChildren(svgIcon("help"));
     b.addEventListener("mouseenter", () => showTip(b));
     b.addEventListener("focus", () => showTip(b));
     b.addEventListener("mouseleave", hideTip);
@@ -289,6 +290,138 @@ function wireInfoButtons(root = document) {
   });
 }
 document.addEventListener("scroll", hideTip, true);
+
+// ------------------------------------------------------------------ dropdowns
+// Every <select> gets a button and an animated list. The native select stays in the page (hidden) and
+// keeps the value, so the rest of the code and the change events work unchanged.
+let selOpen = null; // { sel, pop, items, active }
+function selectLabel(sel) {
+  const lab = sel.closest("label");
+  return sel.getAttribute("aria-label") || (lab ? lab.firstChild && lab.firstChild.textContent.trim() : "") || "Choose";
+}
+function enhanceSelect(sel) {
+  if (sel._enh || sel.multiple) return;
+  sel._enh = true;
+  const value = el("span", { class: "select-value" });
+  const btn = el("button", { type: "button", class: `select-btn ${sel.className}`.trim(), "aria-haspopup": "listbox", "aria-expanded": "false" },
+    value, svgIcon("chevron", "ico select-chev"));
+  btn.setAttribute("aria-label", selectLabel(sel));
+  if (sel.title) btn.title = sel.title;
+  sel.after(btn);
+  sel.classList.add("select-native");
+  sel.tabIndex = -1;
+  sel.setAttribute("aria-hidden", "true");
+  const sync = () => {
+    const o = sel.options[sel.selectedIndex];
+    value.textContent = o ? o.textContent : "";
+    btn.disabled = sel.disabled;
+    if (sel.title && btn.title !== sel.title) btn.title = sel.title;
+  };
+  // code sets .value / .selectedIndex directly: keep the button's label in step
+  for (const prop of ["value", "selectedIndex"]) {
+    const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, prop);
+    Object.defineProperty(sel, prop, { configurable: true, get() { return d.get.call(this); }, set(v) { d.set.call(this, v); sync(); } });
+  }
+  new MutationObserver(sync).observe(sel, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ["disabled", "title"] });
+  sel.addEventListener("change", sync);
+  sel.addEventListener("focus", () => btn.focus());
+  btn.addEventListener("click", () => (selOpen && selOpen.sel === sel ? closeSelect() : openSelect(sel, btn)));
+  btn.addEventListener("keydown", (e) => {
+    if (selOpen && selOpen.sel === sel) return;
+    if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) { e.preventDefault(); openSelect(sel, btn); }
+  });
+  sync();
+}
+function openSelect(sel, btn) {
+  closeSelect(true);
+  const opts = [...sel.options];
+  const pop = el("div", { class: "select-pop", role: "listbox", tabIndex: -1 });
+  const items = opts.map((o, i) => {
+    const it = el("div", { class: "select-opt", role: "option", "aria-selected": String(i === sel.selectedIndex) },
+      el("span", { textContent: o.textContent }), svgIcon("check", "ico select-tick"));
+    if (o.disabled) it.classList.add("disabled");
+    it.addEventListener("pointerenter", () => setActive(i));
+    it.addEventListener("click", () => { if (!o.disabled) chooseOption(i); });
+    pop.append(it);
+    return it;
+  });
+  document.body.append(pop);
+  const r = btn.getBoundingClientRect();
+  pop.style.minWidth = `${r.width}px`;
+  const ph = Math.min(pop.scrollHeight, 300);
+  const below = innerHeight - r.bottom - 8;
+  const up = below < ph && r.top > below;
+  pop.style.left = `${Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8))}px`;
+  pop.style.top = `${up ? r.top - ph - 4 : r.bottom + 4}px`;
+  pop.style.maxHeight = `${Math.max(120, up ? r.top - 12 : below)}px`;
+  pop.classList.toggle("up", up);
+  btn.setAttribute("aria-expanded", "true");
+  btn.classList.add("open");
+  selOpen = { sel, btn, pop, items, active: -1, typed: "", typedAt: 0 };
+  setActive(Math.max(0, sel.selectedIndex));
+  const cur = items[sel.selectedIndex];
+  if (cur) cur.scrollIntoView({ block: "nearest" });
+}
+function setActive(i) {
+  if (!selOpen) return;
+  selOpen.items.forEach((it, k) => it.classList.toggle("active", k === i));
+  selOpen.active = i;
+}
+function chooseOption(i) {
+  const { sel, btn } = selOpen;
+  closeSelect();
+  btn.focus();
+  if (i === sel.selectedIndex) return;
+  sel.selectedIndex = i;
+  sel.dispatchEvent(new Event("input", { bubbles: true }));
+  sel.dispatchEvent(new Event("change", { bubbles: true }));
+}
+function closeSelect(instant = false) {
+  if (!selOpen) return;
+  const { pop, btn } = selOpen;
+  selOpen = null;
+  btn.setAttribute("aria-expanded", "false");
+  btn.classList.remove("open");
+  if (instant || reducedMotion()) { pop.remove(); return; }
+  pop.classList.add("closing");
+  setTimeout(() => pop.remove(), 120);
+}
+document.addEventListener("keydown", (e) => {
+  if (!selOpen) return;
+  const n = selOpen.items.length;
+  let i = selOpen.active;
+  const step = (d) => { do { i = (i + d + n) % n; } while (selOpen.sel.options[i].disabled && i !== selOpen.active); setActive(i); selOpen.items[i].scrollIntoView({ block: "nearest" }); };
+  if (e.key === "ArrowDown") step(1);
+  else if (e.key === "ArrowUp") step(-1);
+  else if (e.key === "Home") { setActive(0); }
+  else if (e.key === "End") { setActive(n - 1); }
+  else if (e.key === "Enter" || e.key === " ") { if (i >= 0) chooseOption(i); }
+  else if (e.key === "Escape" || e.key === "Tab") { closeSelect(); if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); } return; }
+  else if (e.key.length === 1) {
+    // type to jump to an option
+    const now = performance.now();
+    selOpen.typed = (now - selOpen.typedAt < 700 ? selOpen.typed : "") + e.key.toLowerCase();
+    selOpen.typedAt = now;
+    const hit = [...selOpen.sel.options].findIndex((o) => o.textContent.toLowerCase().startsWith(selOpen.typed));
+    if (hit >= 0) { setActive(hit); selOpen.items[hit].scrollIntoView({ block: "nearest" }); }
+  } else return;
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+document.addEventListener("pointerdown", (e) => {
+  if (selOpen && !selOpen.pop.contains(e.target) && !selOpen.btn.contains(e.target)) closeSelect();
+}, true);
+window.addEventListener("resize", () => closeSelect(true));
+document.addEventListener("scroll", (e) => { if (selOpen && !selOpen.pop.contains(e.target)) closeSelect(true); }, true);
+// selects added later (checkpoint rows, route summary, GPX tracks) are enhanced as they appear
+new MutationObserver((records) => {
+  for (const r of records) for (const nd of r.addedNodes) {
+    if (nd.nodeType !== 1) continue;
+    if (nd.tagName === "SELECT") enhanceSelect(nd);
+    else nd.querySelectorAll && nd.querySelectorAll("select").forEach(enhanceSelect);
+  }
+}).observe(document.body, { childList: true, subtree: true });
+document.querySelectorAll("select").forEach(enhanceSelect);
 
 // ------------------------------------------------------------------ themes & appearance
 const DEFAULT_THEME = "graphite";
@@ -312,14 +445,21 @@ function applyAppearance() {
   // remembered for the first paint of the next start (index.html applies it before the CSS renders)
   try { localStorage.setItem("ls-appearance", JSON.stringify({ theme, nightMap })); } catch (_) { /* storage blocked */ }
 }
+// The everyday themes up front; the colourful ones sit under "More themes".
+const MAIN_THEMES = new Set(["system", "light", "dark", "graphite", "contrast-dark", "contrast-light"]);
 function renderThemeGrid() {
-  $("theme-grid").replaceChildren(...THEMES.map(([id, name, bg, accent, panel]) =>
+  const card = ([id, name, bg, accent, panel]) =>
     el("button", { type: "button", class: "theme-card", dataset: { theme: id }, title: name,
       onclick: () => { settings().theme = id; applyAppearance(); saveSettingsSoon(); } },
       el("span", { class: "theme-swatch" },
         el("span", { style: `background:${bg}` }),
         el("span", {}, el("span", { style: `background:${accent}` }), el("span", { style: `background:${panel}` }))),
-      el("span", { class: "theme-name", textContent: name }))));
+      el("span", { class: "theme-name", textContent: name }));
+  const more = el("details", { class: "sub theme-more" }, el("summary", { textContent: "More themes" }),
+    el("div", { class: "theme-grid" }, ...THEMES.filter((t) => !MAIN_THEMES.has(t[0])).map(card)));
+  more.querySelector("summary").addEventListener("click", (e) => { e.preventDefault(); toggleSection(more); });
+  $("theme-grid").replaceChildren(el("div", { class: "theme-grid" }, ...THEMES.filter((t) => MAIN_THEMES.has(t[0])).map(card)), more);
+  if (!MAIN_THEMES.has(settings().theme || DEFAULT_THEME)) more.open = true;
   applyAppearance();
 }
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyAppearance);
@@ -327,8 +467,41 @@ $("pref-map-theme").onchange = (e) => { settings().map_theme = e.target.value; a
 $("pref-compact").onchange = (e) => { settings().compact = e.target.checked; applyAppearance(); saveSettingsSoon(); };
 
 // ------------------------------------------------------------------ collapsible sections (open/closed state is remembered)
+// Sections fold and unfold with a height animation; an opened section near the bottom of the side
+// menu scrolls smoothly into view.
+const ALWAYS_CLOSED_AT_START = new Set(["sec-wander"]);
+function toggleSection(d, open = !d.open) {
+  if (d._anim) { d._anim.cancel(); d._anim = null; }
+  const summary = d.querySelector(":scope > summary");
+  if (reducedMotion() || !summary) { d.open = open; return; }
+  const from = d.offsetHeight;
+  d.style.overflow = "hidden";
+  if (open) d.open = true;
+  const chrome = d.offsetHeight - d.clientHeight; // borders
+  const to = open ? d.offsetHeight : summary.offsetHeight + chrome;
+  d.classList.toggle("opening", open);
+  d.classList.toggle("closing", !open);
+  const anim = d.animate([{ height: `${from}px` }, { height: `${to}px` }],
+    { duration: Math.min(320, 160 + Math.abs(to - from) * 0.25), easing: "cubic-bezier(.2,.8,.2,1)" });
+  d._anim = anim;
+  anim.onfinish = () => {
+    d._anim = null;
+    if (!open) d.open = false;
+    d.style.overflow = "";
+    d.classList.remove("opening", "closing");
+    if (open) revealInSidebar(d);
+  };
+}
+function revealInSidebar(elm) {
+  const sb = $("sidebar"), r = elm.getBoundingClientRect(), view = sb.getBoundingClientRect();
+  const bottom = Math.min(view.bottom, $("player").getBoundingClientRect().top) - 8;
+  if (r.bottom > bottom) sb.scrollBy({ top: Math.min(r.bottom - bottom, r.top - view.top - 120), behavior: reducedMotion() ? "auto" : "smooth" });
+}
 function wireSections() {
-  document.querySelectorAll("details.section").forEach((d) => {
+  document.querySelectorAll("details.section, details.sub").forEach((d) => {
+    const summary = d.querySelector(":scope > summary");
+    summary.addEventListener("click", (e) => { e.preventDefault(); toggleSection(d); });
+    if (!d.classList.contains("section")) return;
     d.addEventListener("toggle", () => {
       const s = settings();
       s.sections = { ...(s.sections || {}), [d.id]: d.open };
@@ -340,8 +513,9 @@ function applySections() {
   const saved = settings().sections || {};
   for (const [id, open] of Object.entries(saved)) {
     const d = $(id);
-    if (d && d.tagName === "DETAILS") d.open = !!open;
+    if (d && d.tagName === "DETAILS" && !ALWAYS_CLOSED_AT_START.has(id)) d.open = !!open;
   }
+  for (const id of ALWAYS_CLOSED_AT_START) { const d = $(id); if (d) d.open = false; }
 }
 
 // ------------------------------------------------------------------ resizable / hideable side menu
@@ -609,6 +783,7 @@ function addWaypoint(lat, lon, extra = {}) {
 // A route changed: the built route (and the player) no longer match it.
 function invalidateBuilt() {
   state.routeRev = (state.routeRev || 0) + 1;
+  cancelBuild("changed");
   if (state.builtSource !== "route") return;
   const hadRoute = !!state.built;
   routeLayer.clearLayers();
@@ -910,7 +1085,8 @@ function renderWaypoints(opts = {}) {
   const n = state.waypoints.length;
   const closed = $("closed").checked;
   $("wp-count").textContent = n ? `${n} checkpoint${n > 1 ? "s" : ""}` : "";
-  if (!n) wpList.append(el("li", { class: "hint", textContent: "No checkpoints yet — click the map." }));
+  if (!n) wpList.append(el("li", { class: "empty" }, el("b", { textContent: "No checkpoints yet" }),
+    el("span", { textContent: "Click the map to add one. Drag markers to move them; drag the handle here to reorder." })));
   state.waypoints.forEach((w, i) => {
     const change = (fn) => (e) => { fn(e.target); invalidateBuilt(); };
     const grip = el("button", { type: "button", class: "wp-grip", title: "Drag to reorder (or focus and press the arrow keys)",
@@ -1059,9 +1235,10 @@ function renderRouteSettingsSub() {
     + `${$("road-aware").checked ? " · road-aware" : ""}${alts ? ` · ${alts} alt.` : ""}`;
 }
 $("closed").onchange = () => { invalidateBuilt(); renderWaypoints(); };
-$("default-speed").onchange = () => renderWaypoints();
-$("default-mode").onchange = () => renderRouteSettingsSub();
-$("alt-count").addEventListener("change", renderRouteSettingsSub);
+// The default speed applies to every leg without its own speed, so the built route no longer matches.
+$("default-speed").onchange = () => { invalidateBuilt(); renderWaypoints(); };
+$("default-mode").onchange = () => { cancelBuild("changed"); renderRouteSettingsSub(); };
+$("alt-count").addEventListener("change", () => { cancelBuild("changed"); renderRouteSettingsSub(); });
 async function clearRoute() {
   const saved = { waypoints: state.waypoints.map((w) => ({ ...w, leg: { ...w.leg } })), built: state.built };
   state.builtSource = "route";
@@ -1136,8 +1313,9 @@ function buildStart() {
   bp.ticker.replaceChildren();
   bp.fill.style.width = "0%";
   bp.pct.textContent = "0%";
-  buildBtn.classList.remove("done", "failed");
+  buildBtn.classList.remove("done", "failed", "cancelled");
   buildBtn.classList.add("loading");
+  $("build-row").classList.add("loading");
   buildBtn.disabled = true;
   buildBtn.setAttribute("aria-busy", "true");
   cancelAnimationFrame(bp.raf);
@@ -1200,23 +1378,24 @@ function showTick(msg, iconName) {
   });
   $("build-status").textContent = msg;
 }
-function buildFinish(ok, msg) {
+function buildFinish(ok, msg, kind = ok ? "done" : "failed") {
   cancelAnimationFrame(bp.raf);
   clearTimeout(bp.timer);
   bp.timer = 0;
   bp.queue = [];
   buildBtn.classList.remove("loading");
-  buildBtn.classList.add(ok ? "done" : "failed");
+  buildBtn.classList.add(kind);
+  $("build-row").classList.remove("loading");
   buildBtn.disabled = false;
   buildBtn.removeAttribute("aria-busy");
   if (ok) { bp.fill.style.width = "100%"; bp.pct.textContent = "100%"; }
   else bp.pct.textContent = "";
-  showTick(msg, ok ? "check" : "warn");
-  bp.resetTimer = setTimeout(buildReset, ok ? 2200 : 2600);
+  showTick(msg, ok ? "check" : kind === "cancelled" ? "x" : "warn");
+  bp.resetTimer = setTimeout(buildReset, ok ? 2200 : kind === "cancelled" ? 1400 : 2600);
 }
 function buildReset() {
   cancelAnimationFrame(bp.raf);
-  buildBtn.classList.remove("loading", "done", "failed");
+  buildBtn.classList.remove("loading", "done", "failed", "cancelled");
   buildBtn.disabled = false;
   bp.fill.style.width = "0%";
   bp.ticker.replaceChildren();
@@ -1226,21 +1405,37 @@ function noAlternativesReason(body) {
   return roads ? "No alternative routes were found for these checkpoints (short legs often have only one sensible way)."
     : "Sea and straight-line legs have no alternative routes.";
 }
+// A build in progress stops when it's cancelled or when the route or its settings change: the
+// request is aborted, which also stops the server's work on it.
+function cancelBuild(reason = "user") {
+  const ctl = state.buildCtl;
+  if (!ctl || ctl.signal.aborted) return;
+  state.cancelReason = reason;
+  ctl.abort();
+}
+$("btn-build-cancel").onclick = () => cancelBuild("user");
 async function buildRoute() {
-  if (state.building) return;
+  if (state.building) {
+    // a new build (for example after dragging the route line) replaces the one running
+    state.replacing = true;
+    cancelBuild("restart");
+    await state.buildDone;
+    state.replacing = false;
+  }
   if (state.waypoints.length < 2) throw new Error("Add at least two checkpoints (click the map in the Route tab).");
   state.building = true;
+  let done;
+  state.buildDone = new Promise((r) => (done = r));
+  const ctl = new AbortController();
+  state.buildCtl = ctl;
+  state.cancelReason = null;
   const rev = state.routeRev;
   buildStart();
   buildStage(0, "Preparing the route", 0.02);
   try {
     const body = routeBody($("route-name").value.trim() || "Route");
-    const res = await apiStream("/api/route/build?stream=1", body, (ev) => buildStage(ev.p, ev.msg, ev.next));
-    if (rev !== state.routeRev) {
-      buildReset();
-      toast("The checkpoints changed while the route was building. Press Build route again.");
-      return;
-    }
+    const res = await apiStream("/api/route/build?stream=1", body, (ev) => buildStage(ev.p, ev.msg, ev.next), ctl.signal);
+    if (ctl.signal.aborted || rev !== state.routeRev) throw new DOMException("cancelled", "AbortError");
     buildStage(0.97, "Drawing the route on the map", 0.98);
     await nextFrame();
     state.options = [res, ...(res.alternatives || [])];
@@ -1264,10 +1459,18 @@ async function buildRoute() {
     if (body.alternatives && n === 1) toast(noAlternativesReason(body));
     else if (body.alternatives && n - 1 < body.alternatives) toast(`Found ${n - 1} of ${body.alternatives} alternative routes. Pick one under Route summary or click a grey line on the map.`);
   } catch (e) {
+    if (e.name === "AbortError" || ctl.signal.aborted) {
+      const why = state.cancelReason;
+      buildFinish(false, why === "user" ? "Build cancelled" : "Cancelled: the route changed", "cancelled");
+      if (why === "changed" && !state.replacing) toast("The route changed while it was building, so that build was cancelled. Press Build route when you're ready.");
+      return;
+    }
     buildFinish(false, "Couldn't build the route");
     throw e;
   } finally {
     state.building = false;
+    if (state.buildCtl === ctl) state.buildCtl = null;
+    done();
   }
 }
 buildBtn.onclick = guard(buildRoute);
@@ -1633,6 +1836,12 @@ function renderResult(box, res) {
   if (f.offnet_m >= 25) feat.push(`${fmtDist(f.offnet_m)} off the road network (private road, gated area or car park; driven slowly)`);
   if (f.restricted_segments) feat.push("private/restricted roads driven slowly");
   if (f.highway_segments || f.ramps) feat.push("motorway sections");
+  const rings = s.roundabouts || [];
+  if (rings.length) {
+    const sp = rings.map((r) => r.speed_kmh);
+    const lo = Math.round(Math.min(...sp)), hi = Math.round(Math.max(...sp));
+    feat.push(`${rings.length} roundabout${rings.length > 1 ? "s" : ""} driven at ${lo === hi ? lo : `${lo}–${hi}`} km/h`);
+  }
   if (feat.length) extra.push(el("p", { class: "hint" }, "Road features: " + feat.join("; ") + "."));
   if (s.holds) extra.push(el("p", { class: "hint", textContent: `Stops at ${s.holds} checkpoint${s.holds > 1 ? "s" : ""} until you press Continue (the times above don't include that wait).` }));
   for (const n of s.notes || []) extra.push(el("p", { class: "hint", textContent: n }));
@@ -2090,7 +2299,7 @@ document.addEventListener("keydown", (e) => {
   if (listeningFor) return;
   if (joystickKeydown(e)) return;
   if (e.ctrlKey || e.metaKey || e.altKey || e.repeat || typing()) return;
-  if (e.key === "Escape") { hideTip(); closeMenus(); stopPlacement(); return; }
+  if (e.key === "Escape") { hideTip(); closeMenus(); stopPlacement(); if (state.building) cancelBuild("user"); return; }
   const k = e.key.length === 1 ? e.key.toUpperCase() : "";
   if (!/^[A-Z0-9]$/.test(k)) return;
   const m = shortcutMap();
@@ -2099,15 +2308,15 @@ document.addEventListener("keydown", (e) => {
   e.preventDefault();
   guard(actionById[id][3])();
 });
+// Shortcuts are listed in tooltips, the right-click menu and the shortcut list (H), not printed on
+// every button.
 function decorateShortcutHints(root = document) {
   const m = shortcutMap();
   root.querySelectorAll("[data-action]").forEach((b) => {
     const k = m[b.dataset.action];
-    let hint = b.querySelector(".kbd");
-    if (!k) { if (hint) hint.remove(); return; }
-    if (!hint) { hint = el("span", { class: "kbd" }); b.append(hint); }
-    hint.textContent = k;
-    b.title = `${(b.title || "").replace(/\s*\(shortcut .\)$/, "")} (shortcut ${k})`.trim();
+    b.querySelectorAll(".kbd").forEach((h) => h.remove());
+    const base = (b.title || "").replace(/\s*\(shortcut .\)$/, "");
+    b.title = k ? `${base} (shortcut ${k})`.trim() : base;
   });
 }
 let listeningFor = null;

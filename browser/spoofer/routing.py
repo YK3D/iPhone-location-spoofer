@@ -90,6 +90,8 @@ class RouteResult:
     notes: list[str] = field(default_factory=list)
     exportable: bool = True  # False for Google results (caching/export restricted)
     kind: str = "main"  # main | alternative (offered by the provider) | detour (found through a via point)
+    # (start m, end m) along `points` of every roundabout the route drives on
+    roundabouts: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -217,6 +219,29 @@ def _with_connectors(
 
 
 UNKNOWN_NODE = -1  # an OSM node id OSRM could not report exactly
+ROUNDABOUT_STEPS = ("roundabout", "rotary")  # OSRM step types for driving round a roundabout
+MINI_ROUNDABOUT_M = 12.0  # a mini roundabout ("roundabout turn") counts this far either side of its point
+
+
+def roundabout_ranges(points: list[geo.LatLon], rings: list[tuple[geo.LatLon, geo.LatLon]]) -> list[tuple[float, float]]:
+    """(start m, end m) along `points` for each roundabout given by its entry and exit point."""
+    if not rings or len(points) < 2:
+        return []
+    cum = geo.cumulative(points)
+    out: list[tuple[float, float]] = []
+    k = 0  # roundabouts come in route order: search onwards from the last one
+    for entry, exit_ in rings:
+        i = min(range(k, len(points)), key=lambda j: geo.haversine_m(points[j], entry))
+        if entry == exit_:
+            s0, s1 = max(0.0, cum[i] - MINI_ROUNDABOUT_M), min(cum[-1], cum[i] + MINI_ROUNDABOUT_M)
+            j = i
+        else:
+            j = min(range(i, len(points)), key=lambda q: geo.haversine_m(points[q], exit_))
+            s0, s1 = cum[i], cum[j]
+        if s1 > s0:
+            out.append((round(s0, 1), round(s1, 1)))
+        k = j
+    return out
 
 
 @dataclass
@@ -229,6 +254,8 @@ class _Candidate:
     distance: float
     kind: str = "main"
     via_turn: float = 0.0  # turn angle at the via point, degrees (0 = straight on)
+    # roundabouts as (entry point, exit point) from the OSRM maneuvers
+    roundabouts: list[tuple[geo.LatLon, geo.LatLon]] = field(default_factory=list)
 
     def pairs(self) -> set[tuple[int, int]]:
         out: set[tuple[int, int]] = set()
@@ -294,6 +321,7 @@ def _parse_osrm(rt: dict, kind: str) -> _Candidate:
     pts = [(lat, lon) for lon, lat in rt["geometry"]["coordinates"]]
     speeds: list[Optional[float]] = []
     nodes: list[list[int]] = []
+    roundabouts: list[tuple[geo.LatLon, geo.LatLon]] = []
     uturns = 0
     legs = rt.get("legs", [])
     for leg in legs:
@@ -302,9 +330,20 @@ def _parse_osrm(rt: dict, kind: str) -> _Candidate:
         # OSRM writes node ids of 10 billion and up as rounded floats (1.134297535e+10), which no
         # longer name one node: keep their place in the list but mark them unknown.
         nodes.append([v if isinstance(v, int) and v > 0 else UNKNOWN_NODE for v in ann.get("nodes", [])])
-        for st in leg.get("steps", []):
-            if (st.get("maneuver") or {}).get("modifier") == "uturn":
+        steps = leg.get("steps", [])
+        for i, st in enumerate(steps):
+            m = st.get("maneuver") or {}
+            if m.get("modifier") == "uturn":
                 uturns += 1
+            loc = m.get("location")
+            if not loc:
+                continue
+            if m.get("type") in ROUNDABOUT_STEPS:
+                # the step covers the drive round the roundabout; the next maneuver is the exit
+                nxt = ((steps[i + 1].get("maneuver") or {}).get("location") if i + 1 < len(steps) else None) or loc
+                roundabouts.append(((loc[1], loc[0]), (nxt[1], nxt[0])))
+            elif m.get("type") == "roundabout turn":  # a mini roundabout, driven like a junction
+                roundabouts.append(((loc[1], loc[0]), (loc[1], loc[0])))
     if len(speeds) != len(pts) - 1:  # defensive: annotation must match the geometry
         speeds = [None] * (len(pts) - 1)
     via_turn = 0.0
@@ -313,7 +352,8 @@ def _parse_osrm(rt: dict, kind: str) -> _Candidate:
         after = ((l1.get("steps") or [{}])[0].get("maneuver") or {}).get("bearing_after")
         if before is not None and after is not None:
             via_turn = max(via_turn, abs((after - before + 540) % 360 - 180))
-    return _Candidate(pts, speeds, nodes, uturns, float(rt.get("duration") or 0), float(rt.get("distance") or 0), kind, via_turn)
+    return _Candidate(pts, speeds, nodes, uturns, float(rt.get("duration") or 0), float(rt.get("distance") or 0), kind, via_turn,
+                      roundabouts)
 
 
 def _resample(pts: list[geo.LatLon], step: float) -> list[geo.LatLon]:
@@ -475,7 +515,10 @@ async def _osrm_options(
                 notes.append(f"Speed-limit data {info.source}.")
         full, zones, f2 = _with_connectors(a, b, c.pts, speeds, mode)
         features.update(f2)
-        results.append(RouteResult(full, "osrm", zones, c.duration or None, features, notes, kind=c.kind))
+        rings = roundabout_ranges(full, c.roundabouts)
+        if rings:
+            features["roundabouts"] = len(rings)
+        results.append(RouteResult(full, "osrm", zones, c.duration or None, features, notes, kind=c.kind, roundabouts=rings))
     return results, complete
 
 
@@ -529,9 +572,15 @@ def _google_result(a: geo.LatLon, b: geo.LatLon, mode: str, g: google_api.Google
         s += geo.haversine_m(p, q)
     full, zones, features = _with_connectors(a, b, g.points, seg_speeds, mode)
     features.update({"uturns": uturns, "ramps": highway})
+    # Google's roundabout steps run from the entry to the exit; shift by the join from the waypoint
+    off = geo.haversine_m(a, g.points[0]) if g.points else 0.0
+    rings = [(round(off + st["start_m"] * scale, 1), round(off + st["end_m"] * scale, 1))
+             for st in g.steps if (st.get("maneuver") or "").startswith("ROUNDABOUT") and st["end_m"] > st["start_m"]]
+    if rings:
+        features["roundabouts"] = len(rings)
     notes = list(g.warnings)
     ref = g.duration_s or g.static_duration_s or None
-    return RouteResult(full, "google", zones, ref, features, notes, exportable=False)
+    return RouteResult(full, "google", zones, ref, features, notes, exportable=False, roundabouts=rings)
 
 
 @lru_cache(maxsize=1)

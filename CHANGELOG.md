@@ -13,6 +13,8 @@ Test builds from the `dev` branch are marked as pre-releases.
 ## Unreleased (dev)
 
 ### New
+- Cancel a route build with the Cancel button beside the progress bar (or Esc). A build also cancels itself when you change the checkpoints or the route settings.
+- Dropdowns open as an animated list (keyboard: arrows, Enter, Esc, type to jump), sections fold and unfold with an animation, and an opened section scrolls smoothly into view.
 - Edit routes on the map: drag the route line to add a checkpoint at that spot (it goes into the leg you grabbed and the route rebuilds), double-click a checkpoint to delete it, and right-click one (on the map or in the list) for Delete, Insert after, Set wait and Make start.
 - "Hold until Continue" checkpoints: playback stops there and waits until you press Continue (or **N**); any wait time runs after that. Set it with the Hold box in the list or Set wait in the right-click menu.
 - Lap limit for looping routes (Playback options › Laps); in back-and-forth mode a lap is there and back.
@@ -37,6 +39,8 @@ Test builds from the `dev` branch are marked as pre-releases.
 - Update channels: stable releases, or opt-in test builds.
 
 ### Fixed
+- Roundabouts were driven at the road's speed (70 km/h and more, faster than the approach when the roundabout belongs to a bigger road). They are now recognised from the routing service's own directions and always driven at a normal roundabout speed for their size: about 20 km/h for a small one up to 40 km/h for a large gyratory by car, 10–22 km/h by bike.
+- Changing the default speed now marks a built route as out of date (its legs without their own speed used the old one).
 - Asking for three alternative routes often gave only one or two. The detour search now tries via points along the whole route, not just at its middle, follows the route's own direction, and if needed fills the last places with near misses that are only a little slower. A route with several legs no longer spends the search on legs that don't need it.
 - Clicking a checkpoint marker added another checkpoint at the end of the route.
 - The heading reported during playback now turns smoothly through corners instead of jumping at each bend of the road line.
@@ -52,6 +56,9 @@ Test builds from the `dev` branch are marked as pre-releases.
 - The local server now only answers the app itself, so other websites open in your browser can't send it commands or read your settings (both editions).
 
 ### Changed
+- Sections are cards with an icon badge, set apart on the side menu's background; the tabs are a segmented control; the title bar is taller with a larger logo and toolbar icons.
+- Route tab order: Import from Google Maps, Routing & speed, Road-aware driving, Checkpoints (then Route summary), Random wander. Random wander always starts folded.
+- Shortcut letters are no longer printed on buttons (they're in the tooltips and the shortcut list, H); help icons replace the "(i)" buttons; the D-pad uses drawn arrows; the colourful themes moved under "More themes".
 - Clearer layout: every section has its own header bar with an icon, sections sit apart on a darker background, field labels and dividers have more contrast, and the inputs inside the checkpoint list stay quiet until you point at them. The Route tab now lists Routing & speed, Checkpoints and Route summary first, then the extras.
 - Graphite is the default theme and the map is dark by default.
 - The speed colours along the route blend smoothly (OKLab colour mixing and light smoothing) instead of in visible bands.

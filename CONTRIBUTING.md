@@ -20,3 +20,24 @@ Thanks for helping. Bug reports and ideas are welcome as GitHub issues.
 
 - Keep `assets/icon/source.jpg` as it is; regenerate icons with `python assets/icon/make_icons.py`.
 - Update `CHANGELOG.md` under *Unreleased*.
+
+## Trying the `feature-testing` branch
+
+`feature-testing` publishes no downloads, so run it from source:
+
+```bash
+git clone https://github.com/YK3D/iPhone-location-spoofer.git
+cd iPhone-location-spoofer
+git checkout feature-testing      # later: git pull to get new experiments
+
+# browser edition (Python 3.12)
+cd browser
+pip install -r requirements.txt
+python -m spoofer                  # opens http://127.0.0.1:8765
+
+# or the standalone app (Rust)
+cd standalone
+cargo run --release
+```
+
+Use a separate data folder if you don't want experiments to touch your saved routes and settings: set `SPOOFER_DATA_DIR` to an empty folder before starting. Switch back with `git checkout dev` (or `main`).

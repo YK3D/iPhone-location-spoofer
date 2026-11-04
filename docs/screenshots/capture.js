@@ -49,7 +49,7 @@ async function markerPoint(page, index) {
   await page.evaluate(() => { if ($("tutorial").open) finishTutorial(); });
   await look(page);
   if (await page.isVisible("#btn-connect")) {
-    await page.selectOption("#driver", "mock");
+    await page.evaluate(() => { $("driver").value = "mock"; $("driver").dispatchEvent(new Event("change")); });
     await page.click("#btn-connect");
     await wait(page, 900);
   }
@@ -74,6 +74,7 @@ async function markerPoint(page, index) {
     $("default-mode").value = "car"; $("default-speed").value = "40"; $("alt-count").value = "3";
     for (const id of ["default-mode", "default-speed", "alt-count"]) $(id).dispatchEvent(new Event("change"));
     $("sec-route-settings").open = false;
+    $("sec-route-import").open = false;
     map.setView([51.512, -0.095], 14);
     addWaypoint(51.5074, -0.1278, { name: "Trafalgar Square" });
     addWaypoint(51.5194, -0.0618, { name: "Whitechapel" });
