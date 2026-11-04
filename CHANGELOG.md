@@ -7,6 +7,10 @@ Test builds from the `dev` branch are marked as pre-releases.
 
 ## Unreleased (dev)
 
+### Experimental (`feature-testing` only; see [docs/testing/multiple-iphones-and-wifi.md](docs/testing/multiple-iphones-and-wifi.md))
+- Several iPhones at once: phones added under *Device › More iPhones* follow the main one (teleports, routes, GPX, joystick, Stop spoofing). Each gets positions from its own queue, so a slow or lost phone never holds up the others; a lost phone is marked until removed, and removing one sends it back to its real location. The Simulator has a second phone to try it.
+- Wi-Fi connections: *Device tools › Connect over* (Automatic, USB cable only, Wi-Fi only) and *Allow Wi-Fi connection*, which turns on the phone's "Show this iPhone when on Wi-Fi" setting. The device list shows how each phone can be reached (USB, Wi-Fi, or both). In the browser version, a second iOS 17+ phone or an iOS 17+ phone over Wi-Fi needs the tunnel helper. Bluetooth isn't possible.
+
 ### New
 - A real dark map: the default map is now OpenFreeMap, drawn from vector data, so it is sharp at every zoom and has a true dark style (with colours tuned so water, parks, the road hierarchy and labels stand out) and a light style. Free, no account or key. Choose the map in *Settings › Appearance › Map* (OpenFreeMap, OpenStreetMap, Topographic, Satellite) or with the map's layer button; the choice is remembered. Without WebGL, or if OpenFreeMap can't be reached, the app says so and shows OpenStreetMap.
 - The tutorial has an animated drawing for each step (the route being drawn, the cable and Trust prompt, the Developer Mode switch, a position moving along a route), and each step slides in.

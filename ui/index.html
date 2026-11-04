@@ -111,9 +111,33 @@
           <button id="btn-disconnect" hidden data-action="connect">Disconnect</button>
         </div>
         <div id="device-status" class="status">Not connected</div>
+        <!-- more iPhones at once: extra phones follow the main one -->
+        <div id="mirrors" class="mirrors" hidden>
+          <div class="mirrors-head"><span class="mirrors-title">More iPhones</span><span class="tag">Experimental</span>
+            <button class="info" type="button" data-tip="Every iPhone added here follows the main one: teleports, routes, GPX tracks, the joystick and Stop spoofing all reach each of them. A phone that is slow or drops out never holds up the others; it is marked here until you remove it. Removing a phone sends it back to its real location.">i</button></div>
+          <ul id="mirror-list" class="mirror-list"></ul>
+          <div class="field-row">
+            <label class="grow">Add an iPhone
+              <select id="mirror-select"><option value="">No other iPhone found</option></select>
+            </label>
+            <button id="btn-mirror-add">Add</button>
+          </div>
+        </div>
         <details class="sub" id="device-tools">
           <summary>Device tools</summary>
           <div class="tool-list">
+            <div class="field-row">
+              <label class="grow">Connect over
+                <select id="conn-via">
+                  <option value="auto">Automatic (cable if plugged in, else Wi-Fi)</option>
+                  <option value="usb">USB cable only</option>
+                  <option value="network">Wi-Fi only</option>
+                </select>
+              </label>
+              <button class="info" type="button" data-tip="Wi-Fi works once the phone allows it: plug it in, press Allow Wi-Fi connection below, then keep it unlocked and on the same network as this computer. Wi-Fi is slower to answer than the cable, so very fast routes can lag a little. Bluetooth can't be used: iPhones only offer the location tools over a cable or the network.">i</button>
+            </div>
+            <div class="tool"><button id="btn-wifi">Allow Wi-Fi connection</button>
+              <button class="info" type="button" data-tip="Turns on the iPhone's &quot;Show this iPhone when on Wi-Fi&quot; setting, so this computer can reach it without the cable. Needs the phone plugged in once. Experimental.">i</button></div>
             <div class="tool"><button id="btn-reveal">Reveal Developer Mode</button>
               <button class="info" type="button" data-tip="iOS hides the Developer Mode switch until a computer asks for it. Press this with the iPhone plugged in and unlocked, then open Settings › Privacy & Security › Developer Mode on the phone, turn it on and restart. Needed once per phone.">i</button></div>
             <div class="tool"><button id="btn-mount">Mount developer image</button>

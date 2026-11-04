@@ -735,6 +735,7 @@ async function refreshDevices(userAsked = false) {
   state.devicesError = null;
   try {
     const { devices } = await api(`/api/devices?driver=${driver}`);
+    state.devices = devices;
     for (const d of devices) {
       const label = `${d.name || "iPhone"}${d.ios_version ? ` (iOS ${d.ios_version})` : ""} — ${d.connection || ""}${d.error ? " (needs attention)" : ""}`;
       sel.append(el("option", { value: d.udid, textContent: label, title: d.error || d.udid }));
@@ -754,7 +755,7 @@ async function connectNow() {
   $("device-status").className = "status";
   $("device-status").textContent = "Connecting… (iOS 17+ can take up to 30 s)";
   try {
-    const { device } = await api("/api/connect", { body: { driver: $("driver").value, udid: $("device-select").value || null } });
+    const { device } = await api("/api/connect", { body: { driver: $("driver").value, udid: $("device-select").value || null, connection: $("conn-via").value } });
     toast(`Connected to ${device.name}`);
     for (const n of device.notes || []) toast(n);
     return device;
@@ -768,6 +769,64 @@ $("btn-disconnect").onclick = guard(disconnectNow);
 async function revealDevMode() { toast((await api("/api/device/reveal-developer-mode", { body: {} })).message); }
 $("btn-reveal").onclick = busy($("btn-reveal"), "Asking the iPhone…", revealDevMode);
 $("btn-mount").onclick = busy($("btn-mount"), "Mounting…", async () => toast((await api("/api/device/mount", { body: {} })).message));
+$("btn-wifi").onclick = busy($("btn-wifi"), "Asking the iPhone…", async () => {
+  toast((await api("/api/device/wifi", { body: { udid: (state.status && state.status.device && state.status.device.udid) || $("device-select").value || null } })).message);
+  refreshDevices(false);
+});
+
+// ---- more iPhones at once: extra phones follow the main one (see mirrors.py / device/mirror.rs)
+const lostMirrorsToasted = new Set();
+async function addMirror() {
+  const udid = $("mirror-select").value;
+  if (!udid) { toast("Plug in or connect another iPhone, press the refresh button next to Device, then pick it here.", true); return; }
+  const { mirror } = await api("/api/mirrors", { body: { udid, connection: $("conn-via").value } });
+  toast(`${mirror.name} now follows ${state.status.device.name}`);
+  for (const n of mirror.notes || []) toast(n);
+  await poll();
+}
+$("btn-mirror-add").onclick = busy($("btn-mirror-add"), "Connecting…", addMirror);
+async function removeMirror(m) {
+  await api(`/api/mirrors/${encodeURIComponent(m.udid)}`, { method: "DELETE" });
+  toast(`${m.name} no longer follows and is back on its real location`);
+  lostMirrorsToasted.delete(m.udid);
+  await poll();
+}
+function renderMirrors(st) {
+  const box = $("mirrors");
+  const on = !!(st.device && st.live && st.features && st.features.multi_device);
+  box.hidden = !on;
+  if (!on) return;
+  const mirrors = st.mirrors || [];
+  const listKey = JSON.stringify(mirrors.map((m) => [m.udid, m.state, m.error]));
+  if (box.dataset.list !== listKey) {
+    box.dataset.list = listKey;
+    $("mirror-list").replaceChildren(...mirrors.map((m) => {
+      const lost = m.state === "lost";
+      const line = el("div", { class: `status ${lost ? "err" : "ok"}`, title: m.error || m.transport || "" },
+        el("span", { textContent: `${m.name}${m.ios_version ? ` · iOS ${m.ios_version}` : ""}${m.connection && m.connection !== "Simulated" ? ` · ${m.connection}` : ""}${lost ? ` · ${m.error}` : ""}` }));
+      const rm = el("button", { type: "button", textContent: "Remove", title: "Stop following and send this iPhone back to its real location" });
+      rm.onclick = busy(rm, "Removing…", () => removeMirror(m));
+      return el("li", {}, line, rm);
+    }));
+    for (const m of mirrors) {
+      if (m.state === "lost" && !lostMirrorsToasted.has(m.udid)) { lostMirrorsToasted.add(m.udid); toast(`${m.name} stopped following: ${m.error}`, true); }
+    }
+  }
+  // phones that can still be added: found in the last device scan, not the main one, not following yet
+  const taken = new Set([st.device.udid, ...mirrors.map((m) => m.udid)]);
+  const free = (state.devices || []).filter((d) => !taken.has(d.udid));
+  const optKey = JSON.stringify(free.map((d) => [d.udid, d.connection]));
+  const sel = $("mirror-select");
+  if (sel.dataset.opts !== optKey) {
+    sel.dataset.opts = optKey;
+    const keep = sel.value;
+    sel.replaceChildren(...(free.length
+      ? free.map((d) => el("option", { value: d.udid, textContent: `${d.name || "iPhone"}${d.ios_version ? ` (iOS ${d.ios_version})` : ""} — ${d.connection || ""}`, title: d.error || d.udid }))
+      : [el("option", { value: "", textContent: "No other iPhone found" })]));
+    if (keep && free.some((d) => d.udid === keep)) sel.value = keep;
+  }
+  $("btn-mirror-add").disabled = !free.length;
+}
 
 async function stopSpoofing() {
   await api("/api/location/clear", { body: {} });
@@ -783,12 +842,14 @@ function renderDevice(st) {
   const box = $("device-status"), chip = $("conn-chip");
   $("btn-connect").hidden = !!d;
   $("btn-disconnect").hidden = !d;
+  renderMirrors(st);
   if (d) {
+    const extra = (st.mirrors || []).length;
     box.className = "status ok";
-    box.textContent = `${d.name}${d.ios_version ? ` · iOS ${d.ios_version}` : ""} · ${d.transport}`;
+    box.textContent = `${d.name}${d.ios_version ? ` · iOS ${d.ios_version}` : ""}${d.connection && d.connection !== "Simulated" ? ` · ${d.connection}` : ""} · ${d.transport}`;
     $("driver").value = st.driver;
-    chip.className = "chip ok"; chip.textContent = d.name;
-    $("dev-summary").textContent = `Connected · ${d.name}`;
+    chip.className = "chip ok"; chip.textContent = extra ? `${d.name} + ${extra}` : d.name;
+    $("dev-summary").textContent = `Connected · ${d.name}${extra ? ` + ${extra} more` : ""}`;
   } else if (state.devicesError && $("driver").value !== "mock") {
     box.className = "status warn"; box.textContent = state.devicesError;
     chip.className = "chip warn"; chip.textContent = "Not ready";
@@ -2552,7 +2613,7 @@ function saveSettingsSoon() {
     await saveStore();
   }), 700);
 }
-const SETTING_IDS = ["driver", "provider", "default-mode", "default-speed", "accel", "decel", "alt-count", "start-rest", "stop-end",
+const SETTING_IDS = ["driver", "conn-via", "provider", "default-mode", "default-speed", "accel", "decel", "alt-count", "start-rest", "stop-end",
   "road-aware", "road-data", "corner-slow", "match-eta", "speed-factor", "multiplier", "loop", "jitter", "tick", "laps", "joy-speed", "gpx-speed"];
 function collectSettings() {
   const s = {};

@@ -339,6 +339,17 @@ button.info:hover, button.info:focus-visible { color: var(--accent); opacity: 1;
   color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius);
   box-shadow: var(--shadow-pop); }
 .tool-list { display: flex; flex-direction: column; gap: 4px; }
+/* more iPhones (mirrors) */
+.mirrors { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--radius); background: var(--well); }
+.mirrors-head { display: flex; align-items: center; gap: 8px; }
+.mirrors-title { font-size: 12px; font-weight: 600; }
+.mirrors-head .info { margin-left: auto; }
+.mirror-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.mirror-list:empty { display: none; }
+.mirror-list li { display: flex; align-items: center; gap: 8px; min-height: 26px; animation: panel-in .2s var(--ease-out); }
+.mirror-list li .status { flex: 1; min-width: 0; }
+.mirror-list li .status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mirror-list li button { height: 24px; min-height: 24px; }
 .tool { display: flex; align-items: center; gap: 6px; }
 .tool > button:first-child { flex: 1; justify-content: flex-start; }
 .exp label.check button.info { margin-left: auto; }

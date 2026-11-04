@@ -17,7 +17,7 @@ class DeviceInfo:
     name: str = "iPhone"
     ios_version: str = ""
     product_type: str = ""
-    connection: str = ""  # USB / Network / Simulated
+    connection: str = ""  # USB / Wi-Fi / Simulated
     transport: str = ""  # how location commands reach it (DVT tunnel, lockdown, CLI, ...)
     notes: list[str] = field(default_factory=list)
 
@@ -44,7 +44,8 @@ class DeviceDriver(ABC):
     async def list_devices(self) -> list[dict]: ...
 
     @abstractmethod
-    async def connect(self, udid: Optional[str] = None) -> DeviceInfo: ...
+    async def connect(self, udid: Optional[str] = None, connection: str = "auto") -> DeviceInfo:
+        """`connection`: "auto" (USB when the phone is plugged in, else Wi-Fi), "usb" or "network"."""
 
     @abstractmethod
     async def disconnect(self) -> None: ...
@@ -59,6 +60,10 @@ class DeviceDriver(ABC):
         raise DeviceError("Not supported by this connection method")
 
     async def mount_developer_image(self) -> str:
+        raise DeviceError("Not supported by this connection method")
+
+    async def enable_wifi(self, udid: Optional[str] = None) -> str:
+        """Let the phone be reached over Wi-Fi from now on (needs it plugged in once)."""
         raise DeviceError("Not supported by this connection method")
 
     # Only used by non-live drivers
