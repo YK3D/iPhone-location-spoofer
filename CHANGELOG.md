@@ -5,14 +5,11 @@ Releases are published separately for the two editions:
 [browser edition](https://github.com/YK3D/iPhone-location-spoofer/releases?q=browser&expanded=true) (`browser-v…`).
 Test builds from the `dev` branch are marked as pre-releases.
 
-## Experimental (`feature-testing`)
-
-- Cornering physics: every bend is now taken at the speed its radius allows for the vehicle on that leg, v = √(lateral acceleration × radius), instead of a fixed slowdown. Bends are found as runs of heading change, so long curves count as one bend and S-bends as two. A junction that the map draws as a sharp corner is rounded the way drivers cut it (wider on faster roads), a curve keeps its drawn radius, and a U-turn follows the vehicle's turning circle. Comfortable lateral acceleration falls with speed and never exceeds a safe share of tyre grip. Cars, bikes, walkers and boats have their own limits; straight legs guess the vehicle from their speed, and planes are not slowed. Examples for a car: a 90° junction at about 18 km/h on a 50 km/h road (14 km/h on a 30 km/h street), a roundabout at about 22 km/h, a 300 m motorway curve at about 88 km/h.
-- "Slow down for turns and U-turns" is on by default, and Route summary shows the sharpest bend (angle, radius and speed).
-
 ## Unreleased (dev)
 
 ### New
+- Cornering physics (tested on `feature-testing`, now standard): every bend is now taken at the speed its radius allows for the vehicle on that leg, v = √(lateral acceleration × radius), instead of a fixed slowdown. Bends are found as runs of heading change, so long curves count as one bend and S-bends as two. A junction that the map draws as a sharp corner is rounded the way drivers cut it (wider on faster roads), a curve keeps its drawn radius, and a U-turn follows the vehicle's turning circle. Comfortable lateral acceleration falls with speed and never exceeds a safe share of tyre grip. Cars, bikes, walkers and boats have their own limits; straight legs guess the vehicle from their speed, and planes are not slowed. Examples for a car: a 90° junction at about 18 km/h on a 50 km/h road (14 km/h on a 30 km/h street), a roundabout at about 22 km/h, a 300 m motorway curve at about 88 km/h.
+- "Slow down for turns and U-turns" is on by default, and Route summary shows the sharpest bend (angle, radius and speed).
 - Cancel a route build with the Cancel button beside the progress bar (or Esc). A build also cancels itself when you change the checkpoints or the route settings.
 - Dropdowns open as an animated list (keyboard: arrows, Enter, Esc, type to jump), sections fold and unfold with an animation, and an opened section scrolls smoothly into view.
 - Edit routes on the map: drag the route line to add a checkpoint at that spot (it goes into the leg you grabbed and the route rebuilds), double-click a checkpoint to delete it, and right-click one (on the map or in the list) for Delete, Insert after, Set wait and Make start.
