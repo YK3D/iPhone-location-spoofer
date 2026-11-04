@@ -164,7 +164,12 @@ a { color: var(--accent); }
 #resizer { width: 1px; flex: none; position: relative; z-index: 950; background: var(--border); cursor: col-resize; touch-action: none; }
 #resizer::before { content: ""; position: absolute; inset: 0 -3px; }
 #resizer:hover, #resizer:focus-visible, #resizer.drag { background: var(--accent); box-shadow: 0 0 0 1px var(--accent); outline: none; }
-body.sidebar-hidden #sidebar, body.sidebar-hidden #resizer { display: none; }
+/* hiding the side menu slides it off to the left; the map widens with it (app.js keeps Leaflet in step) */
+#app { overflow: hidden; }
+#sidebar { transition: margin-left .34s var(--ease-out), opacity .34s var(--ease-out), visibility 0s; }
+body.sidebar-hidden #sidebar { margin-left: calc(-1 * max(300px, min(var(--sidebar-w), 70vw))); opacity: .4; visibility: hidden;
+  transition: margin-left .34s var(--ease-out), opacity .34s var(--ease-out), visibility 0s linear .34s; }
+body.sidebar-hidden #resizer { display: none; }
 #map { flex: 1; min-height: 300px; position: relative; background: var(--bg); }
 body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
 @media (max-width: 760px) {
@@ -172,6 +177,8 @@ body.resizing, body.resizing * { cursor: col-resize !important; user-select: non
   #sidebar { width: 100% !important; max-width: none; min-width: 0; }
   #resizer { display: none; }
   #map { height: 55vh; flex: none; }
+  #app { overflow: visible; }
+  body.sidebar-hidden #sidebar { display: none; }
 }
 
 /* ---------- title bar: the app's identity (logo large enough to read its parts) and its tools ---------- */
@@ -332,6 +339,17 @@ button.info:hover, button.info:focus-visible { color: var(--accent); opacity: 1;
   color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius);
   box-shadow: var(--shadow-pop); }
 .tool-list { display: flex; flex-direction: column; gap: 4px; }
+/* more iPhones (mirrors) */
+.mirrors { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: var(--radius); background: var(--well); }
+.mirrors-head { display: flex; align-items: center; gap: 8px; }
+.mirrors-title { font-size: 12px; font-weight: 600; }
+.mirrors-head .info { margin-left: auto; }
+.mirror-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.mirror-list:empty { display: none; }
+.mirror-list li { display: flex; align-items: center; gap: 8px; min-height: 26px; animation: panel-in .2s var(--ease-out); }
+.mirror-list li .status { flex: 1; min-width: 0; }
+.mirror-list li .status span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mirror-list li button { height: 24px; min-height: 24px; }
 .tool { display: flex; align-items: center; gap: 6px; }
 .tool > button:first-child { flex: 1; justify-content: flex-start; }
 .exp label.check button.info { margin-left: auto; }
@@ -681,6 +699,17 @@ dialog.modal { width: min(500px, calc(100vw - 32px)); padding: 0; color: var(--t
   box-shadow: 0 22px 56px rgba(0, 0, 0, .32), 0 0 0 1px rgba(0, 0, 0, .04); }
 dialog.modal.wide { width: min(620px, calc(100vw - 32px)); }
 dialog.modal::backdrop { background: rgba(0, 0, 0, .32); }
+/* dialogs rise in and sink out; while their height glides between pages, the content is clipped */
+dialog.modal[open] { animation: dlg-in .22s var(--ease-out); }
+dialog.modal[open]::backdrop { animation: fade-in .22s ease-out; }
+dialog.modal.closing { animation: dlg-out .17s ease-in forwards; pointer-events: none; }
+dialog.modal.closing::backdrop { animation: fade-out .17s ease-in forwards; }
+dialog.modal.morphing { overflow: hidden; }
+dialog.modal.morphing .modal-body { overflow: hidden; }
+@keyframes dlg-in { from { opacity: 0; transform: translateY(10px) scale(.975); } }
+@keyframes dlg-out { to { opacity: 0; transform: translateY(6px) scale(.98); } }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes fade-out { to { opacity: 0; } }
 .modal-body { display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 60px); overflow: auto; padding: 14px 16px 16px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .modal-body h2 { margin: 0; font-size: 15px; font-weight: 600; }
@@ -710,6 +739,55 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .32); }
 .tut-body p { margin: 0 0 8px; line-height: 1.55; }
 .tut-progress { height: 3px; overflow: hidden; border-radius: 2px; background: var(--well); }
 .tut-progress span { display: block; height: 100%; background: var(--accent); transition: width .2s; }
+/* tutorial illustrations: small animated drawings built from the theme colours */
+.tut-art-wrap { margin: 2px 0 0; }
+.tut-art { margin: 0; overflow: hidden; border-radius: var(--radius-lg); border: 1px solid var(--border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 7%, var(--panel)), var(--well)); }
+.tut-art svg { display: block; width: 100%; height: auto; aspect-ratio: 320 / 132; }
+.ta-card { fill: color-mix(in srgb, var(--panel) 80%, var(--bg)); stroke: var(--border); }
+.ta-road { fill: none; stroke: color-mix(in srgb, var(--border-strong) 70%, transparent); stroke-width: 5; stroke-linecap: round; }
+.ta-route { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; }
+.ta-draw { stroke-dasharray: 320; stroke-dashoffset: 320; animation: ta-draw 1.4s .15s var(--ease-out) forwards; }
+.ta-start, .ta-cp { fill: var(--panel); stroke: var(--accent); stroke-width: 2.5; }
+.ta-pin { fill: #e0393e; stroke: color-mix(in srgb, #e0393e 60%, #000); stroke-width: 1.2; }
+.ta-pin-dot { fill: #fff; }
+.ta-drop { animation: ta-drop .55s 1.3s cubic-bezier(.3, 1.5, .6, 1) both; transform-box: fill-box; transform-origin: 50% 100%; }
+.ta-win, .ta-phone { fill: var(--panel); stroke: var(--border-strong); stroke-width: 1.5; }
+.ta-phone { fill: color-mix(in srgb, var(--panel) 92%, var(--text)); }
+.ta-line { fill: none; stroke: var(--border-strong); stroke-width: 2; stroke-linecap: round; }
+.ta-dotc { fill: var(--border-strong); }
+.ta-tile { fill: var(--accent); }
+.ta-glyph { fill: none; stroke: var(--accent-text); stroke-width: 2.5; }
+.ta-acc-s { fill: none; stroke: var(--accent); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.ta-down { animation: ta-down 1.6s ease-in-out infinite; }
+.ta-ok { fill: var(--ok); }
+.ta-tick { fill: none; stroke: #fff; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.ta-pop { animation: ta-pop .45s 1.1s cubic-bezier(.3, 1.6, .6, 1) both; transform-box: fill-box; transform-origin: center; }
+.ta-cable { fill: none; stroke: var(--muted); stroke-width: 3; stroke-linecap: round; }
+.ta-flow { stroke-dasharray: 6 7; animation: ta-flow 1s linear infinite; }
+.ta-dialog { fill: var(--panel); stroke: var(--border-strong); }
+.ta-btn { fill: var(--accent); }
+.ta-pulse { animation: ta-pulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.ta-row { fill: var(--panel); stroke: var(--border); }
+.ta-row-hi { stroke: var(--accent); stroke-width: 1.5; }
+.ta-switch { fill: var(--border-strong); animation: ta-switch 3s ease-in-out infinite; }
+.ta-knob { fill: #fff; animation: ta-knob 3s ease-in-out infinite; }
+.ta-status { fill: var(--ok); animation: ta-pulse 1.6s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.ta-sig { fill: var(--accent); opacity: .2; animation: ta-sig 1.2s ease-in-out infinite; }
+.ta-sig.s2 { animation-delay: .2s; } .ta-sig.s3 { animation-delay: .4s; }
+.ta-dev { fill: var(--accent); stroke: #fff; stroke-width: 2.5; filter: drop-shadow(0 0 4px var(--accent)); }
+@keyframes ta-draw { to { stroke-dashoffset: 0; } }
+@keyframes ta-drop { from { opacity: 0; transform: translateY(-26px) scale(.9); } }
+@keyframes ta-down { 0%, 100% { transform: translateY(-4px); opacity: .55; } 50% { transform: translateY(3px); opacity: 1; } }
+@keyframes ta-pop { from { opacity: 0; transform: scale(.3); } }
+@keyframes ta-flow { to { stroke-dashoffset: -26; } }
+@keyframes ta-pulse { 50% { transform: scale(1.08); opacity: .8; } }
+@keyframes ta-switch { 0%, 30% { fill: var(--border-strong); } 45%, 85% { fill: var(--ok); } 100% { fill: var(--border-strong); } }
+@keyframes ta-knob { 0%, 30% { transform: translateX(0); } 45%, 85% { transform: translateX(6px); } 100% { transform: translateX(0); } }
+@keyframes ta-sig { 50% { opacity: 1; } }
+/* each tutorial step slides in from the right */
+.step-in { animation: step-in .28s var(--ease-out); }
+@keyframes step-in { from { opacity: 0; transform: translateX(12px); } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
@@ -730,7 +808,7 @@ label { position: relative; }
 .wp .select-btn, .leg .select-btn { height: 24px; min-height: 24px; padding: 0 5px 0 7px; font-size: 12px; background: var(--field); border-color: transparent; box-shadow: none; }
 .wp .select-btn:hover:not(:disabled) { border-color: var(--border-strong); background: var(--field); }
 .btn-row > .select-btn { width: 100%; }
-.select-pop { position: fixed; z-index: 3200; overflow-y: auto; padding: 4px; display: flex; flex-direction: column; gap: 1px;
+.select-pop { position: fixed; inset: auto; margin: 0; z-index: 3200; overflow-y: auto; padding: 4px; color: var(--text); display: flex; flex-direction: column; gap: 1px;
   background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   box-shadow: var(--shadow-pop); transform-origin: top center; animation: drop-in .16s var(--ease-out);
   scrollbar-width: thin; }

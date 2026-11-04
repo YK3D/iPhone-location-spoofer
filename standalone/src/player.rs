@@ -465,7 +465,7 @@ mod tests {
 
     async fn player() -> (Arc<Player>, Devices) {
         let devices: Devices = Arc::new(AsyncMutex::new(DeviceManager::default()));
-        devices.lock().await.connect(DriverKind::Mock, None).await.unwrap();
+        devices.lock().await.connect(DriverKind::Mock, None, crate::device::Via::Auto).await.unwrap();
         (Arc::new(Player::new(devices.clone())), devices)
     }
 

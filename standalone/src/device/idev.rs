@@ -63,18 +63,40 @@ async fn usbmux() -> Result<UsbmuxdConnection, String> {
     addr().connect(1).await.map_err(|e| friendly(&e))
 }
 
-async fn find_device(udid: Option<&str>) -> Result<(UsbmuxdProvider, String), String> {
+pub const WIFI_HELP: &str = "This iPhone can't be reached over Wi-Fi. Plug it in once, press Device tools › Allow Wi-Fi \
+                             connection, then keep it unlocked and on the same network as this computer.";
+
+fn is_usb(c: &Connection) -> bool {
+    matches!(c, Connection::Usb)
+}
+
+fn conn_label(c: &Connection) -> &'static str {
+    match c {
+        Connection::Usb => "USB",
+        Connection::Network(_) => "Wi-Fi",
+        Connection::Unknown(_) => "Other",
+    }
+}
+
+/// The phone to talk to, over the chosen connection: `Auto` takes the cable when the phone is
+/// plugged in, else Wi-Fi. usbmuxd lists a phone that is both plugged in and on Wi-Fi twice.
+async fn find_device(udid: Option<&str>, via: super::Via) -> Result<(UsbmuxdProvider, String), String> {
+    use super::Via;
     let mut mux = usbmux().await?;
     let devices = mux.get_devices().await.map_err(|e| friendly(&e))?;
-    let dev = match udid {
-        Some(u) if !u.is_empty() => devices.into_iter().find(|d| d.udid == u),
-        _ => devices
-            .iter()
-            .find(|d| matches!(d.connection_type, Connection::Usb))
-            .cloned()
-            .or_else(|| devices.into_iter().next()),
-    }
-    .ok_or("No iPhone found. Plug it in with a cable, unlock it and tap Trust.")?;
+    let wanted = |d: &&idevice::usbmuxd::UsbmuxdDevice| {
+        udid.is_none_or(|u| u.is_empty() || d.udid == u)
+            && match via {
+                Via::Auto => true,
+                Via::Usb => is_usb(&d.connection_type),
+                Via::Network => matches!(d.connection_type, Connection::Network(_)),
+            }
+    };
+    let dev = devices.iter().filter(wanted).find(|d| is_usb(&d.connection_type)).or_else(|| devices.iter().find(wanted)).cloned();
+    let dev = dev.ok_or(match via {
+        super::Via::Network => WIFI_HELP,
+        _ => "No iPhone found. Plug it in with a cable, unlock it and tap Trust.",
+    })?;
     let conn = match &dev.connection_type {
         Connection::Usb => "USB".to_string(),
         Connection::Network(ip) => format!("Wi-Fi ({ip})"),
@@ -85,12 +107,25 @@ async fn find_device(udid: Option<&str>) -> Result<(UsbmuxdProvider, String), St
 
 pub async fn list_devices() -> Result<Vec<serde_json::Value>, String> {
     let mut mux = usbmux().await?;
-    let devices = mux.get_devices().await.map_err(|e| friendly(&e))?;
+    let mut devices = mux.get_devices().await.map_err(|e| friendly(&e))?;
+    // one entry per phone (the cable first), naming every way it can be reached
+    devices.sort_by_key(|d| !is_usb(&d.connection_type));
     let mut out = Vec::new();
-    for d in devices {
+    let mut seen = std::collections::HashSet::new();
+    for d in devices.iter() {
+        if !seen.insert(d.udid.clone()) {
+            continue;
+        }
+        let mut conns: Vec<&str> = Vec::new();
+        for o in devices.iter().filter(|o| o.udid == d.udid) {
+            let l = conn_label(&o.connection_type);
+            if !conns.contains(&l) {
+                conns.push(l);
+            }
+        }
         let provider = d.to_provider(addr(), LABEL);
         let mut entry = serde_json::json!({"udid": d.udid, "name": "", "ios_version": "",
-            "connection": if matches!(d.connection_type, Connection::Usb) { "USB" } else { "Network" }});
+            "connection": conns.join(" + "), "connections": conns});
         match LockdownClient::connect(&provider).await {
             Ok(mut ld) => {
                 if let Ok(v) = ld.get_value(Some("ProductVersion"), None).await {
@@ -191,9 +226,9 @@ async fn ensure_ddi(provider: &UsbmuxdProvider, version: &str, chip_id: Option<u
 }
 
 impl IdeviceDriver {
-    pub async fn connect(&mut self, udid: Option<String>) -> Result<DeviceInfo, String> {
+    pub async fn connect(&mut self, udid: Option<String>, via: super::Via) -> Result<DeviceInfo, String> {
         self.disconnect().await;
-        let (provider, connection) = find_device(udid.as_deref()).await?;
+        let (provider, connection) = find_device(udid.as_deref(), via).await?;
         let real_udid = provider.udid.clone();
         ensure_paired(&provider).await?;
         let pairing = provider.get_pairing_file().await.map_err(|e| friendly(&e))?;
@@ -391,8 +426,26 @@ async fn session_legacy(provider: UsbmuxdProvider, mut rx: mpsc::Receiver<Cmd>, 
     }
 }
 
+/// Turns on the phone's "Show this iPhone when on Wi-Fi" setting (Wi-Fi sync), over the cable, so
+/// it can be connected over Wi-Fi from then on.
+pub async fn enable_wifi(udid: Option<String>) -> Result<String, String> {
+    let (provider, _) = find_device(udid.as_deref(), super::Via::Usb)
+        .await
+        .map_err(|e| format!("Plug the iPhone in with a cable for this step. ({e})"))?;
+    ensure_paired(&provider).await?;
+    let pairing = provider.get_pairing_file().await.map_err(|e| friendly(&e))?;
+    let mut ld = LockdownClient::connect(&provider).await.map_err(|e| friendly(&e))?;
+    ld.start_session(&pairing).await.map_err(|e| friendly(&e))?;
+    ld.set_value("EnableWifiConnections", true.into(), Some("com.apple.mobile.wireless_lockdown"))
+        .await
+        .map_err(|e| friendly(&e))?;
+    Ok("Wi-Fi connections are on for this iPhone. Choose Wi-Fi in Device tools › Connect over, keep the phone \
+        unlocked on the same network, and connect."
+        .into())
+}
+
 pub async fn reveal_developer_mode(udid: Option<String>) -> Result<String, String> {
-    let (provider, _) = find_device(udid.as_deref()).await?;
+    let (provider, _) = find_device(udid.as_deref(), super::Via::Auto).await?;
     ensure_paired(&provider).await?;
     let mut amfi = AmfiClient::connect(&provider).await.map_err(|e| friendly(&e))?;
     amfi.reveal_developer_mode_option_in_ui().await.map_err(|e| friendly(&e))?;

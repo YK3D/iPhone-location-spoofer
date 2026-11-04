@@ -30,7 +30,7 @@ Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk 
 
 <p align="center"><img src="docs/screenshots/settings.webp" width="720" alt="Settings window with the theme picker and the map theme"></p>
 
-The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/capture.js) with the default look (Graphite theme, dark map).
+The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/capture.js) with the default look (Graphite theme, dark OpenFreeMap map).
 
 ## Which edition should I use?
 
@@ -48,7 +48,7 @@ Both editions have the same interface and features. They update themselves from 
 
 ## Features
 
-* **Map:** streets, satellite and topographic views. Click to pick a point; right-click to jump there instantly.
+* **Map:** a sharp vector map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps; pick one in *Settings › Appearance* or with the map's layer button. Click to pick a point; right-click to jump there instantly.
 * **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
 * **Routes:**
   * add checkpoints on the map, then drag them on the map or in the list to move and reorder them;

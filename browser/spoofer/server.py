@@ -22,6 +22,7 @@ from .device.cli import CliDriver
 from .device.mock import MockDriver
 from .device.pmd3 import Pmd3Driver
 from .gpx_io import parse_gpx, safe_filename, write_gpx
+from .mirrors import FanOut, MirrorLink
 from .player import Player
 from .profile import (
     Leg,
@@ -54,7 +55,10 @@ class AppState:
     def __init__(self) -> None:
         self.drivers: dict[str, DeviceDriver] = {d.key: d for d in (Pmd3Driver(), CliDriver(), MockDriver())}
         self.driver_key = "pmd3"
-        self.player = Player(lambda: self.driver)
+        # extra iPhones that follow the main one, by UDID (see mirrors.py)
+        self.mirrors: dict[str, MirrorLink] = {}
+        self.fanout = FanOut(lambda: self.driver, lambda: list(self.mirrors.values()))
+        self.player = Player(lambda: self.fanout)
         self.timelines: "OrderedDict[str, tuple[Timeline, str, list, bool]]" = OrderedDict()
         self.store = Store()
         self.updater = Updater()  # replaced by __main__ with the real one; disabled from source
@@ -62,6 +66,17 @@ class AppState:
     @property
     def driver(self) -> DeviceDriver:
         return self.drivers[self.driver_key]
+
+    async def drop_mirror(self, udid: str, clear: bool = False) -> bool:
+        link = self.mirrors.pop(udid, None)
+        if link is None:
+            return False
+        await link.close(clear)
+        return True
+
+    async def drop_mirrors(self, clear: bool = False) -> None:
+        for udid in list(self.mirrors):
+            await self.drop_mirror(udid, clear)
 
     def keep_timeline(self, tl: Timeline, name: str, waypoints: list, exportable: bool = True) -> str:
         tid = uuid.uuid4().hex[:12]
@@ -90,6 +105,7 @@ async def lifespan(app: FastAPI):
     upd_task.cancel()
     try:
         await app.state.s.player.stop()
+        await app.state.s.drop_mirrors()
         for d in app.state.s.drivers.values():
             await d.disconnect()
     finally:
@@ -153,6 +169,19 @@ class TextIn(BaseModel):
 class ConnectIn(BaseModel):
     driver: Literal["pmd3", "cli", "mock"] = "pmd3"
     udid: Optional[str] = None
+    connection: Literal["auto", "usb", "network"] = "auto"
+
+
+class MirrorIn(BaseModel):
+    udid: str
+    connection: Literal["auto", "usb", "network"] = "auto"
+
+
+class UdidIn(BaseModel):
+    udid: Optional[str] = None
+
+
+MAX_MIRRORS = 8
 
 
 class WaypointIn(BaseModel):
@@ -265,13 +294,14 @@ async def status():
     return {
         "version": __version__,
         "app": "browser",
-        "features": {"cli_driver": True, "tunnel_helper": True},
+        "features": {"cli_driver": True, "tunnel_helper": True, "multi_device": True, "wifi": True},
         "driver": s.driver_key,
         "drivers": [{"key": k, "label": v.label, "live": v.live} for k, v in s.drivers.items()],
         "device": d.info.to_dict() if d.info else None,
         "live": d.live,
         "player": s.player.status(),
         "update": s.updater.status(),
+        "mirrors": [m.to_dict() for m in s.mirrors.values()],
     }
 
 
@@ -285,9 +315,13 @@ async def connect(body: ConnectIn):
     s = S()
     await s.player.stop()
     if body.driver != s.driver_key:
+        await s.drop_mirrors()
         await s.driver.disconnect()
         s.driver_key = body.driver
-    info = await s.driver.connect(body.udid or None)
+    if body.udid:
+        await s.drop_mirror(body.udid)  # it becomes the main phone instead
+    info = await s.driver.connect(body.udid or None, body.connection)
+    await s.drop_mirror(info.udid)
     return {"device": info.to_dict()}
 
 
@@ -295,8 +329,53 @@ async def connect(body: ConnectIn):
 async def disconnect():
     s = S()
     await s.player.stop()
+    await s.drop_mirrors()
     await s.driver.disconnect()
     return {"ok": True}
+
+
+@app.post("/api/mirrors")
+async def mirror_add(body: MirrorIn):
+    """Another iPhone follows the main one: same position, same route, from now on."""
+    s = S()
+    main = s.driver
+    if not main.connected or main.info is None:
+        raise DeviceError("Connect the main iPhone first.")
+    if not main.live:
+        raise DeviceError("Several iPhones at once need the Direct connection (or the Simulator).")
+    if body.udid == main.info.udid:
+        raise DeviceError("That is the main iPhone already.")
+    if body.udid in s.mirrors:
+        raise DeviceError("That iPhone already follows the main one.")
+    if len(s.mirrors) >= MAX_MIRRORS:
+        raise DeviceError(f"Up to {MAX_MIRRORS} extra iPhones can follow the main one.")
+    drv = type(main)()
+    info = await drv.connect(body.udid, body.connection)
+    if info.udid == main.info.udid or info.udid in s.mirrors:
+        await drv.disconnect()
+        raise DeviceError("That iPhone is connected already.")
+    link = MirrorLink(drv)
+    s.mirrors[info.udid] = link
+    pos = s.player.position
+    if pos is not None:
+        link.push_set(pos.lat, pos.lon)  # catch up with the main phone straight away
+    return {"mirror": link.to_dict(), "mirrors": [m.to_dict() for m in s.mirrors.values()]}
+
+
+@app.delete("/api/mirrors/{udid}")
+async def mirror_remove(udid: str, clear: bool = True):
+    """Stop following; by default the phone goes back to its real location."""
+    s = S()
+    if not await s.drop_mirror(udid, clear):
+        raise HTTPException(404, "That iPhone doesn't follow the main one.")
+    return {"mirrors": [m.to_dict() for m in s.mirrors.values()]}
+
+
+@app.post("/api/device/wifi")
+async def enable_wifi(body: UdidIn):
+    s = S()
+    udid = body.udid or (s.driver.info.udid if s.driver.info else None)
+    return {"message": await s.driver.enable_wifi(udid)}
 
 
 @app.post("/api/device/reveal-developer-mode")

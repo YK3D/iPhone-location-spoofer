@@ -29,7 +29,8 @@ The app sends requests **directly** to these services. No data passes through se
 
 | Service | When | What it receives | Policy |
 |---|---|---|---|
-| OpenStreetMap tile servers (`tile.openstreetmap.org`) | Showing the Streets map | Map tile coordinates, IP address | [OSMF privacy policy](https://osmfoundation.org/wiki/Privacy_Policy) |
+| OpenFreeMap (`tiles.openfreemap.org`) | Showing the OpenFreeMap map (the default) | Map tile coordinates, IP address | [OpenFreeMap terms](https://openfreemap.org/tos/) |
+| OpenStreetMap tile servers (`tile.openstreetmap.org`) | Showing the OpenStreetMap map | Map tile coordinates, IP address | [OSMF privacy policy](https://osmfoundation.org/wiki/Privacy_Policy) |
 | Esri World Imagery | Showing the Satellite map | Map tile coordinates, IP address | [Esri privacy](https://www.esri.com/en-us/privacy/overview) |
 | OpenTopoMap | Showing the Topographic map | Map tile coordinates, IP address | [OpenTopoMap](https://opentopomap.org/about) |
 | Nominatim (`nominatim.openstreetmap.org`) | Place search; Google Maps links that contain place names | Your search text, IP address | [OSMF privacy policy](https://osmfoundation.org/wiki/Privacy_Policy) |

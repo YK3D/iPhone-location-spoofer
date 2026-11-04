@@ -111,9 +111,33 @@
           <button id="btn-disconnect" hidden data-action="connect">Disconnect</button>
         </div>
         <div id="device-status" class="status">Not connected</div>
+        <!-- more iPhones at once: extra phones follow the main one -->
+        <div id="mirrors" class="mirrors" hidden>
+          <div class="mirrors-head"><span class="mirrors-title">More iPhones</span><span class="tag">Experimental</span>
+            <button class="info" type="button" data-tip="Every iPhone added here follows the main one: teleports, routes, GPX tracks, the joystick and Stop spoofing all reach each of them. A phone that is slow or drops out never holds up the others; it is marked here until you remove it. Removing a phone sends it back to its real location.">i</button></div>
+          <ul id="mirror-list" class="mirror-list"></ul>
+          <div class="field-row">
+            <label class="grow">Add an iPhone
+              <select id="mirror-select"><option value="">No other iPhone found</option></select>
+            </label>
+            <button id="btn-mirror-add">Add</button>
+          </div>
+        </div>
         <details class="sub" id="device-tools">
           <summary>Device tools</summary>
           <div class="tool-list">
+            <div class="field-row">
+              <label class="grow">Connect over
+                <select id="conn-via">
+                  <option value="auto">Automatic (cable if plugged in, else Wi-Fi)</option>
+                  <option value="usb">USB cable only</option>
+                  <option value="network">Wi-Fi only</option>
+                </select>
+              </label>
+              <button class="info" type="button" data-tip="Wi-Fi works once the phone allows it: plug it in, press Allow Wi-Fi connection below, then keep it unlocked and on the same network as this computer. Wi-Fi is slower to answer than the cable, so very fast routes can lag a little. Bluetooth can't be used: iPhones only offer the location tools over a cable or the network.">i</button>
+            </div>
+            <div class="tool"><button id="btn-wifi">Allow Wi-Fi connection</button>
+              <button class="info" type="button" data-tip="Turns on the iPhone's &quot;Show this iPhone when on Wi-Fi&quot; setting, so this computer can reach it without the cable. Needs the phone plugged in once. Experimental.">i</button></div>
             <div class="tool"><button id="btn-reveal">Reveal Developer Mode</button>
               <button class="info" type="button" data-tip="iOS hides the Developer Mode switch until a computer asks for it. Press this with the iPhone plugged in and unlocked, then open Settings › Privacy & Security › Developer Mode on the phone, turn it on and restart. Needed once per phone.">i</button></div>
             <div class="tool"><button id="btn-mount">Mount developer image</button>
@@ -187,7 +211,7 @@
             <button id="btn-route-link" class="fixed">Import</button></span>
         </div>
       </details>
-      <details class="section" id="sec-route-settings" open>
+      <details class="section" id="sec-route-settings">
         <summary><svg class="ico sec-ico"><use href="#i-gauge"/></svg><span class="sec-title">Routing &amp; speed</span><span id="route-settings-sub" class="sec-sub"></span></summary>
         <div class="sec-body">
           <div class="grid2">
@@ -246,7 +270,7 @@
             <input id="speed-factor" type="range" min="0.6" max="1.4" step="0.05" value="1"></label>
         </div>
       </details>
-      <details class="section" id="sec-checkpoints" open>
+      <details class="section" id="sec-checkpoints">
         <summary><svg class="ico sec-ico"><use href="#i-flag"/></svg><span class="sec-title">Checkpoints</span><span id="wp-count" class="sec-sub"></span></summary>
         <div class="sec-body">
           <ol id="waypoints" class="waypoints"></ol>
@@ -454,14 +478,24 @@
     <section class="pane" data-pane="appearance">
       <h3>Theme</h3>
       <div id="theme-grid" class="theme-grid"></div>
-      <label>Map theme
-        <select id="pref-map-theme">
-          <option value="dark">Dark</option>
-          <option value="light">Light</option>
-          <option value="auto">Match the app theme</option>
-        </select>
-      </label>
-      <p class="hint">Applies to the OpenStreetMap street and topographic layers. Satellite and Google maps keep their own colours.</p>
+      <div class="grid2">
+        <label>Map
+          <select id="pref-map-provider">
+            <option value="openfreemap">OpenFreeMap (sharp, true dark style)</option>
+            <option value="osm">OpenStreetMap</option>
+            <option value="topo">Topographic (OpenTopoMap)</option>
+            <option value="satellite">Satellite (Esri)</option>
+          </select>
+        </label>
+        <label>Map theme
+          <select id="pref-map-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="auto">Match the app theme</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">OpenFreeMap has a real dark style. OpenStreetMap and the topographic map are shown with inverted colours in dark mode. Satellite and Google maps keep their own colours. The map's layer button switches maps too.</p>
       <label class="check"><input id="pref-compact" type="checkbox"> Compact layout</label>
     </section>
     <section class="pane" data-pane="keys" hidden>
@@ -523,6 +557,7 @@
       <button id="tut-skip" type="button" class="link-btn">Skip</button>
     </div>
     <div class="tut-progress"><span id="tut-bar"></span></div>
+    <div id="tut-art" class="tut-art-wrap"></div>
     <h2 id="tut-title"></h2>
     <div id="tut-body" class="tut-body"></div>
     <div id="tut-action" class="btn-row"></div>
