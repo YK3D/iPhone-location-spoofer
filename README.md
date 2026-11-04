@@ -58,9 +58,10 @@ Both editions have the same interface and features. They update themselves from 
   * set a speed per leg, an exact speed at chosen checkpoints, and wait times;
   * acceleration and braking change speed smoothly;
   * ask for up to three alternative routes, labelled on the map with their extra time, and pick one in the list or on the map;
-  * the Build route button shows each step as it happens (routing each leg, speed limits, turns, ETA) and how far along it is;
+  * the Build route button shows each step as it happens (routing each leg, speed limits, turns, ETA) and how far along it is; Cancel (or Esc) stops it, and changing the route or its settings cancels it by itself;
   * the route line is outlined so it stands out from the roads, and coloured by speed in a smooth gradient, with a speed chart;
   * hover a checkpoint in the list to highlight it on the map.
+* **Roundabouts:** always driven at a normal roundabout speed for their size (about 20–40 km/h by car), whatever the road's own speed.
 * **Road-aware driving (experimental):**
   * follows each road's typical speed, and optionally public speed limits (not recommended: the public service is slow and often incomplete);
   * slows for bends, roundabouts and U-turns, and on private or gated roads;
@@ -73,7 +74,7 @@ Both editions have the same interface and features. They update themselves from 
   * 17 colour themes (Graphite by default) and a dark or light map;
   * folding sections, and a side menu you can resize or hide;
   * single-key keyboard shortcuts that you can change (press **H** to see them);
-  * a setup guide on first run, and **(i)** buttons that explain every tool;
+  * a setup guide on first run, and help icons that explain every tool;
   * favourites, saved routes, and backup or restore.
 
 ## Getting started
