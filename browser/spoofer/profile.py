@@ -58,9 +58,12 @@ class Leg:
     points: list[geo.LatLon]  # routed geometry, first/last should be the waypoints
     cruise_kmh: Optional[float] = None  # None -> settings.default_cruise_kmh
     ramp: str = "accel"  # "accel" | "linear"
+    mode: str = "straight"  # how the leg is travelled (car, bike, foot, sea, straight)
     # Road-aware mode: typical speed (m/s, None = unknown) up to each distance along the leg,
     # as reported by the routing service / speed-limit data. Sorted by distance.
     zones: Optional[list[tuple[float, Optional[float]]]] = None
+    # (start m, end m) along the leg of each roundabout; always driven at roundabout speed
+    roundabouts: list[tuple[float, float]] = field(default_factory=list)
 
 
 @dataclass
@@ -110,6 +113,7 @@ class Timeline:
     warnings: list[str] = field(default_factory=list)
     dwell_total: float = 0.0  # seconds spent waiting at checkpoints
     corners_slowed: int = 0
+    roundabouts: list[tuple[float, float]] = field(default_factory=list)  # (radius m, speed km/h) of each
     # (time, waypoint index) of every "hold until Continue" checkpoint: the moment the device
     # comes to a stop there, before any wait time.
     holds: list[tuple[float, int]] = field(default_factory=list)
@@ -228,6 +232,7 @@ class Timeline:
             "waypoint_times_s": [round(t, 1) for t in self.waypoint_times],
             "moving_time_s": round(self.duration - self.dwell_total, 1),
             "corners_slowed": self.corners_slowed,
+            "roundabouts": [{"radius_m": r, "speed_kmh": v} for r, v in self.roundabouts],
             "holds": len(self.holds),
             "warnings": self.warnings,
         }
@@ -291,6 +296,7 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
         c = step_cap[k]
         cap[k] = min(cap[k], c)
         cap[k + 1] = min(cap[k + 1], c)
+    rings = _apply_roundabout_caps(nodes, cum, cap, legs, wp_node)
     corners = 0
     if settings.corner_slowdown:
         corners = _apply_corner_caps(nodes, cum, cap, settings)
@@ -385,6 +391,7 @@ def build_timeline(waypoints: Sequence[Waypoint], legs: Sequence[Leg], settings:
     tl = Timeline(segments, [node_arrival[k] for k in wp_node], warnings)
     tl.dwell_total = sum(dwell_at.values())
     tl.corners_slowed = corners
+    tl.roundabouts = rings
     tl.holds = sorted((node_arrival[wp_node[i]], i) for i, wp in enumerate(waypoints) if wp.hold)
     return tl
 
@@ -406,6 +413,65 @@ def _step_caps(legs, cruises, node_leg, wp_node, cum, settings: ProfileSettings)
                 # An explicit cruise speed on the leg still acts as the driver's own limit.
                 c = min(road, c) if leg.cruise_kmh is not None else road
         out[k] = max(c, MIN_MOVING_SPEED * 2)
+    return out
+
+
+# Roundabouts are always driven at roundabout speed, whatever the road's own speed and whether or
+# not "slow down for turns" is on: maps give a roundabout its road's class (often 60-110 km/h), and
+# nobody drives round one like that. The speed follows the roundabout's size: v = sqrt(a * R) with a
+# comfortable sideways acceleration, kept within what is normal for that vehicle.
+ROUNDABOUT = {"car": (2.5, 15.0, 40.0), "bike": (2.0, 10.0, 22.0)}  # a m/s^2, min km/h, max km/h
+ROUNDABOUT_DEFAULT_R = 12.0  # radius used for a mini roundabout or when the shape can't be measured
+
+
+def roundabout_speed(mode: str, radius_m: float) -> Optional[float]:
+    """Speed (m/s) for driving round a roundabout of this radius; None when the mode isn't slowed."""
+    spec = ROUNDABOUT.get(mode if mode in ROUNDABOUT else "car" if mode == "straight" else "")
+    if spec is None:
+        return None
+    a, lo, hi = spec
+    return min(hi, max(lo, math.sqrt(a * max(radius_m, 4.0)) * 3.6)) / 3.6
+
+
+def _ring_radius(nodes, cum, k0: int, k1: int) -> float:
+    """Radius of the circulating part: its length over the heading change in the dominant direction."""
+    left = right = 0.0
+    prev = None
+    for k in range(k0, k1):
+        if cum[k + 1] - cum[k] <= 0.05:
+            continue
+        b = geo.bearing_deg(nodes[k], nodes[k + 1])
+        if prev is not None:
+            d = (b - prev + 540.0) % 360.0 - 180.0
+            if d > 0:
+                right += d
+            else:
+                left -= d
+        prev = b
+    turned = math.radians(max(left, right))
+    length = cum[k1] - cum[k0]
+    if turned < math.radians(25) or length < 5:
+        return ROUNDABOUT_DEFAULT_R
+    return min(60.0, max(5.0, length / turned))
+
+
+def _apply_roundabout_caps(nodes, cum, cap, legs, wp_node) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for li, leg in enumerate(legs):
+        base = cum[wp_node[li]]
+        for s0, s1 in leg.roundabouts:
+            # the nodes at or just outside each end, so the whole ring is covered
+            k0 = max(0, bisect.bisect_right(cum, base + s0) - 1)
+            k1 = min(len(cum) - 1, max(k0, bisect.bisect_left(cum, base + s1)))
+            if k1 <= k0:
+                continue
+            radius = _ring_radius(nodes, cum, k0, k1) if s1 - s0 > 2 * 12.0 + 1 else ROUNDABOUT_DEFAULT_R
+            v = roundabout_speed(leg.mode, radius)
+            if v is None:
+                continue
+            for k in range(k0, k1 + 1):
+                cap[k] = min(cap[k], v)
+            out.append((round(radius, 1), round(v * 3.6, 1)))
     return out
 
 
