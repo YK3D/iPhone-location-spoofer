@@ -3,7 +3,8 @@ name = "location-spoofer"
 version = "0.1.0"
 edition = "2021"
 description = "Standalone desktop app that simulates an iPhone's GPS location over USB"
-license = "MIT"
+license-file = "../LICENSE"
+authors = ["YK3D"]
 publish = false
 default-run = "location-spoofer"
 

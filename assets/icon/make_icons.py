@@ -17,8 +17,8 @@ white background). This script never modifies it. It:
 4. writes PNGs (16-1024 px), a multi-size icon.ico and the copies the UI serves (ui/icon-*.png).
 
 The taskbar and browser-tab sizes (16-64 px: the window icon, the small entries of icon.ico, the
-favicons ui/icon-32/64.png and the Store package's taskbar logo) use a simplified redrawing of the
-artwork instead (see small_icon), because the full artwork is unreadable that small. The in-app
+favicons ui/icon-32/64.png and the Store package's small logos) show only the red masked location
+pin, redrawn as vectors (see small_icon), because the full artwork is unreadable that small. The in-app
 logo (ui/icon-256.png) and the large icons keep the artwork.
 """
 
@@ -46,7 +46,7 @@ OUTLINE = np.array([29.0, 36.0, 51.0])  # the artwork's dark navy outline colour
 MARGIN = 1 / 64  # transparent border around the artwork, as a share of the icon size
 
 PNG_SIZES = [16, 32, 48, 64, 128, 256, 512, 1024]
-ICO_SIZES = [16, 24, 32, 48, 64, 128, 256]
+ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 80, 96, 128, 256]  # up to 96 px: the pin (taskbar at every scale)
 UI_SIZES = [32, 64, 256]
 
 
@@ -131,17 +131,16 @@ def scaled(img: Image.Image, n: int) -> Image.Image:
 
 
 # ---------------------------------------------------------------------------------------------
-# The taskbar / browser-tab icon (16-64 px). At those sizes the full artwork turns into a dark
-# smudge on a dark taskbar, so they use a redrawn, simplified version of it instead: the same
-# masked red pin, much larger, over a phone with a bold white rim, with a white halo that keeps
-# the pin apart from the phone and readable on dark and light taskbars alike. Drawn as vectors
-# (no detail from source.jpg is resampled), so every size is crisp.
+# The taskbar / browser-tab icon (16-64 px) is only the red masked location pin from the artwork,
+# redrawn as vectors and filling the whole icon: the full artwork turns into a dark smudge that
+# small, while the pin alone stays recognisable. A navy keyline and a thin white halo keep it
+# readable on dark and light taskbars alike. No detail from source.jpg is resampled, so every size
+# is crisp.
 NAVY = (29, 36, 51, 255)
-SCREEN_TOP, SCREEN_BOTTOM = (38, 52, 78), (20, 27, 42)
 RED_LIGHT, RED_DARK, MASK_RED = (214, 50, 56, 255), (176, 34, 42, 255), (226, 62, 66, 255)
-GREEN = (76, 203, 107, 255)
 WHITE = (255, 255, 255, 255)
-SMALL_SIZES = {16, 24, 32, 48, 64}  # these get the simplified icon; 128 px and up keep the artwork
+SMALL_SIZES = {16, 24, 32, 48, 64}  # these get the pin; 128 px and up keep the full artwork
+PIN_TIP_RATIO = 1.76  # distance from the pin head's centre to its tip, in head radii (as in the artwork)
 
 
 def _teardrop(draw: ImageDraw.ImageDraw, cx: float, cy: float, r: float, tip: float, fill) -> None:
@@ -170,35 +169,18 @@ def small_icon(n: int) -> Image.Image:
     u = S / 100.0  # drawing units: the icon is 100 x 100
     tiny = n <= 24
     img = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-
-    # phone: navy keyline, white rim, dark screen with a vertical gradient
-    x0, y0, x1, y1, rad = 40, 3, 96, 97, 14
-    key = 2.2 if tiny else 1.8
-    rim = 7.5 if tiny else 6.0
     d = ImageDraw.Draw(img)
-    d.rounded_rectangle([(x0 - key) * u, (y0 - key) * u, (x1 + key) * u, (y1 + key) * u], radius=(rad + key) * u, fill=NAVY)
-    d.rounded_rectangle([x0 * u, y0 * u, x1 * u, y1 * u], radius=rad * u, fill=WHITE)
-    screen = [(x0 + rim) * u, (y0 + rim) * u, (x1 - rim) * u, (y1 - rim) * u]
-    grad = Image.new("RGBA", (S, S))
-    gd = ImageDraw.Draw(grad)
-    for y in range(S):
-        t = min(1.0, max(0.0, (y / u - y0) / (y1 - y0)))
-        gd.line([(0, y), (S, y)], fill=tuple(round(a + (b - a) * t) for a, b in zip(SCREEN_TOP, SCREEN_BOTTOM)) + (255,))
-    smask = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(smask).rounded_rectangle(screen, radius=max(1.0, rad - rim) * u, fill=255)
-    img.paste(grad, (0, 0), smask)
 
-    # the route: green dots climbing to the top right of the screen (left out where they'd blur)
-    if not tiny:
-        for (x, y) in [(62, 86), (72, 77), (79, 64), (82, 50), (83, 36), (83, 22)]:
-            rr = 3.6
-            d.ellipse([(x - rr) * u, (y - rr) * u, (x + rr) * u, (y + rr) * u], fill=GREEN)
+    # Size the pin so that, with its keyline and halo, it fills the icon's height (2 units margin).
+    halo, line = (4.0, 3.4) if tiny else (3.0, 2.8)
+    grow = line + halo
+    outer = (100 - 2 * 2) / (1 + PIN_TIP_RATIO)  # head radius including the outline
+    r = outer - grow
+    cx, cy = 50.0, 2 + outer
+    tip = cy + PIN_TIP_RATIO * r
 
-    # the masked pin, with a white halo and a navy keyline
-    cx, cy, r, tip = 33.0, 41.0, 25.0, 85.0
-    halo, line = (3.8, 3.2) if tiny else (3.2, 2.6)
-    for grow, colour in ((line + halo, WHITE), (line, NAVY)):
-        _teardrop(d, *(v * u for v in _grow_teardrop(cx, cy, r, tip, grow)), fill=colour)
+    for g, colour in ((grow, WHITE), (line, NAVY)):
+        _teardrop(d, *(v * u for v in _grow_teardrop(cx, cy, r, tip, g)), fill=colour)
     pin = Image.new("L", (S, S), 0)
     _teardrop(ImageDraw.Draw(pin), cx * u, cy * u, r * u, tip * u, fill=255)
     left = Image.new("L", (S, S), 0)
@@ -207,21 +189,20 @@ def small_icon(n: int) -> Image.Image:
     img.paste(Image.new("RGBA", (S, S), RED_LIGHT), (0, 0), ImageChops.multiply(pin, left))
 
     # the mask across the pin's head: navy outline, red mask, navy eye holes
-    my = cy - 1.0
+    my = cy - 0.04 * r
     wing_dx, wing_rx, wing_ry = 0.44 * r, 0.50 * r, 0.33 * r
-    edge = 0.13 * r if not tiny else 0.16 * r
-    for grow, colour in ((edge, NAVY), (0.0, MASK_RED)):
+    edge = 0.16 * r if tiny else 0.12 * r
+    for g, colour in ((edge, NAVY), (0.0, MASK_RED)):
         for sx in (-1, 1):
             ex = cx + sx * wing_dx
-            d.ellipse([(ex - wing_rx - grow) * u, (my - wing_ry - grow) * u, (ex + wing_rx + grow) * u, (my + wing_ry + grow) * u], fill=colour)
-        d.rectangle([(cx - wing_dx) * u, (my - wing_ry * 0.8 - grow) * u, (cx + wing_dx) * u, (my + wing_ry * 0.55 + grow) * u], fill=colour)
-    eye_rx, eye_ry = (0.26 * r, 0.16 * r) if not tiny else (0.27 * r, 0.18 * r)
+            d.ellipse([(ex - wing_rx - g) * u, (my - wing_ry - g) * u, (ex + wing_rx + g) * u, (my + wing_ry + g) * u], fill=colour)
+        d.rectangle([(cx - wing_dx) * u, (my - wing_ry * 0.8 - g) * u, (cx + wing_dx) * u, (my + wing_ry * 0.55 + g) * u], fill=colour)
+    eye_rx, eye_ry = (0.27 * r, 0.18 * r) if tiny else (0.26 * r, 0.16 * r)
     for sx in (-1, 1):
         ex = cx + sx * 0.42 * r
         d.ellipse([(ex - eye_rx) * u, (my - eye_ry) * u, (ex + eye_rx) * u, (my + eye_ry) * u], fill=NAVY)
 
-    small = premultiplied_resize(img, (n, n))
-    return small
+    return premultiplied_resize(img, (n, n))
 
 
 MSIX_ASSETS = {"Square44x44Logo.png": 44, "StoreLogo.png": 50, "Square150x150Logo.png": 150}

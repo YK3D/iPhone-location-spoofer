@@ -1,4 +1,4 @@
-/* Location Spoofer UI.
+/* Location Spoofer UI. Copyright (c) 2026 YK3D. All rights reserved. See LICENSE.
    Structure: one set of design tokens (theme colours + derived control colours, radii, sizes), then
    edge-to-edge panes. The side menu is a darker canvas; every pane sits on it as a full-width block with
    its own header bar, so sections read as separate groups without card chrome. Elevation (shadows) is
@@ -378,6 +378,8 @@ p.warn { color: var(--warn-text); }
 .list li.hint { display: block; border: 0; }
 .list li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list li button { height: 24px; min-height: 24px; padding: 0 8px; font-size: 12px; }
+.list li a { padding: 0 6px; font-size: 12px; font-weight: 600; }
+#feature-test-list { max-height: 220px; overflow-y: auto; }
 .list li button.x { width: 24px; padding: 0; color: var(--muted); border-color: transparent; background: transparent; box-shadow: none; }
 .list li button.x:hover:not(:disabled) { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .picked { padding: 6px 8px; border-radius: var(--radius-sm); background: var(--well); border: 1px solid var(--border);

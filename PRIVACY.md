@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 1 November 2026_
+_Last updated: 5 November 2026_
 
 This policy covers both editions of Location Spoofer: the standalone app (`LocationSpooferStandalone.exe`) and the browser version (`LocationSpooferBrowser.exe` or run from source). Together they are called "the app".
 
@@ -38,7 +38,7 @@ The app sends requests **directly** to these services. No data passes through se
 | Overpass API (`overpass-api.de`) | Only when "Use public speed limits" is turned on | OpenStreetMap node IDs along the route, IP address | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) |
 | Google Maps Platform (Routes API, Map Tiles API) | Only if you add your own API key and choose Google routing | Route coordinates, map tile requests, your API key, IP address | [Google Privacy Policy](https://policies.google.com/privacy) |
 | Google short links (`maps.app.goo.gl`) | Only when you paste a short Google Maps link | The link, IP address | [Google Privacy Policy](https://policies.google.com/privacy) |
-| GitHub (`api.github.com`, `github.com`, `release-assets.githubusercontent.com`) | Update checks (at start-up and every few hours) and update downloads | Your IP address and app version (in the request) | [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) |
+| GitHub (`api.github.com`, `github.com`, `release-assets.githubusercontent.com`) | Update checks (at start-up and every few hours), update downloads, and the list of feature tests when you press *Show feature tests* in Settings › Updates | Your IP address and app version (in the request) | [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) |
 | GitHub raw content (`raw.githubusercontent.com/doronz88/DeveloperDiskImage`) | Only when the iPhone has no Developer Disk Image mounted | The requested file path, IP address | [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) |
 
 Straight-line and sea-lane routes, coordinate entry, GPX files and the simulator work **offline** and contact none of these services. Update checks can be turned off by starting the app with `--no-update`.

@@ -28,3 +28,8 @@ cd standalone && cargo test --locked
 ```
 
 The Rust GUI code also needs to compile for Windows (`cargo check --target x86_64-pc-windows-gnu` works on Linux with mingw installed).
+
+## Audience and licence
+
+- The README, CHANGELOG, release notes, Terms, Privacy Policy and in-app text are for everyday users: plain language, no build details or internal branch names. Developer material goes in CONTRIBUTING.md.
+- Everything except `browser/` is under the Location Spoofer License (`LICENSE`, all rights reserved). `browser/` is GPL-3.0-or-later with section 7 attribution terms (`browser/NOTICE`) because it bundles GPL libraries. Don't add open-source licence headers or change these licences.

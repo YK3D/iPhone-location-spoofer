@@ -102,6 +102,9 @@ def main() -> int:
         "--specpath", str(ROOT / "build"),
         "--paths", str(ROOT),
         "--add-data", f"{ROOT.parent / 'ui'}{sep}spoofer/static",
+        # The GPL text and the additional terms travel with the exe (GPL section 4 and 7).
+        "--add-data", f"{ROOT / 'LICENSE'}{sep}legal",
+        "--add-data", f"{ROOT / 'NOTICE'}{sep}legal",
     ]
     pyi_args.append("--onedir" if args.onedir else "--onefile")
     for pkg in COLLECT_ALL:

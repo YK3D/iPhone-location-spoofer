@@ -8,8 +8,8 @@ fn main() {
         res.set_icon("../assets/icon/icon.ico");
         res.set("ProductName", "Location Spoofer");
         res.set("FileDescription", "Location Spoofer");
-        res.set("CompanyName", "Location Spoofer contributors");
-        res.set("LegalCopyright", "MIT License. See LICENSE.");
+        res.set("CompanyName", "YK3D");
+        res.set("LegalCopyright", "Copyright (c) 2026 YK3D. All rights reserved. See LICENSE.");
         if let Err(e) = res.compile() {
             println!("cargo:warning=could not embed the Windows icon: {e}");
         }

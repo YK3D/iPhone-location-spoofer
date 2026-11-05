@@ -3,7 +3,7 @@
 Ideas being considered for future versions. None of them is promised; suggestions are welcome as GitHub issues.
 
 ## Next up
-- **No Apple Devices app needed:** a built-in device service, being tested on the `feature/no-apple-devices` branch.
+- **No Apple Devices app needed:** a built-in device service, so nothing else has to be installed.
 - **Code-signed releases**, so Windows stops showing the "unknown publisher" warning.
 - **Microsoft Store edition**, once the standalone app is mature.
 
@@ -19,7 +19,7 @@ Ideas being considered for future versions. None of them is promised; suggestion
 
 ## Realism
 - Realistic GPS noise models (urban canyon, open sky), and a slow drift when standing still.
-- Heading and speed values that apps reading course and speed would see. Apple's location simulation only carries a position; this needs a different way of setting the location (see the discussion in the pull request that added the live HUD).
+- Speed and heading that apps on the iPhone can read (Apple's location simulation only sends a position, so this needs a different method).
 - "Rest stops" that are inserted automatically on long drives.
 
 ## Comfort
@@ -29,7 +29,4 @@ Ideas being considered for future versions. None of them is promised; suggestion
 - Search history and recent places.
 - More languages for the interface.
 - Portable mode (settings stored next to the `.exe`).
-
-## For developers
-- A small local HTTP API and command line, so test scripts can drive the app.
-- Record and replay test sessions for app QA.
+- Control the app from scripts, and record and replay test sessions.

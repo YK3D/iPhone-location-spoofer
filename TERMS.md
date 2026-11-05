@@ -1,12 +1,12 @@
 # Terms of Use
 
-_Last updated: 1 November 2026_
+_Last updated: 5 November 2026_
 
 By downloading, installing or using Location Spoofer (the standalone app or the browser version, together "the app") you agree to these terms. If you do not agree, do not use the app.
 
 ## 1. What the app is
 
-The app is free, open-source software that simulates a GPS location on an iPhone you own or are allowed to use, through Apple's developer location-simulation features. It is intended for app development and testing, demonstrations, education and personal privacy.
+The app is free software, made by YK3D, that simulates a GPS location on an iPhone you own or are allowed to use, through Apple's developer location-simulation features. It is intended for app development and testing, demonstrations, education and personal privacy.
 
 ## 2. Acceptable use
 
@@ -47,12 +47,12 @@ The public OpenStreetMap services are run by volunteers; please do not use the a
 
 The app is an independent project. It is **not affiliated with, endorsed by or sponsored by Apple Inc. or Google LLC**. iPhone, iOS and Xcode are trademarks of Apple Inc. Google Maps is a trademark of Google LLC. Other names belong to their respective owners and are used only to describe compatibility.
 
-## 8. Licences
+## 8. Ownership and licences
 
-The app's source code is open source:
+The app, its source code, interface, icon and documentation are owned by YK3D and protected by copyright. You may use the app for free, but you may not copy its code or artwork into other projects, redistribute it, sell it or publish modified versions without written permission, and any permitted use must credit "Location Spoofer by YK3D". The exact rules are in the licences:
 
-* the standalone app and shared interface are under the MIT License ([LICENSE](LICENSE));
-* the browser version is under the GNU GPL v3 or later ([browser/LICENSE](browser/LICENSE)).
+* the standalone app, the shared interface, the icon and the documentation: the Location Spoofer License ([LICENSE](LICENSE));
+* the browser version: the GNU GPL v3 or later with additional terms that require the same credit ([browser/LICENSE](browser/LICENSE), [browser/NOTICE](browser/NOTICE)), because it is distributed together with GPL-licensed libraries.
 
 Those licences govern copying, modifying and redistributing the code. These terms govern using the app.
 
@@ -62,4 +62,4 @@ The app can update itself from this repository's GitHub releases. Releases are c
 
 ## 10. Contact
 
-Report problems at <https://github.com/YK3D/iPhone-location-spoofer/issues>. Report security issues as described in [SECURITY.md](SECURITY.md).
+Report problems, or ask for permission to use the code, at <https://github.com/YK3D/iPhone-location-spoofer/issues>. Report security issues as described in [SECURITY.md](SECURITY.md).

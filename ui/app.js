@@ -1,4 +1,5 @@
-/* Location Spoofer — UI shared by the standalone and browser apps. Talks to the local server at /api. */
+/* Location Spoofer — UI shared by the standalone and browser apps. Talks to the local server at /api.
+   Copyright (c) 2026 YK3D. All rights reserved. Licensed under the Location Spoofer License (LICENSE). */
 "use strict";
 
 // ------------------------------------------------------------------ helpers
@@ -17,6 +18,7 @@ const el = (tag, props = {}, ...kids) => {
   return e;
 };
 
+const APPLE_DEVICES_URL = "https://apps.microsoft.com/detail/9np83lwlpz9k"; // Apple Devices in the Microsoft Store
 const SVG_NS = "http://www.w3.org/2000/svg";
 // An icon from the sprite in index.html (monochrome, follows the text colour).
 function svgIcon(name, cls = "ico") {
@@ -717,7 +719,6 @@ $("btn-hide-sidebar").onclick = () => setSidebarHidden(true);
 $("btn-show-sidebar").onclick = () => setSidebarHidden(false);
 
 // ------------------------------------------------------------------ tabs
-const TABS = ["teleport", "route", "gpx", "joystick", "saved"];
 function openTab(name) {
   state.tab = name;
   document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("active", x.dataset.tab === name));
@@ -790,7 +791,14 @@ function renderDevice(st) {
     chip.className = "chip ok"; chip.textContent = d.name;
     $("dev-summary").textContent = `Connected · ${d.name}`;
   } else if (state.devicesError && $("driver").value !== "mock") {
-    box.className = "status warn"; box.textContent = state.devicesError;
+    box.className = "status warn";
+    // Rebuilt only when the message changes, so the link isn't replaced under the mouse every poll.
+    const msg = state.devicesError;
+    if (box.dataset.msg !== msg || !box.textContent.startsWith(msg)) {
+      box.dataset.msg = msg;
+      box.replaceChildren(msg);
+      if (/Apple Devices/.test(msg)) box.append(" ", el("a", { href: APPLE_DEVICES_URL, target: "_blank", rel: "noopener", textContent: "Get Apple Devices" }));
+    }
     chip.className = "chip warn"; chip.textContent = "Not ready";
     $("dev-summary").textContent = "Not connected";
   } else {
@@ -2462,7 +2470,6 @@ function shortcutMap() {
   const custom = settings().shortcuts || {};
   return Object.fromEntries(ACTIONS.map(([id, def]) => [id, (custom[id] || def).toUpperCase()]));
 }
-function keyFor(id) { return shortcutMap()[id]; }
 document.addEventListener("keydown", (e) => {
   if (listeningFor) return;
   if (joystickKeydown(e)) return;
@@ -2746,7 +2753,7 @@ const TUTORIAL = [
       ["By continuing you agree to the ", ["Terms of Use", `${REPO}/TERMS.md`], ". The ", ["Privacy Policy", `${REPO}/PRIVACY.md`], " explains which online map services the app contacts. Nothing is collected by the app's authors."],
       "Want to look around first? Pick “Simulator (no iPhone)” as the connection and skip ahead." ], art: "welcome" },
   { title: "1 · Install Apple's device software", body: [
-      "Windows needs Apple's iPhone drivers. Open the Microsoft Store, search for “Apple Devices” and install it (iTunes also works).",
+      ["Windows needs Apple's iPhone drivers. Install ", ["Apple Devices from the Microsoft Store", APPLE_DEVICES_URL], " (free, made by Apple). iTunes also works."],
       "Leave it installed; it runs in the background while you use this app.",
       "macOS: nothing to install. Linux: install the usbmuxd package." ], art: "install" },
   { title: "2 · Connect and trust", body: [
@@ -2859,6 +2866,46 @@ $("btn-update-install").onclick = guard(async () => {
   $("update-text").textContent = "Restarting with the new version… this page reloads by itself.";
   $("btn-update-install").hidden = true;
 });
+// Feature tests: pull requests into the feature-testing branch, listed straight from GitHub's API
+// (on demand only) so testers can open the ones they want to try in the browser.
+const GITHUB_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
+function featureTestRepo() {
+  const r = state.status && state.status.update && state.status.update.repo;
+  return typeof r === "string" && GITHUB_REPO_RE.test(r) ? r : "YK3D/iPhone-location-spoofer";
+}
+function featureTestLabel(pr) {
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  if (pr.merged_at) return `Merged ${day(pr.merged_at)}`;
+  return pr.draft ? "Draft" : `Open since ${day(pr.created_at)}`;
+}
+async function loadFeatureTests() {
+  const repo = featureTestRepo();
+  $("feature-tests-all").href = `https://github.com/${repo}/pulls?q=is%3Apr+base%3Afeature-testing`;
+  const list = $("feature-test-list");
+  let prs;
+  try {
+    const r = await fetch(`https://api.github.com/repos/${repo}/pulls?base=feature-testing&state=all&sort=created&direction=desc&per_page=20`,
+      { headers: { Accept: "application/vnd.github+json" } });
+    if (r.status === 403 || r.status === 429) throw new Error("GitHub is limiting requests from this network right now. Try again later, or use the link to see them on GitHub.");
+    if (!r.ok) throw new Error(`GitHub answered ${r.status}. Use the link to see the feature tests on GitHub.`);
+    prs = await r.json();
+  } catch (e) {
+    if (e instanceof TypeError) throw new Error("Couldn't reach GitHub. Check the internet connection.");
+    throw e;
+  }
+  // Closed without being merged means the experiment was dropped: nothing left to try.
+  const items = (Array.isArray(prs) ? prs : []).filter((pr) => pr && (pr.state === "open" || pr.merged_at)
+    && typeof pr.html_url === "string" && pr.html_url.startsWith("https://github.com/"));
+  morphHeight(settingsDlg, () => {
+    list.replaceChildren(...(items.length ? items.map((pr) => el("li", {},
+      el("span", { textContent: `#${pr.number} · ${pr.title}`, title: pr.title }),
+      el("span", { class: "tag", textContent: featureTestLabel(pr) }),
+      el("a", { href: pr.html_url, target: "_blank", rel: "noopener", textContent: "Open", title: `Open #${pr.number} on GitHub in your browser` })))
+      : [el("li", { class: "hint", textContent: "No feature tests at the moment." })]));
+    list.hidden = false;
+  });
+}
+$("btn-feature-tests").onclick = busy($("btn-feature-tests"), "Loading…", loadFeatureTests);
 $("btn-tunneld").onclick = busy($("btn-tunneld"), "Starting…", async () => toast((await api("/api/tunneld/start", { body: {} })).message));
 function renderUpdate(st) {
   const u = st.update;
