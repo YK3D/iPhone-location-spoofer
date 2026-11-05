@@ -85,14 +85,22 @@ def classify(tags: dict) -> str:
 
 async def fetch_osm_roads(client: httpx.AsyncClient, nodes: list[int]) -> RoadInfo:
     """Speed limits and road classes for consecutive OSM node pairs (from OSRM annotations)."""
-    info = RoadInfo(maxspeed_kmh=[None] * max(0, len(nodes) - 1), kind=[""] * max(0, len(nodes) - 1))
-    if len(nodes) < 2:
-        return info
-    if len(nodes) > MAX_NODES_TOTAL:
-        info.source = "skipped (route too long for the public speed-limit service)"
-        return info
+    return (await fetch_osm_roads_multi(client, [nodes]))[0]
+
+
+async def fetch_osm_roads_multi(client: httpx.AsyncClient, node_lists: list[list[int]]) -> list[RoadInfo]:
+    """fetch_osm_roads for several node sequences (route alternatives) with one set of queries:
+    nodes shared between the sequences are only looked up once."""
+    infos = [RoadInfo(maxspeed_kmh=[None] * max(0, len(n) - 1), kind=[""] * max(0, len(n) - 1)) for n in node_lists]
+    # ids <= 0 are placeholders for nodes the router could not report exactly
+    unique = list(dict.fromkeys(x for nodes in node_lists for x in nodes if isinstance(x, int) and x > 0))
+    if len(unique) < 2:
+        return infos
+    if len(unique) > MAX_NODES_TOTAL:
+        for info in infos:
+            info.source = "skipped (route too long for the public speed-limit service)"
+        return infos
     pair_tags: dict[tuple[int, int], dict] = {}
-    unique = list(dict.fromkeys(nodes))
     for i in range(0, len(unique), MAX_NODES_PER_QUERY):
         chunk = unique[i:i + MAX_NODES_PER_QUERY]
         q = f"[out:json][timeout:25];node(id:{','.join(map(str, chunk))});way(bn)[highway];out body qt;"
@@ -105,18 +113,31 @@ async def fetch_osm_roads(client: httpx.AsyncClient, nodes: list[int]) -> RoadIn
             for x, y in zip(nds, nds[1:]):
                 pair_tags[(x, y)] = tags
                 pair_tags[(y, x)] = tags
-    known = 0
-    for i, (x, y) in enumerate(zip(nodes, nodes[1:])):
-        tags = pair_tags.get((x, y))
-        if not tags:
-            continue
-        info.kind[i] = classify(tags)
-        ms = parse_maxspeed(tags.get("maxspeed"))
-        if ms is None and tags.get("maxspeed") == "none":
-            ms = None
-        info.maxspeed_kmh[i] = ms
-        if ms is not None:
-            known += 1
-    info.coverage = known / max(1, len(nodes) - 1)
-    info.source = "OpenStreetMap (Overpass)"
-    return info
+    for nodes, info in zip(node_lists, infos):
+        known = 0
+        for i, (x, y) in enumerate(zip(nodes, nodes[1:])):
+            tags = pair_tags.get((x, y))
+            if not tags:
+                continue
+            info.kind[i] = classify(tags)
+            ms = parse_maxspeed(tags.get("maxspeed"))
+            info.maxspeed_kmh[i] = ms
+            if ms is not None:
+                known += 1
+        info.coverage = known / max(1, len(nodes) - 1)
+        info.source = "OpenStreetMap (Overpass)"
+    return infos
+
+
+def concat(infos: list[RoadInfo]) -> RoadInfo:
+    """Join the per-leg RoadInfo of one multi-leg OSRM route (a via-point detour) into one."""
+    out = RoadInfo()
+    known = total = 0
+    for info in infos:
+        out.maxspeed_kmh.extend(info.maxspeed_kmh)
+        out.kind.extend(info.kind)
+        known += sum(1 for v in info.maxspeed_kmh if v is not None)
+        total += len(info.maxspeed_kmh)
+        out.source = out.source or info.source
+    out.coverage = known / max(1, total)
+    return out

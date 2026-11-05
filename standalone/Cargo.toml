@@ -3,7 +3,8 @@ name = "location-spoofer"
 version = "0.1.0"
 edition = "2021"
 description = "Standalone desktop app that simulates an iPhone's GPS location over USB"
-license = "MIT"
+license-file = "../LICENSE"
+authors = ["YK3D"]
 publish = false
 default-run = "location-spoofer"
 
@@ -11,7 +12,7 @@ default-run = "location-spoofer"
 default = ["gui"]
 # Native window (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux).
 # Without it the app serves the UI and opens the system browser instead.
-gui = ["dep:tao", "dep:wry", "dep:png"]
+gui = ["dep:tao", "dep:wry", "dep:png", "dep:webview2-com", "dep:windows-core"]
 # Microsoft Store build: no self-updater (the Store delivers updates).
 store = []
 
@@ -56,6 +57,11 @@ idevice = { version = "=0.1.68", default-features = false, features = [
 tao = { version = "0.34", optional = true }
 wry = { version = "0.53", optional = true }
 png = { version = "0.17", optional = true }
+
+# Windows: WebView2 permission handling for the window (the same versions wry uses).
+[target.'cfg(windows)'.dependencies]
+webview2-com = { version = "0.38", optional = true }
+windows-core = { version = "0.61", optional = true }
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

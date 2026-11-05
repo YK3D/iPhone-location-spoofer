@@ -1,4 +1,5 @@
 //! Location Spoofer — standalone desktop app.
+//! Copyright (c) 2026 YK3D. All rights reserved. Licensed under the Location Spoofer License (LICENSE).
 //!
 //! A local HTTP server (axum) serves the UI and its JSON API on 127.0.0.1; a native window
 //! (WebView2 on Windows) shows it. With `--no-window` (or without the `gui` feature) the system
@@ -232,7 +233,15 @@ mod gui {
 
     enum UserEvent {
         Restart,
+        /// The page has painted (or the fallback timer ran out): show the window.
+        Show,
     }
+
+    /// Colour of the native window and the webview until the page paints: the Graphite theme's
+    /// background, so there is no white flash at start-up.
+    const BACKGROUND: (u8, u8, u8, u8) = (0x17, 0x19, 0x1c, 0xff);
+    /// Show the window anyway if the page never says it is ready (for example a script error).
+    const SHOW_FALLBACK: std::time::Duration = std::time::Duration::from_secs(5);
 
     fn window_icon() -> Option<tao::window::Icon> {
         let png = include_bytes!("../../assets/icon/icon-64.png");
@@ -246,26 +255,70 @@ mod gui {
         tao::window::Icon::from_rgba(buf[..info.buffer_size()].to_vec(), info.width, info.height).ok()
     }
 
+    /// "My real location" asks WebView2 for this computer's position (with high accuracy). Requests
+    /// from the app's own page are allowed here, so the only prompt is Windows' own location
+    /// permission (Settings › Privacy & security › Location), which decides whether apps get a
+    /// precise fix. Anything else asking for location is refused.
+    #[cfg(windows)]
+    fn allow_own_geolocation(webview: &wry::WebView, base: &str) {
+        use webview2_com::{Microsoft::Web::WebView2::Win32::*, PermissionRequestedEventHandler};
+        use wry::WebViewExtWindows;
+        let base = base.to_string();
+        let handler = PermissionRequestedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()) };
+            let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+            unsafe { args.PermissionKind(&mut kind)? };
+            if kind != COREWEBVIEW2_PERMISSION_KIND_GEOLOCATION {
+                return Ok(());
+            }
+            let mut uri = windows_core::PWSTR::null();
+            unsafe { args.Uri(&mut uri)? };
+            let uri = webview2_com::take_pwstr(uri);
+            let state = if uri.starts_with(&base) { COREWEBVIEW2_PERMISSION_STATE_ALLOW } else { COREWEBVIEW2_PERMISSION_STATE_DENY };
+            unsafe { args.SetState(state) }
+        }));
+        let mut token = 0i64;
+        if let Err(e) = unsafe { webview.webview().add_PermissionRequested(&handler, &mut token) } {
+            tracing::warn!("could not set up the location permission handler: {e}");
+        }
+    }
+
     pub fn run(url: String, app: Option<crate::server::App>, raw_args: Vec<String>, rt: tokio::runtime::Runtime) {
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
         if let Some(app) = app.clone() {
+            let proxy = proxy.clone();
             rt.spawn(async move {
                 app.restart.notified().await;
                 let _ = proxy.send_event(UserEvent::Restart);
             });
         }
+        // Hidden until the page has loaded and painted with its theme (the page posts "ready").
         let window = WindowBuilder::new()
             .with_title("Location Spoofer")
             .with_window_icon(window_icon())
             .with_inner_size(LogicalSize::new(1280.0, 820.0))
             .with_min_inner_size(LogicalSize::new(720.0, 520.0))
+            .with_visible(false)
+            .with_background_color(BACKGROUND)
             .build(&event_loop)
             .expect("window");
+        let fallback = proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(SHOW_FALLBACK);
+            let _ = fallback.send_event(UserEvent::Show);
+        });
+        let ready = proxy.clone();
         let downloads = dirs::download_dir().unwrap_or_else(std::env::temp_dir);
         let base = url.clone();
         let builder = WebViewBuilder::new()
             .with_url(&url)
+            .with_background_color(BACKGROUND)
+            .with_ipc_handler(move |req| {
+                if req.body() == "ready" {
+                    let _ = ready.send_event(UserEvent::Show);
+                }
+            })
             // Links to the terms, privacy policy, GitHub etc. open in the system browser.
             .with_new_window_req_handler(|u, _features| {
                 if u.starts_with("https://") || u.starts_with("http://") {
@@ -289,6 +342,8 @@ mod gui {
             });
         #[cfg(any(windows, target_os = "macos"))]
         let webview = builder.build(&window).expect("webview");
+        #[cfg(windows)]
+        allow_own_geolocation(&webview, &url);
         #[cfg(not(any(windows, target_os = "macos")))]
         let webview = {
             use tao::platform::unix::WindowExtUnix;
@@ -296,10 +351,18 @@ mod gui {
             builder.build_gtk(window.default_vbox().expect("gtk vbox")).expect("webview")
         };
         let rt = Arc::new(rt);
+        let mut shown = false;
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
             let _keep = (&webview, &rt);
             match event {
+                Event::UserEvent(UserEvent::Show) => {
+                    if !shown {
+                        shown = true;
+                        window.set_visible(true);
+                        window.set_focus();
+                    }
+                }
                 // Exit right away: waiting for background work to wind down could leave an
                 // invisible process holding the port.
                 Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {

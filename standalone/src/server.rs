@@ -290,9 +290,6 @@ fn d_one() -> f64 {
 fn d_five() -> f64 {
     5.0
 }
-fn d_two() -> f64 {
-    2.0
-}
 
 #[derive(Deserialize, Clone)]
 struct SettingsIn {
@@ -316,8 +313,9 @@ struct SettingsIn {
     speed_factor: f64,
     #[serde(default)]
     corner_slowdown: bool,
-    #[serde(default = "d_two")]
-    lateral_accel_ms2: f64,
+    /// None: each vehicle's own cornering limits (see profile::VEHICLES)
+    #[serde(default)]
+    lateral_accel_ms2: Option<f64>,
 }
 
 impl Default for SettingsIn {
@@ -336,8 +334,7 @@ impl SettingsIn {
             && self.decel_ms2 <= 100.0
             && self.speed_factor > 0.1
             && self.speed_factor <= 3.0
-            && self.lateral_accel_ms2 > 0.1
-            && self.lateral_accel_ms2 <= 10.0;
+            && self.lateral_accel_ms2.map(|a| a > 0.1 && a <= 10.0).unwrap_or(true);
         if ok { Ok(()) } else { Err(ApiError(422, "settings: a value is out of range".into())) }
     }
     fn profile(&self) -> ProfileSettings {
@@ -364,6 +361,9 @@ struct WaypointIn {
     speed_kmh: Option<f64>,
     #[serde(default)]
     dwell_s: f64,
+    /// stop here until the user presses Continue
+    #[serde(default)]
+    hold: bool,
 }
 
 #[derive(Deserialize, Clone)]
@@ -393,6 +393,9 @@ struct RouteIn {
     closed: bool,
     #[serde(default = "osrm")]
     provider: String,
+    /// extra route options to look for (0-3)
+    #[serde(default)]
+    alternatives: usize,
 }
 fn route_name() -> String {
     "Route".into()
@@ -406,7 +409,8 @@ fn payload(id: &str, tl: &Timeline, legs: Value, extra: Value, providers: Value,
     let preview: Vec<Value> = tl
         .sample(interval, 0.0)
         .iter()
-        .map(|p| json!([(p.t * 100.0).round() / 100.0, p.lat, p.lon, (p.speed_ms * 3.6 * 100.0).round() / 100.0]))
+        // [t s, lat, lon, speed km/h, distance along the route m]
+        .map(|p| json!([(p.t * 100.0).round() / 100.0, p.lat, p.lon, (p.speed_ms * 3.6 * 100.0).round() / 100.0, (p.distance_m * 10.0).round() / 10.0]))
         .collect();
     let mut summary = tl.summary();
     if let (Some(s), Some(e)) = (summary.as_object_mut(), extra.as_object()) {
@@ -417,14 +421,42 @@ fn payload(id: &str, tl: &Timeline, legs: Value, extra: Value, providers: Value,
     json!({"id": id, "summary": summary, "legs": legs, "preview": preview, "providers": providers, "exportable": exportable})
 }
 
-async fn build_route(State(app): State<App>, Json(mut b): Json<RouteIn>) -> R {
+/// Stage reports while a route builds: (fraction done, message, fraction expected at the end of
+/// this stage). The UI animates its bar from the first towards the third while a stage runs.
+type Progress = Arc<dyn Fn(f64, &str, f64) + Send + Sync>;
+const OPTION_LABELS: [&str; 4] = ["A", "B", "C", "D"];
+
+fn leg_verb(mode: &str, provider: &str) -> &'static str {
+    if provider == "google" && ["car", "bike", "foot"].contains(&mode) {
+        return "Asking Google Maps for the route";
+    }
+    match mode {
+        "car" => "Finding the best road route",
+        "bike" => "Finding cycle paths",
+        "foot" => "Finding footpaths",
+        "sea" => "Plotting sea lanes",
+        _ => "Drawing a straight line",
+    }
+}
+
+fn check_route_in(b: &RouteIn) -> Result<(), ApiError> {
     b.settings.validate()?;
     if b.waypoints.len() < 2 || b.waypoints.len() > 500 {
         return Err(ApiError(422, "waypoints: need 2 to 500 checkpoints".into()));
     }
+    if b.alternatives > routing::MAX_ALTERNATIVES {
+        return Err(ApiError(422, format!("alternatives: 0 to {}", routing::MAX_ALTERNATIVES)));
+    }
+    Ok(())
+}
+
+/// Route every leg (plus alternatives), then solve one timeline per route option.
+async fn build_route_core(app: App, mut b: RouteIn, progress: Progress) -> Result<Value, ApiError> {
+    check_route_in(&b)?;
+    let n_checkpoints = b.waypoints.len();
     if b.closed {
         let f = b.waypoints[0].clone();
-        b.waypoints.push(WaypointIn { lat: f.lat, lon: f.lon, name: Some(format!("{} (return)", f.name.unwrap_or("Start".into()))), speed_kmh: None, dwell_s: 0.0 });
+        b.waypoints.push(WaypointIn { lat: f.lat, lon: f.lon, name: Some(format!("{} (return)", f.name.unwrap_or("Start".into()))), speed_kmh: None, dwell_s: 0.0, hold: false });
         if b.legs.len() == b.waypoints.len() - 2 {
             let last = b.legs.last().cloned().unwrap_or(LegIn { mode: foot(), cruise_kmh: None, ramp: accel() });
             b.legs.push(last);
@@ -444,54 +476,190 @@ async fn build_route(State(app): State<App>, Json(mut b): Json<RouteIn>) -> R {
     } else {
         None
     };
-    let mut legs = Vec::new();
-    let mut geometry = Vec::new();
-    let mut providers = Vec::new();
-    let mut notes = Vec::new();
-    let mut features: HashMap<String, f64> = HashMap::new();
-    let (mut ref_total, mut ref_complete, mut exportable) = (0.0, true, true);
+    let n = b.legs.len();
+    progress(0.01, &format!("Checking {n_checkpoints} checkpoints"), 0.03);
+    let mut budget = routing::ViaBudget::default();
+    let mut leg_options: Vec<Vec<routing::RouteResult>> = Vec::with_capacity(n);
+    // Option k uses alternative k on every leg that has one, so one leg with enough alternatives is
+    // enough: once some leg has them, later legs skip the (slow) detour search.
+    let mut best = 0;
     for (i, li) in b.legs.iter().enumerate() {
         let a = (b.waypoints[i].lat, b.waypoints[i].lon);
         let c = (b.waypoints[i + 1].lat, b.waypoints[i + 1].lon);
-        let res = routing::route(a, c, &li.mode, &b.provider, key.as_deref(), b.settings.road_aware && b.settings.road_data)
-            .await
-            .map_err(|e| upstream(format!("Leg {} ({}): {e}", i + 1, li.mode)))?;
-        let mut leg = Leg::new(res.points.clone());
-        leg.cruise_kmh = li.cruise_kmh.filter(|v| *v > 0.0);
-        leg.ramp = if li.ramp == "linear" { Ramp::Linear } else { Ramp::Accel };
-        leg.zones = res.zones.clone();
-        legs.push(leg);
-        geometry.push(res.points.iter().map(|p| json!([p.0, p.1])).collect::<Vec<_>>());
-        providers.push(res.provider.clone());
-        notes.extend(res.notes.iter().map(|n| format!("Leg {}: {n}", i + 1)));
-        for (k, v) in &res.features {
-            *features.entry(k.clone()).or_insert(0.0) += v;
+        let (p0, p1) = (0.03 + 0.72 * i as f64 / n as f64, 0.03 + 0.72 * (i + 1) as f64 / n as f64);
+        let suffix = if n > 1 { format!(" · leg {} of {n}", i + 1) } else { String::new() };
+        progress(p0, &format!("{}{suffix}", leg_verb(&li.mode, &b.provider)), p1);
+        let sub = |m: &str| progress(p0, &format!("{m}{suffix}"), p1);
+        let opts = routing::route_options(
+            a,
+            c,
+            &li.mode,
+            &b.provider,
+            key.as_deref(),
+            b.settings.road_aware && b.settings.road_data,
+            b.alternatives,
+            &mut budget,
+            &sub,
+            best < b.alternatives,
+        )
+        .await
+        .map_err(|e| upstream(format!("Leg {} ({}): {e}", i + 1, li.mode)))?;
+        best = best.max(opts.len().saturating_sub(1));
+        leg_options.push(opts);
+    }
+    let wps: Vec<Waypoint> = b.waypoints.iter().map(|w| Waypoint { lat: w.lat, lon: w.lon, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s, hold: w.hold }).collect();
+    let names: Vec<(f64, f64, String)> = b.waypoints.iter().enumerate().map(|(i, w)| (w.lat, w.lon, w.name.clone().unwrap_or(format!("Checkpoint {}", i + 1)))).collect();
+    let prof = b.settings.profile();
+    let n_opts = leg_options.iter().map(|o| o.len()).max().unwrap_or(1);
+    struct Built {
+        tl: Timeline,
+        geometry: Vec<Vec<Value>>,
+        providers: Vec<String>,
+        exportable: bool,
+        changed_legs: Vec<usize>,
+        detour: bool,
+        extra: Value,
+    }
+    let mut built: Vec<Built> = Vec::with_capacity(n_opts);
+    for j in 0..n_opts {
+        let chosen: Vec<&routing::RouteResult> = leg_options.iter().map(|o| o.get(j).unwrap_or(&o[0])).collect();
+        let mut legs = Vec::new();
+        let mut geometry = Vec::new();
+        let mut providers = Vec::new();
+        let mut notes = Vec::new();
+        let mut features: HashMap<String, f64> = HashMap::new();
+        let (mut ref_total, mut ref_complete, mut exportable) = (0.0, true, true);
+        for (i, (li, res)) in b.legs.iter().zip(&chosen).enumerate() {
+            let mut leg = Leg::new(res.points.clone());
+            leg.cruise_kmh = li.cruise_kmh.filter(|v| *v > 0.0);
+            leg.ramp = if li.ramp == "linear" { Ramp::Linear } else { Ramp::Accel };
+            leg.zones = res.zones.clone();
+            leg.mode = li.mode.clone();
+            leg.roundabouts = res.roundabouts.clone();
+            legs.push(leg);
+            geometry.push(res.points.iter().map(|p| json!([p.0, p.1])).collect::<Vec<_>>());
+            providers.push(res.provider.clone());
+            notes.extend(res.notes.iter().map(|nt| format!("Leg {}: {nt}", i + 1)));
+            for (k, v) in &res.features {
+                *features.entry(k.clone()).or_insert(0.0) += v;
+            }
+            exportable &= res.exportable;
+            match res.ref_duration_s {
+                Some(r) => ref_total += r,
+                None if li.mode != "straight" || n == 1 => ref_complete = false,
+                None => {}
+            }
         }
-        exportable &= res.exportable;
-        match res.ref_duration_s {
-            Some(r) => ref_total += r,
-            None if li.mode != "straight" || b.legs.len() == 1 => ref_complete = false,
-            None => {}
+        let (q0, q1) = (0.76 + 0.2 * j as f64 / n_opts as f64, 0.76 + 0.2 * (j + 1) as f64 / n_opts as f64);
+        let which = if n_opts > 1 { format!(" · route {} of {n_opts}", j + 1) } else { String::new() };
+        if prof.corner_slowdown {
+            progress(q0, &format!("Identifying turns and U-turns{which}"), q0 + (q1 - q0) * 0.3);
+        }
+        let source = if providers.iter().any(|p| p == "google") { "Google" } else { "OSRM" };
+        let match_eta = b.settings.road_aware && b.settings.match_eta && ref_complete && ref_total > 0.0;
+        let msg = if match_eta {
+            format!("Matching the {source} ETA with your driving style")
+        } else if b.settings.road_aware {
+            format!("Applying your driving style ({:.0}%)", prof.speed_factor * 100.0)
+        } else {
+            "Applying acceleration and braking".to_string()
+        };
+        progress(q0 + (q1 - q0) * 0.3, &format!("{msg}{which}"), q0 + (q1 - q0) * 0.8);
+        let (w2, l2, p2) = (wps.clone(), legs, prof.clone());
+        let (tl, factor) = tokio::task::spawn_blocking(move || -> Result<(Timeline, f64), String> {
+            if match_eta {
+                profile::build_matching_eta(&w2, &l2, &p2, ref_total)
+            } else {
+                Ok((profile::build_timeline(&w2, &l2, &p2)?, p2.speed_factor))
+            }
+        })
+        .await
+        .map_err(|e| ApiError(500, format!("Building the route failed: {e}")))?
+        .map_err(bad)?;
+        progress(q0 + (q1 - q0) * 0.8, &format!("Calculating the ETA{which}"), q1);
+        let extra = json!({
+            "reference_eta_s": (ref_complete && ref_total > 0.0).then(|| (ref_total * 10.0).round() / 10.0),
+            "reference_source": if providers.iter().any(|p| p == "google") { Some("Google") } else if providers.iter().any(|p| p == "osrm") { Some("OSRM") } else { None },
+            "speed_factor": (factor * 1000.0).round() / 1000.0,
+            "features": features,
+            "notes": notes,
+            "road_aware": b.settings.road_aware,
+        });
+        built.push(Built {
+            tl,
+            geometry,
+            providers,
+            exportable,
+            changed_legs: leg_options.iter().enumerate().filter(|(_, o)| j > 0 && j < o.len()).map(|(i, _)| i).collect(),
+            detour: chosen.iter().any(|r| r.kind == "detour"),
+            extra,
+        });
+    }
+    // Route A is the routing service's main route; the alternatives follow, quickest first.
+    built[1..].sort_by(|x, y| x.tl.duration().partial_cmp(&y.tl.duration()).unwrap_or(std::cmp::Ordering::Equal));
+    let mut results: Vec<Value> = Vec::with_capacity(built.len());
+    for (rank, o) in built.into_iter().enumerate() {
+        let label = OPTION_LABELS[rank];
+        let name = if rank == 0 { b.name.clone() } else { format!("{} ({label})", b.name) };
+        let (id, tl) = app.keep(o.tl, name, names.clone(), o.exportable);
+        let mut v = payload(&id, &tl, json!(o.geometry), o.extra, json!(o.providers), o.exportable);
+        v["option"] = json!({"index": rank, "label": label, "changed_legs": o.changed_legs, "detour": o.detour});
+        results.push(v);
+    }
+    let mut top = results.remove(0);
+    top["alternatives"] = json!(results);
+    top["alternatives_requested"] = json!(b.alternatives);
+    Ok(top)
+}
+
+#[derive(Deserialize)]
+struct BuildQ {
+    stream: Option<String>,
+}
+
+/// Without `stream` the response is the route as JSON. With `?stream=1` it is NDJSON:
+/// {"type": "progress", "p", "next", "msg"} lines, then one {"type": "result", "data"} or
+/// {"type": "error", "status", "detail"} line.
+async fn build_route(State(app): State<App>, Query(q): Query<BuildQ>, Json(b): Json<RouteIn>) -> Response {
+    let stream = matches!(q.stream.as_deref(), Some("1" | "true" | "yes"));
+    if !stream {
+        let quiet: Progress = Arc::new(|_, _, _| {});
+        return match build_route_core(app, b, quiet).await {
+            Ok(v) => Json(v).into_response(),
+            Err(e) => e.into_response(),
+        };
+    }
+    if let Err(e) = check_route_in(&b) {
+        return e.into_response(); // bad requests fail fast, like the browser version's validation
+    }
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+    let ptx = tx.clone();
+    let r3 = |x: f64| (x * 1000.0).round() / 1000.0;
+    let progress: Progress = Arc::new(move |p, msg, next| {
+        let _ = ptx.send(json!({"type": "progress", "p": r3(p), "next": r3(next.max(p)), "msg": msg}));
+    });
+    let task = tokio::spawn(async move {
+        let line = match build_route_core(app, b, progress).await {
+            Ok(v) => json!({"type": "result", "data": v}),
+            Err(ApiError(status, detail)) => json!({"type": "error", "status": status, "detail": detail}),
+        };
+        let _ = tx.send(line);
+    });
+    // Closing the window mid-build drops the stream, which stops the build.
+    struct AbortOnDrop(tokio::task::JoinHandle<()>);
+    impl Drop for AbortOnDrop {
+        fn drop(&mut self) {
+            self.0.abort();
         }
     }
-    let wps: Vec<Waypoint> = b.waypoints.iter().map(|w| Waypoint { lat: w.lat, lon: w.lon, speed_kmh: w.speed_kmh, dwell_s: w.dwell_s }).collect();
-    let prof = b.settings.profile();
-    let (tl, factor) = if b.settings.road_aware && b.settings.match_eta && ref_complete && ref_total > 0.0 {
-        profile::build_matching_eta(&wps, &legs, &prof, ref_total).map_err(bad)?
-    } else {
-        (profile::build_timeline(&wps, &legs, &prof).map_err(bad)?, prof.speed_factor)
-    };
-    let names = b.waypoints.iter().enumerate().map(|(i, w)| (w.lat, w.lon, w.name.clone().unwrap_or(format!("Checkpoint {}", i + 1)))).collect();
-    let extra = json!({
-        "reference_eta_s": (ref_complete && ref_total > 0.0).then(|| (ref_total * 10.0).round() / 10.0),
-        "reference_source": if providers.iter().any(|p| p == "google") { Some("Google") } else if providers.iter().any(|p| p == "osrm") { Some("OSRM") } else { None },
-        "speed_factor": (factor * 1000.0).round() / 1000.0,
-        "features": features,
-        "notes": notes,
-        "road_aware": b.settings.road_aware,
+    let lines = futures_util::stream::unfold((rx, AbortOnDrop(task)), |(mut rx, guard)| async move {
+        rx.recv().await.map(|v| (Ok::<_, std::convert::Infallible>(format!("{v}\n")), (rx, guard)))
     });
-    let (id, tl) = app.keep(tl, b.name.clone(), names, exportable);
-    Ok(Json(payload(&id, &tl, json!(geometry), extra, json!(providers), exportable)))
+    Response::builder()
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from_stream(lines))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn gpx_import(mut mp: Multipart) -> R {
@@ -620,6 +788,7 @@ async fn player_action(State(app): State<App>, Path(action): Path<String>) -> R 
         "play" => app.player.play().await.map_err(dev)?,
         "pause" => app.player.pause().await,
         "resume" => app.player.resume().await.map_err(dev)?,
+        "continue" => app.player.continue_().await.map_err(dev)?,
         "stop" => app.player.stop().await,
         "unload" => app.player.unload().await,
         _ => return Err(ApiError(404, "unknown action".into())),
@@ -644,10 +813,12 @@ struct OptionsIn {
     loop_mode: Option<String>,
     jitter_m: Option<f64>,
     tick_s: Option<f64>,
+    /// laps in loop / back-and-forth mode, 0 = no limit
+    lap_limit: Option<i64>,
 }
 
 async fn player_options(State(app): State<App>, Json(b): Json<OptionsIn>) -> R {
-    app.player.set_options(b.multiplier, b.loop_mode, b.jitter_m, b.tick_s).map_err(bad)?;
+    app.player.set_options(b.multiplier, b.loop_mode, b.jitter_m, b.tick_s, b.lap_limit).map_err(bad)?;
     Ok(Json(app.player.status()))
 }
 
@@ -779,4 +950,73 @@ async fn store_get(State(app): State<App>) -> R {
 
 async fn store_put(State(app): State<App>, Json(b): Json<Value>) -> R {
     Ok(Json(app.store.save(&b).map_err(bad)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app() -> App {
+        let dir = std::env::temp_dir().join(format!("spoofer-test-{}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        AppState::new(Store::new(Some(dir.join("data.json"))), Updater::new(false))
+    }
+
+    fn route() -> RouteIn {
+        serde_json::from_value(json!({
+            "name": "Test",
+            "waypoints": [{"lat": 51.5, "lon": -0.12}, {"lat": 51.501, "lon": -0.12, "dwell_s": 5}, {"lat": 51.502, "lon": -0.119, "speed_kmh": 10}],
+            "legs": [{"mode": "straight", "cruise_kmh": 20}, {"mode": "straight", "ramp": "linear"}],
+            "settings": {"default_cruise_kmh": 5, "accel_ms2": 1, "decel_ms2": 1},
+            "alternatives": 2,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn build_reports_progress_in_order() {
+        let seen: Arc<Mutex<Vec<(f64, String, f64)>>> = Arc::new(Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        let progress: Progress = Arc::new(move |p, m, n| s2.lock().unwrap().push((p, m.to_string(), n)));
+        let v = build_route_core(app(), route(), progress).await.unwrap_or_else(|e| panic!("{}", e.1));
+        let seen = seen.lock().unwrap();
+        let msgs: Vec<&str> = seen.iter().map(|x| x.1.as_str()).collect();
+        assert_eq!(msgs[0], "Checking 3 checkpoints");
+        assert!(msgs.contains(&"Drawing a straight line · leg 2 of 2"));
+        assert!(msgs.contains(&"Calculating the ETA"));
+        assert!(seen.windows(2).all(|w| w[1].0 >= w[0].0) && seen.iter().all(|x| x.2 >= x.0));
+        // straight legs have no alternatives, even when they are asked for
+        assert_eq!(v["alternatives"], json!([]));
+        assert_eq!(v["alternatives_requested"], json!(2));
+        assert_eq!(v["option"]["label"], "A");
+        let rows = v["preview"].as_array().unwrap();
+        assert!(rows.iter().all(|r| r.as_array().unwrap().len() == 5));
+        let last = rows.last().unwrap()[4].as_f64().unwrap();
+        assert!((last - v["summary"]["distance_m"].as_f64().unwrap()).abs() < 0.2);
+    }
+
+    #[tokio::test]
+    async fn hold_checkpoints_and_the_simulator_version() {
+        let mut r = route();
+        r.waypoints[1].hold = true;
+        r.waypoints[1].dwell_s = 0.0;
+        let quiet: Progress = Arc::new(|_, _, _| {});
+        let v = build_route_core(app(), r, quiet).await.unwrap_or_else(|e| panic!("{}", e.1));
+        assert_eq!(v["summary"]["holds"], 1);
+        assert_eq!(crate::device::mock::SIMULATED_IOS, "27");
+        let held: WaypointIn = serde_json::from_value(json!({"lat": 1.0, "lon": 2.0, "hold": true})).unwrap();
+        assert!(held.hold && !serde_json::from_value::<WaypointIn>(json!({"lat": 1.0, "lon": 2.0})).unwrap().hold);
+    }
+
+    #[tokio::test]
+    async fn bad_requests_are_rejected_before_routing() {
+        let mut r = route();
+        r.alternatives = 9;
+        assert_eq!(check_route_in(&r).unwrap_err().0, 422);
+        let mut r = route();
+        r.legs.truncate(1);
+        let quiet: Progress = Arc::new(|_, _, _| {});
+        let e = build_route_core(app(), r, quiet).await.unwrap_err();
+        assert_eq!((e.0, e.1.as_str()), (400, "Expected 2 legs, got 1"));
+    }
 }

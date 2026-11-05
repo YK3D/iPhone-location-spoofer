@@ -2,6 +2,9 @@
 
 use super::DeviceInfo;
 
+/// The pretend phone always reports this iOS version (the current major release).
+pub const SIMULATED_IOS: &str = "27";
+
 #[derive(Default)]
 pub struct MockDriver {
     pub info: Option<DeviceInfo>,
@@ -11,13 +14,13 @@ pub struct MockDriver {
 
 impl MockDriver {
     pub fn list_devices(&self) -> Vec<serde_json::Value> {
-        vec![serde_json::json!({"udid": "SIMULATED-0001", "name": "Simulated iPhone", "ios_version": "26.0", "connection": "Simulated"})]
+        vec![serde_json::json!({"udid": "SIMULATED-0001", "name": "Simulated iPhone", "ios_version": SIMULATED_IOS, "connection": "Simulated"})]
     }
     pub fn connect(&mut self) -> DeviceInfo {
         let info = DeviceInfo {
             udid: "SIMULATED-0001".into(),
             name: "Simulated iPhone".into(),
-            ios_version: "26.0".into(),
+            ios_version: SIMULATED_IOS.into(),
             product_type: "Simulated".into(),
             connection: "Simulated".into(),
             transport: "In-memory (nothing is sent to a phone)".into(),

@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Awaitable, Callable, Literal, Optional
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-
-import asyncio
 
 from . import __version__, geo, gmaps_links, google_api, routing
 from .device.base import DeviceDriver, DeviceError
@@ -161,6 +161,7 @@ class WaypointIn(BaseModel):
     name: Optional[str] = None
     speed_kmh: Optional[float] = Field(None, ge=0, le=5000)
     dwell_s: float = Field(0, ge=0, le=86400)
+    hold: bool = False  # stop here until the user presses Continue
 
 
 class LegIn(BaseModel):
@@ -181,7 +182,8 @@ class SettingsIn(BaseModel):
     match_eta: bool = True  # tune the driving-style factor towards the routing service's ETA
     speed_factor: float = Field(1.0, gt=0.1, le=3)
     corner_slowdown: bool = False
-    lateral_accel_ms2: float = Field(2.0, gt=0.1, le=10)
+    # None: each vehicle's own cornering limits (see profile.VEHICLES)
+    lateral_accel_ms2: Optional[float] = Field(None, gt=0.1, le=10)
 
     def to_profile(self) -> ProfileSettings:
         return ProfileSettings(
@@ -204,6 +206,7 @@ class RouteIn(BaseModel):
     settings: SettingsIn = SettingsIn()
     closed: bool = False  # add a final leg back to the start
     provider: Literal["osrm", "google"] = "osrm"
+    alternatives: int = Field(0, ge=0, le=routing.MAX_ALTERNATIVES)  # extra route options to look for
 
 
 class TrackIn(BaseModel):
@@ -220,6 +223,7 @@ class PlayerOptionsIn(BaseModel):
     loop: Optional[Literal["once", "loop", "pingpong"]] = None
     jitter_m: Optional[float] = None
     tick_s: Optional[float] = None
+    lap_limit: Optional[int] = None  # laps in loop / back-and-forth mode, 0 = no limit
 
 
 class SeekIn(BaseModel):
@@ -245,7 +249,11 @@ def timeline_payload(
         "summary": summary,
         "legs": legs_geometry,
         **extra,
-        "preview": [[round(p.t, 2), round(p.lat, 7), round(p.lon, 7), round(p.speed_ms * 3.6, 2)] for p in samples],
+        # [t s, lat, lon, speed km/h, distance along the route m]
+        "preview": [
+            [round(p.t, 2), round(p.lat, 7), round(p.lon, 7), round(p.speed_ms * 3.6, 2), round(p.distance_m, 1)]
+            for p in samples
+        ],
     }
 
 
@@ -330,8 +338,27 @@ async def reverse(lat: float, lon: float):
 
 
 # ---------------------------------------------------------------- routes
-@app.post("/api/route/build")
-async def build_route(body: RouteIn):
+Progress = Callable[..., Awaitable[None]]
+OPTION_LABELS = "ABCD"
+LEG_VERBS = {"car": "Finding the best road route", "bike": "Finding cycle paths", "foot": "Finding footpaths",
+             "sea": "Plotting sea lanes", "straight": "Drawing a straight line"}
+
+
+async def _no_progress(*_a, **_k) -> None:
+    return None
+
+
+def _solve(waypoints, legs, prof, settings: SettingsIn, ref_complete: bool, ref_total: float):
+    if settings.road_aware and settings.match_eta and ref_complete and ref_total > 0:
+        return build_matching_eta(waypoints, legs, prof, ref_total)
+    return build_timeline(waypoints, legs, prof), prof.speed_factor
+
+
+async def _build_route(body: RouteIn, progress: Progress = _no_progress) -> dict:
+    """Route every leg (plus alternatives), then solve one timeline per route option.
+
+    ``progress(fraction, message, next_fraction)`` reports each stage; the UI animates its bar
+    from fraction towards next_fraction while a stage runs."""
     wps = list(body.waypoints)
     legs_in = list(body.legs)
     if body.closed:
@@ -350,55 +377,155 @@ async def build_route(body: RouteIn):
     if body.provider == "google" and not key:
         raise HTTPException(400, "Google routing needs your Google Maps API key (Settings).")
 
-    legs: list[Leg] = []
-    geometry: list[list[list[float]]] = []
-    providers: list[str] = []
-    notes: list[str] = []
-    features: dict = {"uturns": 0, "offnet_m": 0.0, "highway_segments": 0, "restricted_segments": 0}
-    ref_total = 0.0
-    ref_complete = True
-    exportable = True
+    n = len(legs_in)
+    await progress(0.01, f"Checking {len(body.waypoints)} checkpoints", 0.03)
+    budget = routing.ViaBudget()
+    leg_options: list[list[routing.RouteResult]] = []
+    # Option k uses alternative k on every leg that has one, so one leg with enough alternatives
+    # is enough: once some leg has them, later legs skip the (slow) detour search.
+    best = 0
     for i, li in enumerate(legs_in):
         a, b = (wps[i].lat, wps[i].lon), (wps[i + 1].lat, wps[i + 1].lon)
+        p0, p1 = 0.03 + 0.72 * i / n, 0.03 + 0.72 * (i + 1) / n
+        suffix = f" · leg {i + 1} of {n}" if n > 1 else ""
+        verb = "Asking Google Maps for the route" if body.provider == "google" and li.mode in routing.ROAD_MODES else LEG_VERBS[li.mode]
+        await progress(p0, verb + suffix, p1)
+
+        async def sub(msg: str, p0: float = p0, p1: float = p1, suffix: str = suffix) -> None:
+            await progress(p0, msg + suffix, p1)
+
         try:
-            res = await routing.route(
+            opts = await routing.route_options(
                 a, b, li.mode, provider=body.provider, google_key=key,
                 road_data=settings.road_aware and settings.road_data,
+                count=body.alternatives, budget=budget, report=sub, detours=best < body.alternatives,
             )
         except routing.RoutingError as e:
             raise routing.RoutingError(f"Leg {i + 1} ({li.mode}): {e}") from e
-        legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones))
-        geometry.append([[round(p[0], 7), round(p[1], 7)] for p in res.points])
-        providers.append(res.provider)
-        notes.extend(f"Leg {i + 1}: {n}" for n in res.notes)
-        for k, v in res.features.items():
-            features[k] = features.get(k, 0) + v
-        exportable = exportable and res.exportable
-        if res.ref_duration_s:
-            ref_total += res.ref_duration_s
-        elif li.mode != "straight" or len(legs_in) == 1:
-            ref_complete = False
+        leg_options.append(opts)
+        best = max(best, len(opts) - 1)
 
-    waypoints = [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s) for w in wps]
-    prof = settings.to_profile()
-    factor = prof.speed_factor
-    if settings.road_aware and settings.match_eta and ref_complete and ref_total > 0:
-        tl, factor = build_matching_eta(waypoints, legs, prof, ref_total)
-    else:
-        tl = build_timeline(waypoints, legs, prof)
+    waypoints = [Waypoint(w.lat, w.lon, w.speed_kmh, w.dwell_s, w.hold) for w in wps]
     names = [(w.lat, w.lon, w.name or f"Checkpoint {i + 1}") for i, w in enumerate(wps)]
-    tid = S().keep_timeline(tl, body.name, names, exportable)
-    extra = {
-        "reference_eta_s": round(ref_total, 1) if ref_complete and ref_total > 0 else None,
-        "reference_source": "Google" if "google" in providers else ("OSRM" if "osrm" in providers else None),
-        "speed_factor": round(factor, 3),
-        "features": {k: (round(v, 1) if isinstance(v, float) else v) for k, v in features.items()},
-        "notes": notes,
-        "road_aware": settings.road_aware,
-    }
-    return timeline_payload(
-        tid, tl, geometry, providers=providers, exportable=exportable, summary_extra=extra
-    )
+    prof = settings.to_profile()
+    n_opts = max(len(o) for o in leg_options)
+    built: list[dict] = []
+    for j in range(n_opts):
+        chosen = [opts[j] if j < len(opts) else opts[0] for opts in leg_options]
+        legs: list[Leg] = []
+        geometry: list[list[list[float]]] = []
+        providers: list[str] = []
+        notes: list[str] = []
+        features: dict = {"uturns": 0, "offnet_m": 0.0, "highway_segments": 0, "restricted_segments": 0}
+        ref_total = 0.0
+        ref_complete = True
+        exportable = True
+        for i, (li, res) in enumerate(zip(legs_in, chosen)):
+            legs.append(Leg(points=res.points, cruise_kmh=li.cruise_kmh, ramp=li.ramp, zones=res.zones,
+                            mode=li.mode, roundabouts=res.roundabouts))
+            geometry.append([[round(p[0], 7), round(p[1], 7)] for p in res.points])
+            providers.append(res.provider)
+            notes.extend(f"Leg {i + 1}: {nt}" for nt in res.notes)
+            for k, v in res.features.items():
+                features[k] = features.get(k, 0) + v
+            exportable = exportable and res.exportable
+            if res.ref_duration_s:
+                ref_total += res.ref_duration_s
+            elif li.mode != "straight" or n == 1:
+                ref_complete = False
+        q0, q1 = 0.76 + 0.2 * j / n_opts, 0.76 + 0.2 * (j + 1) / n_opts
+        which = f" · route {j + 1} of {n_opts}" if n_opts > 1 else ""
+        if prof.corner_slowdown:
+            await progress(q0, "Identifying turns and U-turns" + which, q0 + (q1 - q0) * 0.3)
+        source = "Google" if "google" in providers else "OSRM"
+        if settings.road_aware and settings.match_eta and ref_complete and ref_total > 0:
+            msg = f"Matching the {source} ETA with your driving style"
+        elif settings.road_aware:
+            msg = f"Applying your driving style ({round(prof.speed_factor * 100)}%)"
+        else:
+            msg = "Applying acceleration and braking"
+        await progress(q0 + (q1 - q0) * 0.3, msg + which, q0 + (q1 - q0) * 0.8)
+        tl, factor = await asyncio.to_thread(_solve, waypoints, legs, prof, settings, ref_complete, ref_total)
+        await progress(q0 + (q1 - q0) * 0.8, "Calculating the ETA" + which, q1)
+        built.append({
+            "tl": tl, "geometry": geometry, "providers": providers, "exportable": exportable,
+            "changed_legs": [i for i, opts in enumerate(leg_options) if 0 < j < len(opts)],
+            "detour": any(r.kind == "detour" for r in chosen),
+            "extra": {
+                "reference_eta_s": round(ref_total, 1) if ref_complete and ref_total > 0 else None,
+                "reference_source": "Google" if "google" in providers else ("OSRM" if "osrm" in providers else None),
+                "speed_factor": round(factor, 3),
+                "features": {k: (round(v, 1) if isinstance(v, float) else v) for k, v in features.items()},
+                "notes": notes,
+                "road_aware": settings.road_aware,
+            },
+        })
+    # Route A is the routing service's main route; the alternatives follow, quickest first.
+    built[1:] = sorted(built[1:], key=lambda o: o["tl"].duration)
+    results: list[dict] = []
+    for rank, o in enumerate(built):
+        label = OPTION_LABELS[rank]
+        tid = S().keep_timeline(o["tl"], body.name if rank == 0 else f"{body.name} ({label})", names, o["exportable"])
+        payload = await asyncio.to_thread(
+            timeline_payload, tid, o["tl"], o["geometry"], providers=o["providers"], exportable=o["exportable"],
+            summary_extra=o["extra"],
+        )
+        payload["option"] = {"index": rank, "label": label, "changed_legs": o["changed_legs"], "detour": o["detour"]}
+        results.append(payload)
+    top = results[0]
+    top["alternatives"] = results[1:]
+    top["alternatives_requested"] = body.alternatives
+    return top
+
+
+def _error_status(exc: Exception) -> tuple[int, str]:
+    if isinstance(exc, HTTPException):
+        return exc.status_code, str(exc.detail)
+    if isinstance(exc, (routing.RoutingError, google_api.GoogleError)):
+        return 502, str(exc)
+    if isinstance(exc, DeviceError):
+        return 409, str(exc)
+    if isinstance(exc, ValueError):
+        return 400, str(exc)
+    return 500, f"Building the route failed: {exc.__class__.__name__}: {exc}"
+
+
+@app.post("/api/route/build")
+async def build_route(body: RouteIn, stream: bool = False):
+    """Without ``stream`` the response is the route as JSON. With ``?stream=1`` it is NDJSON:
+    {"type": "progress", "p", "next", "msg"} lines, then one {"type": "result", "data"} or
+    {"type": "error", "status", "detail"} line."""
+    if not stream:
+        return await _build_route(body)
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def progress(p: float, msg: str, nxt: Optional[float] = None) -> None:
+        await queue.put({"type": "progress", "p": round(p, 3), "next": round(max(p, nxt or p), 3), "msg": msg})
+
+    async def run() -> None:
+        try:
+            await queue.put({"type": "result", "data": await _build_route(body, progress)})
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # sent to the UI as an error line; the HTTP status is already 200
+            status, detail = _error_status(e)
+            if status >= 500 and not isinstance(e, (routing.RoutingError, google_api.GoogleError)):
+                log.exception("route build failed")
+            await queue.put({"type": "error", "status": status, "detail": detail})
+        finally:
+            await queue.put(None)
+
+    task = asyncio.create_task(run())
+
+    async def lines():
+        try:
+            while (item := await queue.get()) is not None:
+                yield json.dumps(item, separators=(",", ":")) + "\n"
+        finally:
+            if not task.done():  # the window was closed mid-build
+                task.cancel()
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson", headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/gpx/import")
@@ -483,9 +610,9 @@ async def player_load(tid: str):
 
 
 @app.post("/api/player/{action}")
-async def player_action(action: Literal["play", "pause", "resume", "stop", "unload"]):
+async def player_action(action: Literal["play", "pause", "resume", "continue", "stop", "unload"]):
     p = S().player
-    await getattr(p, action)()
+    await getattr(p, "continue_" if action == "continue" else action)()
     return p.status()
 
 
@@ -497,7 +624,7 @@ async def player_seek(body: SeekIn):
 
 @app.post("/api/player-options")
 async def player_options(body: PlayerOptionsIn):
-    await S().player.set_options(body.multiplier, body.loop, body.jitter_m, body.tick_s)
+    await S().player.set_options(body.multiplier, body.loop, body.jitter_m, body.tick_s, body.lap_limit)
     return S().player.status()
 
 
