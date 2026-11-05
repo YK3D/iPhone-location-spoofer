@@ -47,7 +47,8 @@ Both have the same look and features, and both update themselves.
 
 ## Features
 
-* **Map:** a sharp map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps; pick one in *Settings › Appearance* or with the map's layer button. Click to pick a point; right-click to jump there instantly.
+* **Map:** a sharp map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps. The map button in the top right corner switches maps and the map theme (dark, light, or matching the app). Click to pick a point; right-click to jump there instantly. Pinch or scroll on a trackpad to zoom smoothly.
+* **Offline maps:** save the area on screen (about a city per download) in *Settings › Offline maps*, and the map keeps working without internet.
 * **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
 * **Routes:**
   * add checkpoints on the map, then drag them on the map or in the list to move and reorder them;
@@ -112,7 +113,7 @@ Both have the same look and features, and both update themselves.
 
 The app checks for updates when it starts and every few hours. It downloads them in the background, checks that the download is intact and installs them when you press **Restart now**, or the next time you open the app.
 
-Want new features early? In **⚙ Settings › Updates** you can switch to **Test builds**. They may contain bugs; switch back to *Stable releases* at any time. The same page lists **feature tests**, experiments that are not in any build yet; *Open* shows one on GitHub with what it changes and how to try it.
+Want new features early? In **⚙ Settings › Updates** you can switch to **Test builds**. They may contain bugs; switch back to *Stable releases* at any time.
 
 ## Optional: Google Maps
 

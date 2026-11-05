@@ -1,0 +1,147 @@
+name: Feature-test builds
+
+# Builds every pull request into feature-testing as an encrypted standalone exe, for the developer
+# (in the app: Settings › Updates › Developer access). The builds and their index are encrypted
+# with the repository secret FEATURE_TEST_PASSWORD and uploaded to the "feature-tests"
+# pre-release; without the secret nothing is built. Pull requests from forks get no secrets and
+# are skipped. The apps ignore this release when they look for updates.
+on:
+  pull_request:
+    branches: [feature-testing]
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+
+env:
+  PR: ${{ github.event.pull_request.number }}
+
+jobs:
+  build:
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: windows-latest
+    concurrency:
+      group: feature-test-build-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    outputs:
+      built: ${{ steps.pack.outputs.built }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+      size: ${{ steps.pack.outputs.size }}
+      version: ${{ steps.pack.outputs.version }}
+    env:
+      FEATURE_TEST_PASSWORD: ${{ secrets.FEATURE_TEST_PASSWORD }}
+    steps:
+      - name: Check the password secret
+        id: secret
+        shell: bash
+        run: |
+          if [ -z "$FEATURE_TEST_PASSWORD" ]; then
+            echo "::notice::FEATURE_TEST_PASSWORD is not set, so no feature-test build is made."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.secret.outputs.ok == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.secret.outputs.ok == 'true'
+        with:
+          workspaces: standalone
+      - name: Build
+        if: steps.secret.outputs.ok == 'true'
+        working-directory: standalone
+        env:
+          SPOOFER_VERSION: 0.0.${{ github.run_number }}-ft${{ github.event.pull_request.number }}
+        run: cargo build --release --locked
+      - name: Self-test
+        if: steps.secret.outputs.ok == 'true'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath standalone\target\release\location-spoofer.exe -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          if ($p.ExitCode -ne 0) { Write-Error "self-test failed ($($p.ExitCode))"; exit 1 }
+      - uses: actions/setup-python@v5
+        if: steps.secret.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+      - name: Encrypt
+        id: pack
+        if: steps.secret.outputs.ok == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -q "cryptography>=42"
+          mkdir -p sealed
+          exe=standalone/target/release/location-spoofer.exe
+          python .github/scripts/feature_test_seal.py seal "$exe" "sealed/ft-pr$PR.bin"
+          {
+            echo "built=true"
+            echo "sha256=$(sha256sum "$exe" | cut -d' ' -f1)"
+            echo "size=$(stat -c %s "$exe")"
+            echo "version=0.0.${{ github.run_number }}-ft$PR"
+          } >> "$GITHUB_OUTPUT"
+      # Only the encrypted file leaves the runner.
+      - uses: actions/upload-artifact@v4
+        if: steps.secret.outputs.ok == 'true'
+        with:
+          name: feature-test
+          path: sealed/*
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: needs.build.outputs.built == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: feature-test-index  # one change to the index at a time
+      cancel-in-progress: false
+    env:
+      FEATURE_TEST_PASSWORD: ${{ secrets.FEATURE_TEST_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      EXE_SHA256: ${{ needs.build.outputs.sha256 }}
+      EXE_SIZE: ${{ needs.build.outputs.size }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: feature-test
+          path: sealed
+      - name: Upload the build and update the index
+        run: |
+          set -euo pipefail
+          python3 -m pip install -q "cryptography>=42"
+          gh release view feature-tests >/dev/null 2>&1 || gh release create feature-tests --prerelease --target "$BASE_SHA" \
+            --title "Feature tests (encrypted, for the developer)" \
+            --notes "Encrypted builds of experiments in pull requests into feature-testing. They open only in the app, with the developer password. Download the normal app from the other releases."
+          gh release download feature-tests -p ft-index.bin -D sealed --clobber || true
+          python3 .github/scripts/feature_test_seal.py upsert sealed/ft-index.bin --pr "$PR" --title "$PR_TITLE" --url "$PR_URL" \
+            --sha "$HEAD_SHA" --asset "ft-pr$PR.bin" --sha256 "$EXE_SHA256" --size "$EXE_SIZE" --version "$VERSION"
+          gh release upload feature-tests "sealed/ft-pr$PR.bin" sealed/ft-index.bin --clobber
+
+  closed:
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    concurrency:
+      group: feature-test-index
+      cancel-in-progress: false
+    env:
+      FEATURE_TEST_PASSWORD: ${{ secrets.FEATURE_TEST_PASSWORD }}
+      GH_TOKEN: ${{ github.token }}
+      MERGED: ${{ github.event.pull_request.merged }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mark the build merged, or remove it
+        run: |
+          set -euo pipefail
+          if [ -z "$FEATURE_TEST_PASSWORD" ]; then exit 0; fi
+          gh release download feature-tests -p ft-index.bin -D work --clobber 2>/dev/null || exit 0
+          python3 -m pip install -q "cryptography>=42"
+          if [ "$MERGED" = "true" ]; then STATE=merged; else STATE=closed; fi
+          python3 .github/scripts/feature_test_seal.py state work/ft-index.bin --pr "$PR" --state "$STATE"
+          gh release upload feature-tests work/ft-index.bin --clobber
+          if [ "$STATE" = "closed" ]; then gh release delete-asset feature-tests "ft-pr$PR.bin" -y || true; fi

@@ -9,7 +9,7 @@
 | `feature-testing` | Highly risky or experimental work: rewrites of the speed/physics engine or the playback engine, new device transports, anything that can break playback or routing for everyone | Open a pull request into `feature-testing` and **enable auto-merge** on it. It is promoted to `dev` only after it has been tried. |
 
 - Split a change set when it mixes both kinds: push the standard part to `dev` first, then base the risky part on top of it for `feature-testing`.
-- `feature-testing` does not publish builds; try it from source.
+- `feature-testing` publishes no public builds. Each pull request into it gets an encrypted build (`.github/workflows/feature-tests.yml`, secret `FEATURE_TEST_PASSWORD`) that the developer opens in the app under Settings › Updates › Developer access; or try it from source.
 - If a pull request into `feature-testing` can't use auto-merge (repository setting "Allow auto-merge" off, or no required checks so it is mergeable right away), merge it once its checks pass, which is what auto-merge would do.
 - Ask before a large architectural rewrite of core systems (playback engine, timeline, device drivers): write a proposal first.
 

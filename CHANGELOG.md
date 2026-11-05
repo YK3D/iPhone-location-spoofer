@@ -8,7 +8,11 @@ Test builds from the `dev` branch are marked as pre-releases.
 ## Unreleased (dev)
 
 ### New
-- **Feature tests:** *Settings › Updates › Show feature tests* lists the experiments being tried on GitHub; *Open* shows one in your web browser with what it changes and how to try it.
+- **Offline maps:** *Settings › Offline maps* saves the area on screen (up to 3,000 map tiles, about a city, per download; as many areas as you like), so the map works without internet. Saved areas can be shown on the map or deleted.
+- **New map menu** (top right): picture previews of each map, the map theme (Dark, Light or Auto) and a shortcut to offline maps.
+- **Smooth trackpad zoom:** pinching or two-finger scrolling zooms smoothly to exactly where your fingers stop, instead of jumping in steps and flickering.
+- Buttons sink in slightly when pressed, and a wave spreads from the point you pressed.
+- **Feature tests (developer only):** *Settings › Updates › Developer access* opens encrypted builds of unreleased experiments with the developer password. Each opens as a separate app in its own window, with its own settings, and doesn't update itself.
 - The setup guide and the README link straight to **Apple Devices** in the Microsoft Store.
 - **A real dark map:** the default map (OpenFreeMap) is sharp at every zoom and has a true dark style and a light style. Choose the map in *Settings › Appearance › Map* or with the map's layer button. If it can't load, the app says so and shows OpenStreetMap.
 - **Realistic cornering:** every bend is taken at the speed its curve allows for the vehicle (cars, bikes, walkers and boats differ). For a car: a right-angle junction at about 18 km/h, a roundabout at about 22 km/h, a gentle motorway curve at about 88 km/h. *Slow down for turns and U-turns* is on by default, and *Route summary* shows the sharpest bend.
@@ -28,6 +32,7 @@ Test builds from the `dev` branch are marked as pre-releases.
 - A new app icon. The taskbar shows just the red location pin, so it stays clear at small sizes.
 
 ### Fixed
+- After an update, Windows kept showing the old icon on pinned taskbar buttons and shortcuts until the app was downloaded again. The app now asks Windows to refresh its icons when it installs an update and when the new version first starts.
 - With a checkpoint's right-click menu open, a left click on the map added a checkpoint. It now only closes the menu.
 - Dropdowns in Settings opened behind the Settings window.
 - Roundabouts were sometimes driven at 70 km/h or more.

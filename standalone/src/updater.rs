@@ -113,6 +113,7 @@ impl Updater {
             return Err(format!("Could not install the update: {e}"));
         }
         let _ = std::fs::remove_file(self.staged_meta());
+        refresh_shell_icons(&self.exe);
         Ok(true)
     }
 
@@ -230,6 +231,40 @@ pub fn pick_release<'a>(rels: &'a [Value], channel: &str) -> Option<&'a Value> {
             _ => Some(r),
         })
 }
+
+/// Windows keeps a program's icon in its icon cache, and pinned taskbar buttons and shortcuts show
+/// that cached copy, so a new icon in an updated exe would not appear until the cache is rebuilt.
+/// Tell the shell that this file and the icons changed, and refresh the icon cache.
+#[cfg(windows)]
+pub fn refresh_shell_icons(exe: &std::path::Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::process::CommandExt;
+    #[link(name = "shell32")]
+    extern "system" {
+        fn SHChangeNotify(event: i32, flags: u32, item1: *const core::ffi::c_void, item2: *const core::ffi::c_void);
+    }
+    const SHCNE_UPDATEITEM: i32 = 0x0000_2000;
+    const SHCNE_ASSOCCHANGED: i32 = 0x0800_0000;
+    const SHCNF_IDLIST: u32 = 0x0000;
+    const SHCNF_PATHW: u32 = 0x0005;
+    const SHCNF_FLUSHNOWAIT: u32 = 0x3000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let wide: Vec<u16> = exe.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW | SHCNF_FLUSHNOWAIT, wide.as_ptr().cast(), std::ptr::null());
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, std::ptr::null(), std::ptr::null());
+    }
+    // Windows 10/11: rebuilds the user's icon cache (what pinned taskbar buttons use). Best effort.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        let tool = std::path::Path::new(&root).join("System32").join("ie4uinit.exe");
+        if tool.exists() {
+            let _ = std::process::Command::new(tool).arg("-show").creation_flags(CREATE_NO_WINDOW).spawn();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn refresh_shell_icons(_exe: &std::path::Path) {}
 
 fn check_host(u: &str) -> Result<(), String> {
     let url = url::Url::parse(u).map_err(|_| "bad url")?;
