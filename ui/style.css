@@ -1,4 +1,4 @@
-/* Location Spoofer UI.
+/* Location Spoofer UI. Copyright (c) 2026 YK3D. All rights reserved. See LICENSE.
    Structure: one set of design tokens (theme colours + derived control colours, radii, sizes), then
    edge-to-edge panes. The side menu is a darker canvas; every pane sits on it as a full-width block with
    its own header bar, so sections read as separate groups without card chrome. Elevation (shadows) is
@@ -296,12 +296,12 @@ label .field-row { align-items: center; }
 .grid2.tight { gap: 4px; }
 .grow { flex: 1; min-width: 0; }
 
-/* ---------- buttons: one height everywhere, border-defined, no transforms ---------- */
+/* ---------- buttons: one height everywhere, border-defined; pressing sinks them in slightly ---------- */
 button, .button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; height: var(--btn-h);
   min-height: var(--btn-h); padding: 0 10px; white-space: nowrap; cursor: default;
   font-size: 12.5px; font-weight: 500; color: var(--text); background: var(--control);
   border: 1px solid var(--border-strong); border-radius: var(--radius-sm); box-shadow: 0 1px 0 rgba(0, 0, 0, .04);
-  transition: background-color .08s, border-color .08s, color .08s; }
+  transition: background-color .08s, border-color .08s, color .08s, transform .14s var(--ease-out, ease-out); }
 button .ico { width: 14px; height: 14px; }
 button:hover:not(:disabled), .button:hover { background: var(--control-hover); }
 button:active:not(:disabled), .button:active { background: var(--control-active); }
@@ -389,6 +389,7 @@ p.warn { color: var(--warn-text); }
 .list li.hint { display: block; border: 0; }
 .list li span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .list li button { height: 24px; min-height: 24px; padding: 0 8px; font-size: 12px; }
+.list li a { padding: 0 6px; font-size: 12px; font-weight: 600; }
 .list li button.x { width: 24px; padding: 0; color: var(--muted); border-color: transparent; background: transparent; box-shadow: none; }
 .list li button.x:hover:not(:disabled) { color: var(--danger-text); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .picked { padding: 6px 8px; border-radius: var(--radius-sm); background: var(--well); border: 1px solid var(--border);
@@ -715,7 +716,7 @@ dialog.modal.morphing .modal-body { overflow: hidden; }
 .modal-body h2 { margin: 0; font-size: 15px; font-weight: 600; }
 .modal-body h3 { margin: 2px 0 0; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .055em; text-transform: uppercase; }
 /* segmented control (settings pages) */
-.seg { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; padding: 2px; border-radius: var(--radius);
+.seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 2px; padding: 2px; border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 90%, var(--text)); }
 .seg button { height: 24px; min-height: 24px; font-size: 12px; color: var(--muted); border: 0; border-radius: var(--radius-sm);
   background: transparent; box-shadow: none; }
@@ -829,3 +830,50 @@ label { position: relative; }
 .theme-more > .theme-grid { margin-top: 6px; }
 #theme-grid { display: flex; flex-direction: column; gap: 8px; }
 .wp .select-btn .select-chev { width: 12px; height: 12px; }
+
+/* ---------- pressed buttons: sink in, and one wave from the pressed point (see app.js) ---------- */
+button:active:not(:disabled), .button:active { transform: scale(.965); }
+.icon-btn:active:not(:disabled), .leaflet-bar a:active, .map-switch-btn:active { transform: scale(.9); }
+.wp-grip:active:not(:disabled), .select-btn:active:not(:disabled) { transform: none; }
+.leaflet-bar a { transition: background-color .08s, transform .14s var(--ease-out, ease-out); }
+.ripple-host { overflow: hidden; isolation: isolate; }
+.ripple-host.ripple-static { position: relative; }
+.ripple { position: absolute; z-index: -1; border-radius: 50%; pointer-events: none; background: currentColor; opacity: .22;
+  transform: scale(0); animation: ripple .6s cubic-bezier(.2, .7, .3, 1) forwards; }
+button.primary .ripple { opacity: .3; }
+@keyframes ripple { 70% { opacity: .12; } to { transform: scale(1); opacity: 0; } }
+
+/* ---------- map menu (top right) ---------- */
+.map-switch { position: relative; }
+.map-switch-btn { width: 34px; height: 34px; min-height: 34px; padding: 0; color: var(--text); background: var(--panel);
+  border: 1px solid var(--border-strong); border-radius: var(--radius); box-shadow: 0 2px 8px rgba(0, 0, 0, .22); }
+.map-switch-btn .ico { width: 18px; height: 18px; }
+.map-switch-btn[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+.map-switch-panel { position: absolute; top: 40px; right: 0; width: 248px; display: flex; flex-direction: column; gap: 8px; padding: 10px;
+  color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: var(--radius-lg, 10px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .3), 0 2px 6px rgba(0, 0, 0, .18); transform-origin: top right; font: 12px/1.4 var(--font-ui); }
+.map-switch-panel.pop-in { animation: pop-in .18s var(--ease-out, ease-out); }
+@keyframes pop-in { from { opacity: 0; transform: translateY(-4px) scale(.96); } }
+.map-switch-title { color: var(--muted); font-size: 10.5px; font-weight: 600; letter-spacing: .055em; text-transform: uppercase; }
+.map-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.map-card { flex-direction: column; align-items: stretch; gap: 4px; height: auto; min-height: 0; padding: 4px; font-weight: 500; font-size: 11.5px; }
+.map-card svg { display: block; width: 100%; height: auto; aspect-ratio: 56 / 38; border-radius: 4px; border: 1px solid rgba(0, 0, 0, .18); }
+.map-card span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.map-card.active { outline: 2px solid var(--accent); outline-offset: 0; border-color: transparent; }
+.map-theme-seg button { gap: 4px; height: 26px; min-height: 26px; }
+.map-theme-seg button .ico { width: 13px; height: 13px; }
+.map-theme-seg.muted-seg { opacity: .6; }
+.map-switch-offline { justify-content: flex-start; gap: 7px; }
+.map-switch-offline .ico { width: 16px; height: 16px; }
+
+/* ---------- offline maps and feature tests (settings) ---------- */
+.progress { height: 4px; overflow: hidden; border-radius: 2px; background: var(--well); }
+.progress span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s var(--ease-out, ease-out); }
+.pane-inner { display: flex; flex-direction: column; gap: 8px; }
+p.small.warn { color: var(--warn-text); }
+.icon-link { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; color: var(--muted); border-radius: var(--radius-sm); }
+.icon-link:hover { color: var(--text); background: var(--control-hover); }
+.icon-link .ico { width: 14px; height: 14px; }
+.list li a.icon-link { padding: 0; }
+#dev-access > summary .ico { width: 13px; height: 13px; }
+#feature-test-list, #offline-areas { max-height: 240px; overflow-y: auto; }

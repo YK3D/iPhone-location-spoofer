@@ -9,13 +9,14 @@ Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk 
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true"><b>⬇ Download the app (Standalone)</b></a> ·
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=browser&expanded=true">Browser edition</a> ·
   <a href="#getting-started">Getting started</a> ·
+  <a href="https://apps.microsoft.com/detail/9np83lwlpz9k">Apple Devices (required)</a> ·
   <a href="PRIVACY.md">Privacy</a> ·
   <a href="TERMS.md">Terms</a>
 </p>
 
 <p align="center"><img src="docs/screenshots/route-alternatives.webp" width="900" alt="Route tab: the main route and three alternatives, labelled on the map with their extra time"></p>
 
-> **Use it responsibly.** Location simulation is meant for testing your own apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the [Terms of Use](TERMS.md).
+> **Use it responsibly.** Location simulation is meant for testing apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the [Terms of Use](TERMS.md).
 
 ## Screenshots
 
@@ -30,9 +31,9 @@ Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk 
 
 <p align="center"><img src="docs/screenshots/settings.webp" width="720" alt="Settings window with the theme picker and the map theme"></p>
 
-The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/capture.js) with the default look (Graphite theme, dark OpenFreeMap map).
+## Which download should I use?
 
-## Which edition should I use?
+Most people should use the **standalone app**. The browser edition exists for iPhones on iOS 17.0–17.3.
 
 | | **Standalone app** (recommended) | Browser edition |
 |---|---|---|
@@ -40,15 +41,14 @@ The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/cap
 | Window | Its own app window | Opens in your web browser, plus a console window |
 | Size and start-up | Under 20 MB, starts instantly | About 80 MB, 10–20 s to start |
 | iOS 17.4 and newer, iOS 16 and older | ✅ | ✅ |
-| iOS 17.0–17.3 | ❌ | ✅ (with the administrator "tunnel helper") |
-| Fallback connection using pymobiledevice3 commands | — | ✅ |
-| Written in | Rust | Python |
+| iOS 17.0–17.3 | ❌ | ✅ (needs administrator permission once per session) |
 
-Both editions have the same interface and features. They update themselves from their own release pages.
+Both have the same look and features, and both update themselves.
 
 ## Features
 
-* **Map:** a sharp vector map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps; pick one in *Settings › Appearance* or with the map's layer button. Click to pick a point; right-click to jump there instantly.
+* **Map:** a sharp map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps. The map button in the top right corner switches maps and the map theme (dark, light, or matching the app). Click to pick a point; right-click to jump there instantly. Pinch or scroll on a trackpad to zoom smoothly.
+* **Offline maps:** save the area on screen (about a city per download) in *Settings › Offline maps*, and the map keeps working without internet.
 * **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
 * **Routes:**
   * add checkpoints on the map, then drag them on the map or in the list to move and reorder them;
@@ -66,7 +66,7 @@ Both editions have the same interface and features. They update themselves from 
   * follows each road's typical speed, and optionally public speed limits (not recommended: the public service is slow and often incomplete);
   * takes every bend at the speed its radius allows for the vehicle (cars, bikes, walkers and boats differ), and slows on private or gated roads;
   * aims for the same trip time (ETA) as Google Maps or OpenStreetMap, shown side by side.
-* **GPX files:** drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes can be exported as GPX.
+* **GPX files** (a common file format for recorded trips): drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes can be exported as GPX.
 * **Playback:** play, pause, seek, 0.25×–30× speed, loop or back-and-forth with an optional number of laps, optional GPS jitter, and a live speed and heading display on the map.
 * **Joystick:** walk or drive live with W A S D, the arrow keys or the on-screen pad.
 * **Stop spoofing:** one click returns the iPhone to its real GPS and shows your computer's real location on the map.
@@ -79,7 +79,7 @@ Both editions have the same interface and features. They update themselves from 
 
 ## Getting started
 
-1. **Install Apple's iPhone software.** Get **Apple Devices** from the Microsoft Store (iTunes also works). It provides the driver and background service Windows needs to talk to an iPhone. You don't need to keep its window open.
+1. **Install Apple's iPhone software.** Get [**Apple Devices** from the Microsoft Store](https://apps.microsoft.com/detail/9np83lwlpz9k) (free, made by Apple; iTunes also works). It lets Windows talk to an iPhone. You don't need to keep its window open.
 2. **Download** the [standalone app](https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true). Save `LocationSpooferStandalone.exe` in a folder you own, such as Desktop or Documents, so it can update itself.
 3. **Run it.** Windows may show "Windows protected your PC" because the app is not code-signed yet. Choose **More info → Run anyway**.
 4. **Follow the setup guide** that opens on first run:
@@ -99,20 +99,21 @@ Both editions have the same interface and features. They update themselves from 
 
 | Message | What to do |
 |---|---|
-| "Cannot reach the Apple device service" | Install the Apple Devices app (or iTunes), then reconnect the cable |
+| "Cannot reach the Apple device service" | Install [Apple Devices](https://apps.microsoft.com/detail/9np83lwlpz9k) (or iTunes), then reconnect the cable |
 | "Tap Trust on the iPhone" | Unlock the phone, tap Trust and enter the passcode |
 | "Developer Mode is off" | Device tools › Reveal Developer Mode, then turn it on in Settings on the iPhone |
 | Location doesn't change in an app | Check Apple Maps first, then fully close and reopen the app |
 | A speedometer app on the iPhone shows 0, or the heading arrow doesn't turn | Apple's location simulation only carries a position, so iOS reports no speed or course for it. Apps that work out speed from movement (navigation apps, most games) are fine. The app's own map shows the simulated speed and heading |
 | "My real location" says Windows blocked it | Turn on *Settings › Privacy & security › Location* and "Let desktop apps access your location" (the message has a button for it) |
 | Location stays wrong after you finish | Press **Stop spoofing**, or restart the iPhone |
-| The app shows an older version number | An older copy is still running in the background. Close every Location Spoofer window, end any **location-spoofer** or **LocationSpooferStandalone** task in Task Manager, then open the new file. Version 0.2.4 and newer close older copies by themselves |
+| The app shows an older version number | An older copy is still running in the background. Close every Location Spoofer window, end any **location-spoofer** or **LocationSpooferStandalone** task in Task Manager, then open the new file |
+| Something else | [Open an issue](https://github.com/YK3D/iPhone-location-spoofer/issues/new) and describe what happened, with the app's version (*Settings › About*) |
 
 ## Updates and test builds
 
-The app checks for updates when it starts and every few hours. It downloads them in the background, verifies their SHA-256 checksum and installs them when you press **Restart now** or the next time you open the app.
+The app checks for updates when it starts and every few hours. It downloads them in the background, checks that the download is intact and installs them when you press **Restart now**, or the next time you open the app.
 
-In **⚙ Settings › Updates** you can switch to **Test builds**: pre-releases with the newest features from the `dev` branch, which may contain bugs.
+Want new features early? In **⚙ Settings › Updates** you can switch to **Test builds**. They may contain bugs; switch back to *Stable releases* at any time.
 
 ## Optional: Google Maps
 
@@ -128,35 +129,14 @@ Google bills per request after its free monthly allowance. As Google's terms req
 
 The app has no accounts, no analytics and no telemetry. Your favourites, routes and settings stay on your computer. Maps, searches and routes are requested directly from the services listed in the [Privacy Policy](PRIVACY.md).
 
-## Building from source
-
-```bash
-# Standalone app (Rust). Linux needs libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev
-cd standalone
-cargo run --release              # app window
-cargo run --release -- --no-window
-cargo test
-
-# Browser edition (Python 3.12)
-cd browser
-pip install -r requirements-dev.txt
-python -m spoofer
-python -m pytest
-```
-
-| Folder | Contents |
-|---|---|
-| `standalone/` | Rust app: local server, iPhone driver, routing, speed engine |
-| `browser/` | Python edition |
-| `ui/` | The shared interface (HTML, CSS, JavaScript) |
-| `assets/` | Icon |
-| `docs/` | Design notes |
-
 ## Licence
 
-* The standalone app, the shared interface and the icon are released under the [MIT License](LICENSE).
-* The browser edition is released under the [GNU GPL v3 or later](browser/LICENSE), because it ships with GPL-licensed libraries.
-* Third-party components and services are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-* Security issues: see [SECURITY.md](SECURITY.md).
+Location Spoofer is free to download and use, but it is **not open source**: © 2026 YK3D, all rights reserved.
+
+* You may use the app, read its code and suggest changes through pull requests.
+* You may **not** copy its code, interface or icon into other projects, redistribute it, sell it or publish modified versions **without written permission**, and any permitted use must credit "Location Spoofer by YK3D". See [LICENSE](LICENSE).
+* The browser edition is licensed under the [GNU GPL v3 or later](browser/LICENSE) with an attribution requirement ([browser/NOTICE](browser/NOTICE)), because it includes GPL-licensed libraries.
+* Third-party components keep their own licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+* To ask for permission, [open an issue](https://github.com/YK3D/iPhone-location-spoofer/issues/new). Security problems: see [SECURITY.md](SECURITY.md). Want to help? See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Location Spoofer is an independent project and is not affiliated with, endorsed by or sponsored by Apple Inc. or Google LLC. iPhone is a trademark of Apple Inc.; Google Maps is a trademark of Google LLC.
