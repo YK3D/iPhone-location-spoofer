@@ -1,27 +1,83 @@
 name: Feature-test builds
 
-# Builds every pull request into feature-testing as an encrypted standalone exe, for the developer
-# (in the app: Settings › Updates › Developer access). The builds and their index are encrypted
-# with the repository secret FEATURE_TEST_PASSWORD and uploaded to the "feature-tests"
-# pre-release; without the secret nothing is built. Pull requests from forks get no secrets and
-# are skipped. The apps ignore this release when they look for updates.
+# Builds pull requests as encrypted standalone exes, for the developer (in the app: Settings ›
+# Updates › Developer access, revealed by clicking the About tab 7 times). Every pull request
+# into feature-testing is built automatically; any other pull request (open or merged) can be
+# built from the Actions tab with "Run workflow" and its number. The builds and their index are
+# encrypted with the repository secret FEATURE_TEST_PASSWORD and uploaded to the
+# "feature-tests" pre-release; without the secret nothing is built. Pull requests from forks get
+# no secrets and are skipped. The apps ignore this release when they look for updates.
 on:
   pull_request:
     branches: [feature-testing]
     types: [opened, synchronize, reopened, closed]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Pull request number to build
+        required: true
 
 permissions:
   contents: write
-
-env:
-  PR: ${{ github.event.pull_request.number }}
+  pull-requests: read
 
 jobs:
+  meta:
+    if: github.event_name == 'workflow_dispatch' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.m.outputs.pr }}
+      ref: ${{ steps.m.outputs.ref }}
+      head_sha: ${{ steps.m.outputs.head_sha }}
+      base_sha: ${{ steps.m.outputs.base_sha }}
+      url: ${{ steps.m.outputs.url }}
+      title: ${{ steps.m.outputs.title }}
+      state: ${{ steps.m.outputs.state }}
+    steps:
+      - id: m
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PR: ${{ github.event.inputs.pr }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            case "$INPUT_PR" in ''|*[!0-9]*) echo "::error::pr must be a number"; exit 1;; esac
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$INPUT_PR" > pr.json
+            if [ "$(jq -r .head.repo.full_name pr.json)" != "$GITHUB_REPOSITORY" ]; then echo "::error::only pull requests from this repository"; exit 1; fi
+            STATE=$(jq -r 'if .merged_at then "merged" elif .state == "open" then "open" else "closed" end' pr.json)
+            {
+              echo "pr=$INPUT_PR"
+              echo "ref=$(jq -r .head.sha pr.json)"
+              echo "head_sha=$(jq -r .head.sha pr.json)"
+              echo "base_sha=$(jq -r .base.sha pr.json)"
+              echo "url=$(jq -r .html_url pr.json)"
+              echo "title=$(jq -r '.title | gsub("[\r\n]"; " ")' pr.json)"
+              echo "state=$STATE"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "pr=$PR_NUMBER"
+              echo "ref=$MERGE_SHA"
+              echo "head_sha=$HEAD_SHA"
+              echo "base_sha=$BASE_SHA"
+              echo "url=$PR_URL"
+              echo "title=$(printf '%s' "$PR_TITLE" | tr '\r\n' '  ')"
+              echo "state=open"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: meta
     runs-on: windows-latest
     concurrency:
-      group: feature-test-build-${{ github.event.pull_request.number }}
+      group: feature-test-build-${{ needs.meta.outputs.pr }}
       cancel-in-progress: true
     outputs:
       built: ${{ steps.pack.outputs.built }}
@@ -30,6 +86,7 @@ jobs:
       version: ${{ steps.pack.outputs.version }}
     env:
       FEATURE_TEST_PASSWORD: ${{ secrets.FEATURE_TEST_PASSWORD }}
+      PR: ${{ needs.meta.outputs.pr }}
     steps:
       - name: Check the password secret
         id: secret
@@ -41,23 +98,33 @@ jobs:
           else
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
+      # The pull request's code, and this workflow's own scripts (older branches don't have them).
       - uses: actions/checkout@v4
         if: steps.secret.outputs.ok == 'true'
+        with:
+          ref: ${{ needs.meta.outputs.ref }}
+          path: src
+      - uses: actions/checkout@v4
+        if: steps.secret.outputs.ok == 'true'
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: tools
+          sparse-checkout: .github/scripts
       - uses: Swatinem/rust-cache@v2
         if: steps.secret.outputs.ok == 'true'
         with:
-          workspaces: standalone
+          workspaces: src/standalone
       - name: Build
         if: steps.secret.outputs.ok == 'true'
-        working-directory: standalone
+        working-directory: src/standalone
         env:
-          SPOOFER_VERSION: 0.0.${{ github.run_number }}-ft${{ github.event.pull_request.number }}
+          SPOOFER_VERSION: 0.0.${{ github.run_number }}-ft${{ needs.meta.outputs.pr }}
         run: cargo build --release --locked
       - name: Self-test
         if: steps.secret.outputs.ok == 'true'
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath standalone\target\release\location-spoofer.exe -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
+          $p = Start-Process -FilePath src\standalone\target\release\location-spoofer.exe -ArgumentList "--self-test" -Wait -PassThru -NoNewWindow
           if ($p.ExitCode -ne 0) { Write-Error "self-test failed ($($p.ExitCode))"; exit 1 }
       - uses: actions/setup-python@v5
         if: steps.secret.outputs.ok == 'true'
@@ -71,8 +138,8 @@ jobs:
           set -euo pipefail
           python -m pip install -q "cryptography>=42"
           mkdir -p sealed
-          exe=standalone/target/release/location-spoofer.exe
-          python .github/scripts/feature_test_seal.py seal "$exe" "sealed/ft-pr$PR.bin"
+          exe=src/standalone/target/release/location-spoofer.exe
+          python tools/.github/scripts/feature_test_seal.py seal "$exe" "sealed/ft-pr$PR.bin"
           {
             echo "built=true"
             echo "sha256=$(sha256sum "$exe" | cut -d' ' -f1)"
@@ -83,13 +150,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: steps.secret.outputs.ok == 'true'
         with:
-          name: feature-test
+          name: feature-test-${{ needs.meta.outputs.pr }}
           path: sealed/*
           retention-days: 1
           if-no-files-found: error
 
   publish:
-    needs: build
+    needs: [meta, build]
     if: needs.build.outputs.built == 'true'
     runs-on: ubuntu-latest
     concurrency:
@@ -98,18 +165,23 @@ jobs:
     env:
       FEATURE_TEST_PASSWORD: ${{ secrets.FEATURE_TEST_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
-      PR_TITLE: ${{ github.event.pull_request.title }}
-      PR_URL: ${{ github.event.pull_request.html_url }}
-      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      PR: ${{ needs.meta.outputs.pr }}
+      PR_TITLE: ${{ needs.meta.outputs.title }}
+      PR_URL: ${{ needs.meta.outputs.url }}
+      PR_STATE: ${{ needs.meta.outputs.state }}
+      HEAD_SHA: ${{ needs.meta.outputs.head_sha }}
+      BASE_SHA: ${{ needs.meta.outputs.base_sha }}
       EXE_SHA256: ${{ needs.build.outputs.sha256 }}
       EXE_SIZE: ${{ needs.build.outputs.size }}
       VERSION: ${{ needs.build.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/scripts
       - uses: actions/download-artifact@v4
         with:
-          name: feature-test
+          name: feature-test-${{ needs.meta.outputs.pr }}
           path: sealed
       - name: Upload the build and update the index
         run: |
@@ -117,14 +189,14 @@ jobs:
           python3 -m pip install -q "cryptography>=42"
           gh release view feature-tests >/dev/null 2>&1 || gh release create feature-tests --prerelease --target "$BASE_SHA" \
             --title "Feature tests (encrypted, for the developer)" \
-            --notes "Encrypted builds of experiments in pull requests into feature-testing. They open only in the app, with the developer password. Download the normal app from the other releases."
+            --notes "Encrypted builds of experiments in pull requests. They open only in the app, with the developer password. Download the normal app from the other releases."
           gh release download feature-tests -p ft-index.bin -D sealed --clobber || true
           python3 .github/scripts/feature_test_seal.py upsert sealed/ft-index.bin --pr "$PR" --title "$PR_TITLE" --url "$PR_URL" \
-            --sha "$HEAD_SHA" --asset "ft-pr$PR.bin" --sha256 "$EXE_SHA256" --size "$EXE_SIZE" --version "$VERSION"
+            --sha "$HEAD_SHA" --asset "ft-pr$PR.bin" --sha256 "$EXE_SHA256" --size "$EXE_SIZE" --version "$VERSION" --state "$PR_STATE"
           gh release upload feature-tests "sealed/ft-pr$PR.bin" sealed/ft-index.bin --clobber
 
   closed:
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     concurrency:
       group: feature-test-index
@@ -133,8 +205,12 @@ jobs:
       FEATURE_TEST_PASSWORD: ${{ secrets.FEATURE_TEST_PASSWORD }}
       GH_TOKEN: ${{ github.token }}
       MERGED: ${{ github.event.pull_request.merged }}
+      PR: ${{ github.event.pull_request.number }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: .github/scripts
       - name: Mark the build merged, or remove it
         run: |
           set -euo pipefail

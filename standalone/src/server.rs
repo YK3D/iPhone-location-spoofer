@@ -151,6 +151,7 @@ pub fn router(app: App) -> Router {
         .route("/api/feature-tests/unlock", post(ft_unlock))
         .route("/api/feature-tests/lock", post(ft_lock))
         .route("/api/feature-tests/open", post(ft_open))
+        .route("/api/feature-tests/progress", get(ft_progress))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(axum::middleware::from_fn(local_only))
         .with_state(app)
@@ -245,6 +246,10 @@ struct UnlockIn {
 
 async fn ft_unlock(State(app): State<App>, Json(b): Json<UnlockIn>) -> R {
     app.feature_tests.unlock(&b.password, b.remember).await.map(Json).map_err(ft_error)
+}
+
+async fn ft_progress(State(app): State<App>) -> R {
+    Ok(Json(app.feature_tests.progress()))
 }
 
 async fn ft_lock(State(app): State<App>) -> R {

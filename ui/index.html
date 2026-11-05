@@ -530,7 +530,7 @@
       </label>
       <p class="hint">The app checks GitHub when it starts and every few hours, downloads updates in the background and verifies their SHA-256 checksum.</p>
       <div class="btn-row"><button id="btn-update-check2" type="button">Check for updates now</button></div>
-      <details id="dev-access" class="sub">
+      <details id="dev-access" class="sub" hidden>
         <summary><svg class="ico"><use href="#i-lock"/></svg>Developer access</summary>
         <div class="pane-inner">
           <p class="hint">Feature tests are unreleased experiments. Their builds are encrypted; only the developer password opens them. Each one opens as a separate app in its own window, with its own settings, and doesn't update itself.</p>
@@ -544,6 +544,8 @@
           <div id="ft-unlocked" class="pane-inner" hidden>
             <ul id="feature-test-list" class="list"></ul>
             <div class="field-row"><button id="btn-ft-refresh" type="button" class="fixed">Refresh</button><button id="btn-ft-lock" type="button" class="fixed">Lock</button></div>
+          </div>
+          <div class="field-row"><button id="btn-dev-off" type="button" class="link-btn">Turn off developer mode</button>
           </div>
         </div>
       </details>

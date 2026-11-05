@@ -66,13 +66,17 @@ def test_unlock_list_open_and_lock(tmp_path):
         ft = FeatureTests(tmp_path, "YK3D/iPhone-location-spoofer", launcher=lambda *a: launched.append(a),
                           transport=fake_github("s3cret", served))
         assert (await ft.list())["builds"][0]["title"] == "New engine"
+        for _ in range(300):  # the background download makes the build ready
+            if ft.progress()["builds"][0]["ready"]:
+                break
+            await asyncio.sleep(0.01)
+        assert ft.progress()["builds"][0]["ready"] is True
+        served.clear()
         await ft.open_build(14)
+        assert served == []  # a downloaded build opens without the network
         exe, args, data = launched[-1]
         assert exe.read_bytes() == EXE and args == ["--port", "0", "--no-update", "--feature-test", "14"]
         assert data == tmp_path / "feature-tests" / "data"
-        served.clear()
-        await ft.open_build(14)  # already downloaded: only the index is fetched
-        assert served == ["ft-index.bin"]
         with pytest.raises(FeatureTestError, match="no build"):
             await ft.open_build(99)
         ft.lock()

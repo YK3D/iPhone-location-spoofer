@@ -8,7 +8,9 @@ Location Spoofer is source-available, not open source (see [LICENSE](LICENSE)). 
 
 ## Feature tests
 
-Feature tests are experiments in pull requests into the `feature-testing` branch. For every such pull request from this repository, `.github/workflows/feature-tests.yml` builds the standalone app, encrypts it with the developer password and uploads it, with an encrypted list of builds, to the `feature-tests` pre-release. In the app, *Settings › Updates › Developer access* unlocks the list with the password; *Open* downloads a build once, checks it and starts it as a separate app in its own window (own data folder, own port, no self-update). The builds are Windows apps.
+Feature tests are experiments in pull requests. For every pull request from this repository into the `feature-testing` branch, `.github/workflows/feature-tests.yml` builds the standalone app, encrypts it with the developer password and uploads it, with an encrypted list of builds, to the `feature-tests` pre-release. Any other pull request (open or merged) can be built from the *Actions* tab: *Feature-test builds › Run workflow*, with its number.
+
+In the app, click the *About* tab in Settings 7 times to turn on developer mode. *Settings › Updates › Developer access* then unlocks the list with the password and downloads every build in the background; *Open* checks a build and starts it as a separate app in its own window (own data folder, own port, no self-update). The builds are Windows apps.
 
 **Setup (once):** add a repository secret named `FEATURE_TEST_PASSWORD` (GitHub › Settings › Secrets and variables › Actions) with a long password. Without it the workflow builds nothing. Changing it later makes older builds unreadable with the new password; push to the pull requests again to rebuild them.
 

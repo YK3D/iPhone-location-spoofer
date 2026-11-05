@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,6 +31,8 @@ from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from .updater import REPO, USER_AGENT, independent_env
+
+log = logging.getLogger(__name__)
 
 RELEASE_TAG = "feature-tests"
 MANIFEST = "ft-index.bin"
@@ -92,6 +95,9 @@ class FeatureTests:
         self.launcher = launcher
         self._transport = transport
         self._busy = asyncio.Lock()
+        self._index: Optional[dict] = None  # the last index opened: "Open" needs no network then
+        self._downloading: set[int] = set()
+        self._prefetch: Optional[asyncio.Task] = None
         try:
             pw = self._key_file.read_text(encoding="utf-8").rstrip("\r\n")
         except OSError:
@@ -124,19 +130,86 @@ class FeatureTests:
             m = json.loads(plain)
         except ValueError:
             raise FeatureTestError(502, "The feature-test index is damaged.") from None
-        return m if isinstance(m, dict) else {"builds": []}
+        m = m if isinstance(m, dict) else {"builds": []}
+        self._index = m
+        return m
 
-    @staticmethod
-    def _public(m: dict) -> dict:
+    def _files(self, b: dict) -> tuple[int, str, str, Path, Path]:
+        pr, asset, total = b.get("pr"), b.get("asset"), str(b.get("sha256") or "").lower()
+        if not isinstance(pr, int) or not isinstance(asset, str) or not _ASSET_RE.match(asset) \
+                or not re.fullmatch(r"[0-9a-f]{64}", total):
+            raise FeatureTestError(502, "The feature-test index is damaged.")
+        folder = self.dir / "builds" / f"pr{pr}-{total[:12]}"
+        return pr, asset, total, folder, folder / EXE_NAME
+
+    def _ready(self, b: dict) -> bool:
+        """Downloaded and checked: "verified" is written only after the checksum matched."""
+        try:
+            *_, folder, exe = self._files(b)
+        except FeatureTestError:
+            return False
+        return exe.is_file() and (folder / "verified").is_file()
+
+    async def _ensure(self, password: str, b: dict) -> Path:
+        """The build's exe on disk, downloading, decrypting and checking it first if needed."""
+        pr, asset, total, folder, exe = self._files(b)
+        if self._ready(b):
+            return exe
+        plain = await asyncio.to_thread(open_sealed, password, await self._get(asset))
+        if hashlib.sha256(plain).hexdigest() != total:
+            raise FeatureTestError(502, "The downloaded build failed its checksum and was discarded.")
+        builds = self.dir / "builds"
+        if builds.is_dir():  # older builds of the same pull request (skipped while running)
+            for old in builds.glob(f"pr{pr}-*"):
+                if old != folder:
+                    shutil.rmtree(old, ignore_errors=True)
+        folder.mkdir(parents=True, exist_ok=True)
+        tmp = folder / "download.part"
+        tmp.write_bytes(plain)
+        os.replace(tmp, exe)
+        (folder / "verified").write_text(total, encoding="utf-8")
+        return exe
+
+    def _public(self, m: dict) -> dict:
         keys = ("pr", "title", "url", "state", "built_at", "version", "size")
-        builds = [{k: b.get(k) for k in keys} for b in m.get("builds", []) if isinstance(b, dict)]
+        builds = [{**{k: b.get(k) for k in keys}, "ready": self._ready(b), "downloading": b.get("pr") in self._downloading}
+                  for b in m.get("builds", []) if isinstance(b, dict)]
         return {"locked": False, "builds": builds}
+
+    def _start_prefetch(self, password: str, m: dict) -> None:
+        """Download every build that isn't on this computer yet, one at a time in the background,
+        so "Open" starts them straight away."""
+        todo = [b for b in m.get("builds", []) if isinstance(b, dict) and not self._ready(b)]
+        if not todo or (self._prefetch and not self._prefetch.done()):
+            return
+
+        async def run() -> None:
+            for b in todo:
+                pr = b.get("pr")
+                self._downloading.add(pr)
+                try:
+                    async with self._busy:
+                        await self._ensure(password, b)
+                except Exception as e:  # noqa: BLE001 - reported in the log; "Open" retries
+                    log.warning("feature test #%s: %s", pr, e)
+                finally:
+                    self._downloading.discard(pr)
+
+        self._prefetch = asyncio.get_running_loop().create_task(run())
 
     async def list(self) -> dict:
         """The list when unlocked (the password is in memory or remembered), else {"locked": True}."""
         if not self.password:
             return {"locked": True}
-        return self._public(await self._manifest(self.password))
+        m = await self._manifest(self.password)
+        self._start_prefetch(self.password, m)
+        return self._public(m)
+
+    def progress(self) -> dict:
+        """The list from the last index opened (no network): for showing download progress."""
+        if not self.password:
+            return {"locked": True}
+        return self._public(self._index or {"builds": []})
 
     async def unlock(self, password: str, remember: bool) -> dict:
         if not password:
@@ -146,46 +219,30 @@ class FeatureTests:
         if remember:
             self.dir.mkdir(parents=True, exist_ok=True)
             self._key_file.write_text(password, encoding="utf-8")
+        self._start_prefetch(password, m)
         return self._public(m)
 
     def lock(self) -> None:
         self.password = None
+        self._index = None
         try:
             self._key_file.unlink()
         except OSError:
             pass
 
     async def open_build(self, pr: int) -> dict:
-        """Download (once), decrypt and verify a build, then start it in its own window."""
+        """Start a build in its own window (downloading it first if the background download hasn't)."""
         pw = self.password
         if not pw:
             raise FeatureTestError(400, "Unlock feature tests first.")
+
+        def find(m: Optional[dict]) -> Optional[dict]:
+            return next((x for x in (m or {}).get("builds", []) if isinstance(x, dict) and x.get("pr") == pr), None)
+
+        b = find(self._index) or find(await self._manifest(pw))
+        if b is None:
+            raise FeatureTestError(404, "That feature test has no build.")
         async with self._busy:
-            m = await self._manifest(pw)
-            b = next((x for x in m.get("builds", []) if isinstance(x, dict) and x.get("pr") == pr), None)
-            if b is None:
-                raise FeatureTestError(404, "That feature test has no build.")
-            asset, total = b.get("asset"), str(b.get("sha256") or "").lower()
-            if not isinstance(asset, str) or not _ASSET_RE.match(asset) or not re.fullmatch(r"[0-9a-f]{64}", total):
-                raise FeatureTestError(502, "The feature-test index is damaged.")
-            folder = self.dir / "builds" / f"pr{pr}-{total[:12]}"
-            exe = folder / EXE_NAME
-            try:
-                ok = hashlib.sha256(exe.read_bytes()).hexdigest() == total
-            except OSError:
-                ok = False
-            if not ok:
-                plain = await asyncio.to_thread(open_sealed, pw, await self._get(asset))
-                if hashlib.sha256(plain).hexdigest() != total:
-                    raise FeatureTestError(502, "The downloaded build failed its checksum and was discarded.")
-                builds = self.dir / "builds"
-                if builds.is_dir():  # older builds of the same pull request (skipped while running)
-                    for old in builds.glob(f"pr{pr}-*"):
-                        if old != folder:
-                            shutil.rmtree(old, ignore_errors=True)
-                folder.mkdir(parents=True, exist_ok=True)
-                tmp = folder / "download.part"
-                tmp.write_bytes(plain)
-                os.replace(tmp, exe)
-            self.launcher(exe, ["--port", "0", "--no-update", "--feature-test", str(pr)], self.dir / "data")
-            return {"ok": True, "pr": pr, "title": b.get("title")}
+            exe = await self._ensure(pw, b)
+        self.launcher(exe, ["--port", "0", "--no-update", "--feature-test", str(pr)], self.dir / "data")
+        return {"ok": True, "pr": pr, "title": b.get("title")}

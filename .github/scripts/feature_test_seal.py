@@ -10,7 +10,7 @@ associated data.
 
     python feature_test_seal.py seal IN OUT
     python feature_test_seal.py open IN OUT
-    python feature_test_seal.py upsert INDEX --pr N --title T --url U --sha S --asset A --sha256 H --size B --version V
+    python feature_test_seal.py upsert INDEX --pr N --title T --url U --sha S --asset A --sha256 H --size B --version V [--state open|merged|closed]
     python feature_test_seal.py state INDEX --pr N --state merged|closed     (closed: removed)
 
 INDEX is the encrypted index file; it is created when missing. Needs: pip install cryptography
@@ -75,6 +75,7 @@ def main() -> None:
     up.add_argument("index", type=Path)
     for k in ("pr", "title", "url", "sha", "asset", "sha256", "size", "version"):
         up.add_argument(f"--{k}", required=True)
+    up.add_argument("--state", choices=("open", "merged", "closed"), default="open")
     st = sub.add_parser("state")
     st.add_argument("index", type=Path)
     st.add_argument("--pr", required=True)
@@ -91,7 +92,7 @@ def main() -> None:
             sys.exit("--sha256 must be the exe's SHA-256 in hex")
         entry = {
             "pr": int(a.pr), "title": a.title[:200], "url": a.url, "sha": a.sha, "asset": a.asset,
-            "sha256": a.sha256.lower(), "size": int(a.size), "version": a.version, "state": "open",
+            "sha256": a.sha256.lower(), "size": int(a.size), "version": a.version, "state": a.state,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         idx["builds"] = [b for b in idx.get("builds", []) if b.get("pr") != entry["pr"]] + [entry]

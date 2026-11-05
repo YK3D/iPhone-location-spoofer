@@ -2847,6 +2847,7 @@ const settingsDlg = $("settings-dialog");
 settingsDlg.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); closeDialog(settingsDlg); });
 function openSettings(pane = "appearance") {
   $("key-status").textContent = "";
+  applyDeveloperMode();
   morphHeight(settingsDlg, () => {
     document.querySelectorAll("#settings-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
     document.querySelectorAll("#settings-dialog .pane").forEach((p) => (p.hidden = p.dataset.pane !== pane));
@@ -3013,18 +3014,54 @@ $("btn-update-install").onclick = guard(async () => {
 // downloads a build once, then starts it as a separate app in its own window.
 const devAccess = $("dev-access");
 devAccess.addEventListener("toggle", () => { if (devAccess.open) refreshFeatureTests(false); }); // folds like other sections (wireSections)
+// Developer mode: hidden until the About tab is clicked 7 times in a row (like phones do).
+let aboutClicks = 0, aboutClickAt = 0;
+function applyDeveloperMode() { devAccess.hidden = !settings().developer_mode; }
+document.querySelector('#settings-tabs button[data-pane="about"]').addEventListener("click", () => {
+  const now = performance.now();
+  aboutClicks = now - aboutClickAt < 1500 ? aboutClicks + 1 : 1;
+  aboutClickAt = now;
+  if (settings().developer_mode) { if (aboutClicks === 7) toast("Developer mode is already on (Settings › Updates)."); return; }
+  if (aboutClicks >= 4 && aboutClicks < 7) toast(`${7 - aboutClicks} more to turn on developer mode.`);
+  if (aboutClicks === 7) {
+    settings().developer_mode = true;
+    saveStore().catch(() => {});
+    applyDeveloperMode();
+    toast("Developer mode is on. Developer access is in Settings › Updates.");
+  }
+});
+$("btn-dev-off").onclick = guard(async () => {
+  await api("/api/feature-tests/lock", { body: {} });
+  settings().developer_mode = false;
+  await saveStore();
+  morphHeight(settingsDlg, () => { devAccess.open = false; applyDeveloperMode(); renderFeatureTests({ locked: true }); });
+  toast("Developer mode is off.");
+});
+let ftTimer = null;
+function watchFeatureTests(r) {
+  clearTimeout(ftTimer);
+  if (r.locked || !(r.builds || []).some((b) => !b.ready)) return;
+  ftTimer = setTimeout(guard(async () => {
+    if (!settingsDlg.open || devAccess.hidden || !devAccess.open) return;
+    const p = await api("/api/feature-tests/progress");
+    renderFeatureTests(p, false);
+  }), 1500);
+}
 function featureTestDate(iso) {
   const d = new Date(iso);
   return isNaN(d) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
-function renderFeatureTests(r) {
-  morphHeight(settingsDlg, () => {
+function renderFeatureTests(r, animate = true) {
+  watchFeatureTests(r);
+  const run = animate ? (fn) => morphHeight(settingsDlg, fn) : (fn) => fn();
+  run(() => {
     $("ft-locked").hidden = !r.locked;
     $("ft-unlocked").hidden = !!r.locked;
     if (r.locked) return;
     const builds = r.builds || [];
     $("feature-test-list").replaceChildren(...(builds.length ? builds.map((b) => {
-      const open = el("button", { type: "button", textContent: "Open", title: "Download if needed and start it in its own window" });
+      const open = el("button", { type: "button", textContent: "Open", class: b.ready ? "primary" : "",
+        title: b.ready ? "Start it in its own window" : "Download it, then start it in its own window" });
       open.onclick = busy(open, "Opening…", async () => {
         await api("/api/feature-tests/open", { body: { pr: b.pr } });
         toast(`Feature test #${b.pr} is starting in its own window.`);
@@ -3034,7 +3071,8 @@ function renderFeatureTests(r) {
         : el("span");
       return el("li", {},
         el("span", { textContent: `#${b.pr} · ${b.title || "Untitled"}`, title: b.title || "" }),
-        el("span", { class: "tag", textContent: b.state === "merged" ? "Merged" : `Built ${featureTestDate(b.built_at)}` }),
+        el("span", { class: "tag", textContent: b.ready ? "Ready" : b.downloading ? "Downloading…" : "Not downloaded",
+          title: `${b.state === "merged" ? "Merged" : "Open"} pull request · built ${featureTestDate(b.built_at)}` }),
         page, open);
     }) : [el("li", { class: "hint", textContent: "No feature-test builds at the moment." })]));
   });

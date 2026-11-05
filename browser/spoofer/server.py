@@ -839,6 +839,11 @@ async def feature_tests_unlock(body: UnlockIn):
     return await S().feature_tests.unlock(body.password, body.remember)
 
 
+@app.get("/api/feature-tests/progress")
+async def feature_tests_progress():
+    return S().feature_tests.progress()
+
+
 @app.post("/api/feature-tests/lock")
 async def feature_tests_lock():
     S().feature_tests.lock()
