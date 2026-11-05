@@ -43,7 +43,9 @@ It can, however, use **any** usbmuxd: the `--usbmux HOST:PORT` option and the `U
 
 | Component | What it does | Where it comes from |
 |---|---|---|
-| Apple Mobile Device USB Driver (kernel, `usbaapl64.sys`) | Binds the iPhone's USB interfaces in Windows Plug and Play | Microsoft Update Catalog lists **"Apple, Inc. USBDevice Driver Update (552.0.0.0)"**, last updated 24 Apr 2025, for Windows 10 and later. Earlier versions are 538, 486 and 423. Community guides say Windows installs it automatically when an iPhone is plugged in; that is unverified here. |
+| Apple USB driver (`appleusb.inf`) | Binds the iPhone's USB interfaces in Windows Plug and Play | Microsoft Update Catalog lists **"Apple, Inc. USBDevice Driver Update (552.0.0.0)"**, last updated 24 Apr 2025, for Windows 10 and later. Earlier versions are 538, 486 and 423. Community guides say Windows installs it automatically when an iPhone is plugged in; that is unverified here. |
+
+**Correction to earlier notes in this file:** the modern package (538/552, class `USBDevice`) is *not* the old `usbaapl64.sys` kernel driver from iTunes. It binds the mux interface to in-box **WinUSB.sys** with Apple's UMDF filter **`AppleUsbFilter.dll`** on top, and that filter publishes device interface `{664be590-54bd-4964-8a8c-6cd1314f6dc2}`. netmuxd's default Windows backend (`apple_mux`) drives that interface's IOCTLs. So on a PC with the modern package, `usbaapl64.sys` is absent and that is correct and harmless — a diagnostics field reporting its absence must not be read as the cause of a failure.
 | Apple Mobile Device Service (user-mode NT service) | The usbmuxd implementation: lists devices, stores pair records, relays connections | Only in the Apple Devices app, iTunes, or the "Apple Mobile Device Support" MSI extracted from the iTunes installer |
 
 ### Options
@@ -55,9 +57,29 @@ It can, however, use **any** usbmuxd: the `--usbmux HOST:PORT` option and the `U
 | **C. Windows Update driver + netmuxd + `idevice` (Rust, MIT) in a Tauri app** | No | Same as B | Best fit: no Python and no GPL, and a smaller binary | Full backend rewrite. idevice has location simulation, DVT, CoreDeviceProxy tunnels, image mounting and pairing (README), but its README does not mention Windows |
 | **D. netmuxd libusb mode** (binds the libusb0 driver with libwdi) | No | **Yes:** admin install of a self-signed driver; Apple Devices / Apple Mobile Device Support must be uninstalled; breaks iTunes and Photos import; rejected on Windows ARM64 | **No** (installs a non-WHCP driver) | Invasive; not recommended |
 | **E. Wi-Fi only** (pymobiledevice3 mobdev2 for iOS 16 and older; RemotePairing tunnel for iOS 17+) | Only for the **first** pairing, which needs USB and a usbmuxd | No | Yes | Pair records must exist first. `lockdown remotepairing --pair` can create the iOS 17+ record over USB without a prompt. Discovery depends on the network (mDNS, firewalls) |
+| **G. Ship our own WinUSB INF** (bind in-box WinUSB.sys to the mux interface, no third-party kernel driver) | No | **Yes:** a driver package install, so admin; and Apple's WHQL INF outranks ours, so it must be force-bound with the device present | **No** (MSIX cannot install drivers) | **Blocked on a technical point, not just signing:** netmuxd has no usable WinUSB backend. `src/daemon/nusb_backend.rs` is `#![cfg(not(target_os = "windows"))]` because "nusb's WinUSB backend cannot call SetConfiguration on a composite device", and nusb's own docs require the interface to be bound to WinUSB. Taking this route means writing a new USB backend, not writing an INF |
 | **F. Bundle Apple Mobile Device Support MSI** (what tools like iMazing do: their installer "will automatically reinstall all required components and drivers") | No (but installs Apple's service) | Yes (installer) | No: redistributing Apple's MSI needs Apple's permission, and it installs a non-Microsoft NT service | Legal risk |
 
 **Recommendation:** run a hardware spike for **option B** first. It keeps all current code. If it works, the app needs neither the Apple Devices app nor any driver install.
+
+### Why not ship a driver with the app
+
+Asked again after the first test report came back with an empty device list. The answer is still no, for reasons worth recording:
+
+* **Apple's own package cannot be bundled.** It is not published as a standalone redistributable; it arrives through Windows Update or the Apple Devices app. It is also already free, WHQL-signed and installable with no admin rights, which is the whole point of option B.
+* **The only driver route that exists is option D** (libwdi binding libusb0/libusbK), and it is already implemented in netmuxd as `netmuxd.exe install` plus `--libusbk`. No new code is needed to try it — but our test builds deliberately compile it out: `.github/workflows/feature-test.yml` builds netmuxd with `--no-default-features`, which drops the `libusbk` feature, the libwdi installer and the vendor bundles. The shipped `netmuxd.exe` therefore has no `install` command and no `--libusbk`.
+* **Option D's costs are hard, not stylistic.** Admin on every install; libwdi puts its own self-signed CA in the trusted root store; Apple's WHQL INF outranks it so the bind must be forced with the device present; and it unbinds Apple's driver, which breaks Apple Devices, iTunes and Photos import until the user reverses it. netmuxd's README says Apple Mobile Device Support must be uninstalled first.
+* **ARM64 is unsigned.** netmuxd's own `vendor-manifest.toml` records that its ARM64 `libusb0.sys` was "Built unsigned — production deployment to ARM64 needs Microsoft attestation signing."
+* **Signing is a process, not a commit.** Attestation signing needs a Microsoft Partner Center account and an EV code-signing certificate to sign the submission, and it covers Windows 10/11 desktop only.
+* **It ends the Store plan.** `standalone/packaging/msix/AppxManifest.xml` targets Partner Center. MSIX cannot install kernel-mode drivers; a bundled driver would have to ship as a separate non-MSIX installer.
+
+Net effect: option D trades a free, zero-admin, Microsoft-delivered driver for a paid, admin-requiring one that breaks the user's other Apple software and disqualifies the Store build. Keep it as a documented opt-in escape hatch for testers only, never a default, and never in the Store flavour.
+
+**Cheaper things to do first, in order:**
+
+1. Read the new diagnostics fields (`apple_usb_devices`, `apple_mux_interface`). If the mux interface is live and the device list is still empty, the fault is in netmuxd's IOCTL path and a different driver would not have helped.
+2. If the phone is connected but unbound, bind **the Apple package already in the driver store** to it (these PCs typically already have `appleusb.inf` staged as an `oemNN.inf`). No redistribution, no new driver, no signing — just a force-bind, which does need admin.
+3. Send the user to **Settings › Windows Update › Advanced options › Optional updates › Driver updates** (`ms-settings:windowsupdate-optionaldrivers`). No admin, no cost.
 
 ### Spike plan (manual, about 1 hour, needs a Windows 11 PC and an iPhone)
 
@@ -104,7 +126,7 @@ Policy references are to the Microsoft Store Policies, version 7.20 (updated 202
 
 ## Open questions
 
-1. Hardware test of option B/C: does the Apple USB driver from Windows Update, plus netmuxd, work with no Apple software installed?
+1. Hardware test of option B/C: does the Apple USB driver from Windows Update, plus netmuxd, work with no Apple software installed? First report was inconclusive: netmuxd served on 27015 but returned an empty device list, and the report could not say whether the phone was bound to Apple's driver. The diagnostics now answer that; re-test before drawing any conclusion.
 2. Microsoft Store: a store name without "iPhone", the review outcome for a location-simulation app, and code signing.
 
 ## Sources
@@ -116,6 +138,8 @@ Policy references are to the Microsoft Store Policies, version 7.20 (updated 202
 - iMazing, "Fully reinstall Apple components on Windows": <https://imazing.com/guides/fully-reinstall-apple-components-on-windows-pc>
 - Installing Apple Mobile Device Support without iTunes: <https://www.addictivetips.com/windows-tips/apple-mobile-device-support-windows-10/>
 - libimobiledevice (usbmuxd not fully supported on Windows): <https://libimobiledevice.org/>
+- nusb docs (on Windows the interface must be bound to WinUSB; Zadig/libwdi to do it by hand): <https://docs.rs/nusb>
+- Microsoft, attestation signing (Partner Center, Windows 10/11 desktop only): <https://learn.microsoft.com/en-us/windows-hardware/drivers/dashboard/code-signing-attestation>
 - Microsoft Store Policies 7.20: <https://learn.microsoft.com/en-us/windows/apps/publish/store-policies>
 - Free Microsoft Store developer registration: <https://blogs.windows.com/windowsdeveloper/2025/09/10/free-developer-registration-for-individual-developers-on-microsoft-store/>
 - Apple trademark guidelines for third parties: <https://www.apple.com/legal/intellectual-property/guidelinesfor3rdparties.html>
