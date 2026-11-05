@@ -13,6 +13,8 @@ The test build includes **netmuxd**, an open-source replacement for part 2 (LGPL
 
 netmuxd talks to the iPhone through Apple's USB driver. Its own documentation expects that driver to come from Apple's software, so the key question is whether the driver Windows Update installs is enough on its own. Test A answers that.
 
+Specifically, netmuxd looks for the device interface `{664be590-54bd-4964-8a8c-6cd1314f6dc2}`, which Apple's USB filter driver publishes for the iPhone's mux interface once the driver is bound to a connected phone. Everything else in the chain is downstream of that interface existing, so the diagnostics report checks for it directly.
+
 The test checks:
 
 * whether Windows installs a suitable Apple USB driver on its own;
@@ -28,11 +30,22 @@ The test checks:
    * licence files, a source notice, `SHA256SUMS.txt` and this guide.
 3. Keep `netmuxd.exe` in the same folder as the app.
 
+## If the iPhone doesn't appear
+
+Read these two lines of the diagnostics report first; they decide where the problem is.
+
+* **"Apple USB device(s) known to Windows"** — if this is ❌, Windows cannot see the phone at all. Try another cable and another port (USB-A if you have one), unlock the phone, and check it charges from that port.
+* **"iPhone is bound to Apple's USB driver"** — if this is ❌ while the line above is ✅, the phone is connected but Apple's USB driver is not driving it. Open **Device Manager**, find the iPhone, and look at its driver. Then try **Settings › Windows Update › Advanced options › Optional updates › Driver updates** and install any Apple entry, or right-click the device › **Update driver** › **Search automatically**. Note the driver name and version.
+
+If both lines are ✅ and the device list is still empty, the problem is in netmuxd's handling of the interface, not in the driver. Attach the whole of `netmuxd.log` to the report — the `builtin_service_device_log` field of the report holds the relevant lines, but the full log is more useful.
+
+Note that a driver package listed under "Apple driver package(s) in Windows" only means the package sits in the Windows driver store. It does not mean the driver is bound to the phone; the "bound to Apple's USB driver" line is the one that says that.
+
 ## Test A: clean PC without Apple software (the main test)
 
 1. In **Settings › Apps › Installed apps**, uninstall **Apple Devices**, **iTunes**, **Apple Mobile Device Support** and **Apple Software Update** if present. Restart Windows.
 2. Plug in the iPhone and unlock it. Wait a minute.
-3. Open **Device Manager** and look for the iPhone. Note what you see, for example "Apple Mobile Device USB Composite Device", "Apple iPhone", or an unknown device.
+3. Open **Device Manager** and look for the iPhone. Note what you see, for example "Apple Mobile Device USB Composite Device", "Apple iPhone", or an unknown device. If nothing appears, try another cable and another USB port before going on.
    * If there's no Apple driver, open **Settings › Windows Update › Advanced options › Optional updates › Driver updates**, install any Apple entry, and note its name and version.
 4. Start `LocationSpooferStandalone.exe`. Skip the first step of the setup guide.
 5. Open **Device tools**, set **Device service** to **Built-in service**, then press **Run device diagnostics** and **Copy report**.

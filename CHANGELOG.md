@@ -22,6 +22,7 @@ Test builds from the `dev` branch are marked as pre-releases.
 - Removing a GPX file now also unloads its track from the player.
 - Opening a new version of the standalone app could show an older copy that was still running in the background (for example, always showing v0.1.1). A new version now closes an older running copy, or runs on its own if it can't; closing the window always ends the app.
 - The local server now only answers the app itself, so other websites open in your browser can't send it commands or read your settings (both editions).
+- Device diagnostics (experimental test builds) now say whether the iPhone is connected and whether Apple's USB driver is actually bound to it, instead of only listing driver packages in the Windows driver store. They also pick out the device-related lines of the built-in service's log, which the previous log excerpt hid behind the device-list dump.
 
 ### Changed
 - Both editions now live in one repository and share one interface. The standalone app is the recommended edition.

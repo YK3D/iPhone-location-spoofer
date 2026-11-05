@@ -1507,6 +1507,21 @@ async function runDiagnostics() {
   if ("apple_mobile_device_service" in d) row(d.apple_mobile_device_service === "RUNNING" ? "✅" : "➖", `Apple Mobile Device Service: ${d.apple_mobile_device_service}`);
   if ("apple_driver_packages" in d) row(yes(d.apple_driver_packages.length), `${d.apple_driver_packages.length} Apple driver package(s) in Windows`);
   if ("apple_usb_filter_dll" in d) row(yes(d.apple_usb_filter_dll), `Apple USB filter driver (AppleUsbFilter.dll) ${d.apple_usb_filter_dll ? "found" : "not found"}`);
+  if ("apple_usb_devices" in d) {
+    const n = d.apple_usb_devices.length;
+    row(yes(n), n ? `${n} Apple USB device(s) known to Windows` : "No Apple USB device found — plug the iPhone in with a cable and unlock it");
+  }
+  if ("apple_mux_interface" in d) {
+    const m = d.apple_mux_interface;
+    row(
+      yes(m.present),
+      m.present
+        ? `iPhone is bound to Apple's USB driver (${m.present} live mux interface${m.present === 1 ? "" : "s"})`
+        : m.registered
+          ? "Apple's USB driver is installed but not bound to a connected iPhone right now"
+          : "Apple's USB driver has never published the iPhone mux interface on this PC",
+    );
+  }
   row(yes(d.builtin_service_included), `Built-in device service ${d.builtin_service_included ? "is included in this build" : "is not included in this build"}`);
   row(d.builtin_service_running_on ? "✅" : "➖", d.builtin_service_running_on ? `Built-in service running on port ${d.builtin_service_running_on}` : "Built-in service not running");
   row(d.apple_service_port_open ? "✅" : "➖", `A device service ${d.apple_service_port_open ? "is" : "is not"} listening on 127.0.0.1:27015`);
