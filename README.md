@@ -2,8 +2,8 @@
 
 <h1 align="center">Location Spoofer</h1>
 
-<p align="center">Set your iPhone's GPS location from your Windows PC over a USB cable.<br>
-Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk around live with the keyboard.</p>
+<p align="center"><b>A free Windows app that sets your iPhone's GPS location over USB, with no jailbreak.</b><br>
+Teleport anywhere, drive routes that follow real roads at realistic speeds (with bends, roundabouts and braking), replay GPX files, or walk around live with the keyboard. No accounts, no telemetry.</p>
 
 <p align="center">
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true"><b>⬇ Download the app (Standalone)</b></a> ·
@@ -20,16 +20,39 @@ Jump anywhere, follow real roads at realistic speeds, replay GPX files, or walk 
 
 ## Screenshots
 
-| | |
-|---|---|
-| <img src="docs/screenshots/teleport.webp" alt="Teleport tab with a picked point and the spoofed position on the map"> | <img src="docs/screenshots/playback-hud.webp" alt="Playback waiting at a hold checkpoint, with the live speed and heading on the map"> |
-| **Teleport:** pick a point, see the jump distance, teleport. | **Playback:** waiting at a "hold until Continue" checkpoint; the map shows live speed and heading. |
-| <img src="docs/screenshots/build-progress.png" width="320" alt="Build route button showing its progress and current step"> | <img src="docs/screenshots/drag-reorder.png" width="320" alt="A checkpoint being dragged to a new place in the list"> |
-| **Building a route:** the button shows each step and how far along it is. | **Reordering:** drag a checkpoint by its handle; the others slide out of the way. |
-| <img src="docs/screenshots/context-menu.png" width="300" alt="Right-click menu on a checkpoint: Delete, Insert after, Set wait, Make start"> | |
-| **Checkpoint menu:** right-click a checkpoint on the map or in the list. | |
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/teleport.webp" alt="Teleport tab with a picked point and the spoofed position on the map"></td>
+    <td width="50%"><img src="docs/screenshots/playback-hud.webp" alt="Playback waiting at a hold checkpoint, with the live speed and heading on the map"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Teleport:</b> pick a point, see the jump distance, teleport.</td>
+    <td valign="top"><b>Playback:</b> waiting at a "hold until Continue" checkpoint; the map shows live speed and heading.</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/settings.webp" alt="Settings window with the theme picker and the map theme"></td>
+    <td width="50%"><img src="docs/screenshots/route-alternatives.webp" alt="Route tab: the main route and three alternatives, labelled on the map with their extra time"></td>
+  </tr>
+  <tr>
+    <td valign="top"><b>Settings:</b> 17 colour themes and a dark or light map.</td>
+    <td valign="top"><b>Alternatives:</b> up to three other routes, labelled with their extra time.</td>
+  </tr>
+</table>
 
-<p align="center"><img src="docs/screenshots/settings.webp" width="720" alt="Settings window with the theme picker and the map theme"></p>
+<table>
+  <tr>
+    <td align="center" valign="bottom"><img src="docs/screenshots/build-progress.png" height="340" alt="Build route button showing its progress and current step"></td>
+    <td align="center" valign="bottom"><img src="docs/screenshots/drag-reorder.png" height="340" alt="A checkpoint being dragged to a new place in the list"></td>
+    <td align="center" valign="bottom"><img src="docs/screenshots/context-menu.png" height="340" alt="Right-click menu on a checkpoint: Delete, Insert after, Set wait, Make start"></td>
+  </tr>
+  <tr>
+    <td valign="top" width="33%"><b>Building a route:</b> the button shows each step and how far along it is.</td>
+    <td valign="top" width="33%"><b>Reordering:</b> drag a checkpoint by its handle; the others slide out of the way.</td>
+    <td valign="top" width="33%"><b>Checkpoint menu:</b> right-click a checkpoint on the map or in the list.</td>
+  </tr>
+</table>
+
+The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/capture.js) with the default look (Graphite theme, dark OpenFreeMap map).
 
 ## Which download should I use?
 
