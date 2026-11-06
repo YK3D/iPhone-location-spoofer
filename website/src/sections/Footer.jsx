@@ -16,11 +16,11 @@ export default function Footer() {
           <nav className="foot-links" aria-label="Project">
             <a href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
             <a href={`${REPO_URL}/releases`} target="_blank" rel="noreferrer">Releases</a>
-            <a href={`${REPO_URL}/blob/main/CHANGELOG.md`} target="_blank" rel="noreferrer">Changelog</a>
-            <a href={`${REPO_URL}/blob/main/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>
-            <a href={`${REPO_URL}/blob/main/TERMS.md`} target="_blank" rel="noreferrer">Terms</a>
-            <a href={`${REPO_URL}/blob/main/LICENSE`} target="_blank" rel="noreferrer">Licence</a>
-            <a href={`${REPO_URL}/blob/main/THIRD_PARTY_NOTICES.md`} target="_blank" rel="noreferrer">Third-party notices</a>
+            <a href="/changelog">Changelog</a>
+            <a href="/privacy">Privacy</a>
+            <a href="/terms">Terms</a>
+            <a href="/licence">Licence</a>
+            <a href="/third-party-notices">Third-party notices</a>
           </nav>
         </div>
         <div className="foot-notes">

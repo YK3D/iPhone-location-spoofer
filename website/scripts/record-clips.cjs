@@ -1,13 +1,16 @@
-// Short clips of the real app for the website (website/public/media). Same default look as the
-// README screenshots: Graphite theme, dark OpenFreeMap map, mock device driver.
+// Short clips of the real app for the website (website/public/media) and the README animation
+// (docs/screenshots/demo.webp). Same default look as the README screenshots: Graphite theme, dark
+// OpenFreeMap map, and the app's own simulated iPhone.
 //
 //   1. Start the browser edition from source with an empty data folder:
 //        cd browser && SPOOFER_DATA_DIR=$(mktemp -d) python -m spoofer --port 8765 --no-browser --no-update
-//   2. node website/scripts/record-clips.cjs     (needs Playwright and ffmpeg)
+//   2. node website/scripts/record-clips.cjs     (needs Playwright and ffmpeg with libvpx, libx264, libwebp)
 //
-// Frames come from the Chrome DevTools screencast (sharper than Playwright's own video), each saved
-// with its timestamp, then ffmpeg turns them into WebM (VP9) and MP4 (H.264) at their real timing.
-// Routes come from the public OpenStreetMap router, so an internet connection is needed.
+// Frames come from the Chrome DevTools screencast (sharper than Playwright's own video), each saved with
+// its timestamp, then ffmpeg encodes them at their real timing. The pointer is drawn by the page: an
+// arrow that moves with a speed ramp (fast in the middle, easing into each target) and shrinks a little
+// when it presses, springing back with a slight bounce. Routes come from the public OpenStreetMap
+// router, so an internet connection is needed.
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -16,9 +19,12 @@ const { chromium } = require("playwright");
 
 const URL = process.env.URL || "http://127.0.0.1:8765/";
 const OUT = process.env.OUT || path.join(__dirname, "..", "public", "media");
+const README_ANIM = path.join(__dirname, "..", "..", "docs", "screenshots", "demo.webp");
 const VIEW = { width: 1280, height: 800 };
-const OUT_W = 1280;
 const wait = (page, ms) => page.waitForTimeout(ms);
+// ONLY=themes,teleport records just those clips (the others are skipped, with their set-up)
+const ONLY = process.env.ONLY ? new Set(process.env.ONLY.split(",")) : null;
+const want = (name) => !ONLY || ONLY.has(name);
 
 async function setup(page) {
   await page.goto(URL);
@@ -44,20 +50,70 @@ async function mapIdle(page) {
     if (!map.hasLayer(l)) return true;
     const gl = l._glLayer && l._glLayer.getMaplibreMap();
     return !!gl && gl.loaded() && gl.areTilesLoaded();
-  }, null, { timeout: 30000, polling: 250 }).catch(() => {});
-  await wait(page, 300);
+  }, null, { timeout: 30000, polling: 200 }).catch(() => {});
+  await wait(page, 200);
 }
 
-// Smoothly glide the mouse, so the pointer looks like a person moving it.
-async function glide(page, from, to, ms = 600) {
-  const steps = Math.max(8, Math.round(ms / 16));
+// ---------- the pointer ----------
+const CURSOR_CSS = `
+#rec-cursor { position: fixed; z-index: 2147483647; left: 0; top: 0; width: 22px; height: 28px; pointer-events: none;
+  transform-origin: 3px 2px; transition: transform .07s ease-in; filter: drop-shadow(0 2px 3px rgba(0,0,0,.45)); }
+#rec-cursor.down { transform: scale(.8); }
+#rec-cursor.up { transform: scale(1); transition: transform .32s cubic-bezier(.34,1.9,.6,1); }
+#rec-ring { position: fixed; z-index: 2147483646; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,.75); pointer-events: none; opacity: 0; transform: scale(.4); }
+#rec-ring.go { animation: rec-ring .38s ease-out; }
+@keyframes rec-ring { from { opacity: .9; transform: scale(.35); } to { opacity: 0; transform: scale(1.15); } }`;
+
+async function addCursor(page) {
+  await page.addStyleTag({ content: CURSOR_CSS });
+  await page.evaluate(() => {
+    const c = document.createElement("div");
+    c.id = "rec-cursor";
+    c.innerHTML = '<svg viewBox="0 0 22 28" width="22" height="28"><path d="M2 2v20.5l5.2-5 3.4 8 3.6-1.6-3.4-7.8H17L2 2z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
+    const ring = document.createElement("div");
+    ring.id = "rec-ring";
+    document.body.append(ring, c);
+    addEventListener("mousemove", (e) => { c.style.left = `${e.clientX - 2}px`; c.style.top = `${e.clientY - 2}px`; }, true);
+    addEventListener("mousedown", (e) => {
+      c.classList.remove("up"); c.classList.add("down");
+      ring.style.left = `${e.clientX}px`; ring.style.top = `${e.clientY}px`;
+      ring.classList.remove("go"); void ring.offsetWidth; ring.classList.add("go");
+    }, true);
+    addEventListener("mouseup", () => { c.classList.remove("down"); c.classList.add("up"); }, true);
+  });
+}
+
+let pointer = { x: VIEW.width - 160, y: 120 };
+// Speed ramp: quintic ease in-out over a duration that grows with the distance, along a slight arc.
+async function moveTo(page, to, { min = 260, max = 620 } = {}) {
+  const from = { ...pointer };
+  const dist = Math.hypot(to.x - from.x, to.y - from.y);
+  const ms = Math.max(min, Math.min(max, 180 + dist * 0.42));
+  const steps = Math.max(10, Math.round(ms / 16));
+  const bend = Math.min(60, dist * 0.12) * (to.x > from.x ? -1 : 1);
+  const nx = -(to.y - from.y) / (dist || 1), ny = (to.x - from.x) / (dist || 1);
   for (let i = 1; i <= steps; i++) {
-    const f = i / steps, e = f < 0.5 ? 2 * f * f : 1 - (-2 * f + 2) ** 2 / 2;
-    await page.mouse.move(from.x + (to.x - from.x) * e, from.y + (to.y - from.y) * e);
+    const f = i / steps;
+    const e = f < 0.5 ? 16 * f ** 5 : 1 - (-2 * f + 2) ** 5 / 2;
+    const arc = Math.sin(Math.PI * e) * bend;
+    await page.mouse.move(from.x + (to.x - from.x) * e + nx * arc, from.y + (to.y - from.y) * e + ny * arc);
     await wait(page, 16);
   }
+  pointer = { ...to };
 }
-
+async function click(page, to, opts) {
+  await moveTo(page, to, opts);
+  await wait(page, 70);
+  await page.mouse.down();
+  await wait(page, 90);
+  await page.mouse.up();
+  await wait(page, 120);
+}
+async function center(page, selector) {
+  const b = await page.locator(selector).first().boundingBox();
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+}
 async function mapPoint(page, lat, lon) {
   return page.evaluate(([la, lo]) => {
     const p = map.latLngToContainerPoint([la, lo]);
@@ -66,20 +122,9 @@ async function mapPoint(page, lat, lon) {
   }, [lat, lon]);
 }
 
-// A visible pointer: headless Chrome draws no cursor in the screencast.
-async function addCursor(page) {
-  await page.addStyleTag({ content: `#rec-cursor{position:fixed;z-index:2147483647;left:0;top:0;width:18px;height:18px;
-    pointer-events:none;border-radius:50%;background:rgba(255,255,255,.92);box-shadow:0 0 0 1.5px rgba(0,0,0,.55),0 2px 8px rgba(0,0,0,.35);
-    transform:translate(-50%,-50%);transition:width .12s,height .12s}#rec-cursor.down{width:13px;height:13px}` });
-  await page.evaluate(() => {
-    const c = document.createElement("div"); c.id = "rec-cursor"; document.body.appendChild(c);
-    addEventListener("mousemove", (e) => { c.style.left = e.clientX + "px"; c.style.top = e.clientY + "px"; }, true);
-    addEventListener("mousedown", () => c.classList.add("down"), true);
-    addEventListener("mouseup", () => c.classList.remove("down"), true);
-  });
-}
-
-async function record(page, name, body) {
+// ---------- recording ----------
+async function record(page, name, body, { readme = false } = {}) {
+  if (!want(name)) return;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `clip-${name}-`));
   const cdp = await page.context().newCDPSession(page);
   const frames = [];
@@ -104,14 +149,15 @@ async function record(page, name, body) {
   lines.push(`file '${frames[frames.length - 1].file}'`);
   const list = path.join(dir, "list.txt");
   fs.writeFileSync(list, lines.join("\n"));
-  const vf = `scale=${OUT_W}:-2:flags=lanczos,fps=30,format=yuv420p`;
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-vf", vf,
-    "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "36", "-row-mt", "1", "-an", path.join(OUT, `${name}.webm`)]);
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, "-vf", vf,
-    "-c:v", "libx264", "-preset", "slow", "-crf", "27", "-movflags", "+faststart", "-an", path.join(OUT, `${name}.mp4`)]);
-  // poster: the last frame
-  execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-i", frames[frames.length - 1].file, "-vf", `scale=${OUT_W}:-2`,
-    "-q:v", "4", path.join(OUT, `${name}.jpg`)]);
+  const ff = (...args) => execFileSync("ffmpeg", ["-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", list, ...args]);
+  const vf = "scale=1280:-2:flags=lanczos,fps=30,format=yuv420p";
+  ff("-vf", vf, "-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "36", "-row-mt", "1", "-an", path.join(OUT, `${name}.webm`));
+  ff("-vf", vf, "-c:v", "libx264", "-preset", "slow", "-crf", "27", "-movflags", "+faststart", "-an", path.join(OUT, `${name}.mp4`));
+  ff("-vf", "scale=1280:-2", "-frames:v", "1", "-ss", String(Math.max(0, ended - started - 0.1)), "-c:v", "libwebp", "-quality", "80", path.join(OUT, `${name}-poster.webp`));
+  if (readme) {
+    // the README's animation: smaller and at 15 fps so GitHub shows it quickly
+    ff("-vf", "fps=15,scale=900:-2:flags=lanczos", "-c:v", "libwebp_anim", "-loop", "0", "-quality", "70", "-compression_level", "6", README_ANIM);
+  }
   fs.rmSync(dir, { recursive: true, force: true });
   console.log(`${name}: ${frames.length} frames, ${(ended - started).toFixed(1)} s`);
 }
@@ -119,29 +165,22 @@ async function record(page, name, body) {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch();
-  const context = await browser.newContext({ viewport: VIEW, deviceScaleFactor: 1 });
-  const page = await context.newPage();
+  const page = await (await browser.newContext({ viewport: VIEW, deviceScaleFactor: 1 })).newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await setup(page);
   await addCursor(page);
-  const rest = { x: VIEW.width - 160, y: 120 };
-  await page.mouse.move(rest.x, rest.y);
+  await page.mouse.move(pointer.x, pointer.y);
 
   // 1. Teleport: pick a point near the Eiffel Tower, then jump there
   await page.evaluate(() => { map.setView([48.8584, 2.2945], 15); });
   await mapIdle(page);
   await record(page, "teleport", async () => {
-    await wait(page, 500);
-    const p = await mapPoint(page, 48.8606, 2.2920);
-    await glide(page, rest, p, 900);
-    await page.mouse.click(p.x, p.y);
-    await wait(page, 700);
-    const btn = await page.locator("#btn-teleport").boundingBox();
-    const b = { x: btn.x + btn.width / 2, y: btn.y + btn.height / 2 };
-    await glide(page, p, b, 800);
-    await page.mouse.click(b.x, b.y);
-    await wait(page, 2200);
+    await wait(page, 250);
+    await click(page, await mapPoint(page, 48.8606, 2.292));
+    await wait(page, 350);
+    await click(page, await center(page, "#btn-teleport"));
+    await wait(page, 1500);
   });
 
   // 2. Route: two checkpoints, build with progress, alternatives labelled on the map
@@ -156,27 +195,20 @@ async function record(page, name, body) {
   });
   await mapIdle(page);
   await record(page, "route-build", async () => {
-    await wait(page, 400);
-    const a = await mapPoint(page, 51.5074, -0.1278);
-    await glide(page, rest, a, 900);
-    await page.mouse.click(a.x, a.y);
-    await wait(page, 500);
-    const b = await mapPoint(page, 51.5194, -0.0618);
-    await glide(page, a, b, 900);
-    await page.mouse.click(b.x, b.y);
-    await wait(page, 600);
-    const btn = await page.locator("#btn-build").boundingBox();
-    const c = { x: btn.x + btn.width / 2, y: btn.y + btn.height / 2 };
-    await glide(page, b, c, 900);
-    await page.mouse.click(c.x, c.y);
+    await wait(page, 200);
+    await click(page, await mapPoint(page, 51.5074, -0.1278));
+    await wait(page, 200);
+    await click(page, await mapPoint(page, 51.5194, -0.0618));
+    await wait(page, 250);
+    await click(page, await center(page, "#btn-build"));
     await page.waitForFunction(() => !state.building && state.built, null, { timeout: 120000 });
-    await wait(page, 600);
-    await glide(page, c, rest, 700);
+    await moveTo(page, { x: VIEW.width - 160, y: 140 });
     await mapIdle(page);
-    await wait(page, 1600);
-  });
+    await wait(page, 1100);
+  }, { readme: true });
 
-  // 3. Playback: a short drive past the London Eye with the live speed and heading
+  // 3. Playback: a short drive past Westminster with the live speed and heading
+  if (want("playback")) {
   await page.evaluate(() => {
     state.waypoints = [];
     $("default-mode").value = "car"; $("default-speed").value = "50"; $("alt-count").value = "0";
@@ -184,30 +216,56 @@ async function record(page, name, body) {
     map.setView([51.5035, -0.1215], 16);
     addWaypoint(51.5007, -0.1246, { name: "Westminster" });
     addWaypoint(51.5081, -0.1281, { name: "Trafalgar Square" });
-    $("multiplier").value = "5"; $("multiplier").dispatchEvent(new Event("change"));
+    $("multiplier").value = "10"; $("multiplier").dispatchEvent(new Event("change"));
   });
   await page.click("#btn-build");
   await page.waitForFunction(() => !state.building && state.loaded === "route", null, { timeout: 120000 });
   await wait(page, 2800);
   await mapIdle(page);
   await record(page, "playback", async () => {
-    await wait(page, 300);
-    const btn = await page.locator("#btn-play").boundingBox();
-    const p = { x: btn.x + btn.width / 2, y: btn.y + btn.height / 2 };
-    await glide(page, rest, p, 900);
-    await page.mouse.click(p.x, p.y);
-    await wait(page, 500);
-    await glide(page, p, rest, 700);
-    await wait(page, 8000);
+    await wait(page, 150);
+    await click(page, await center(page, "#btn-play"));
+    await moveTo(page, { x: VIEW.width - 160, y: 140 });
+    await wait(page, 5200);
   });
   await page.click("#btn-stop").catch(() => {});
+  }
 
-  // 4. Themes: a few of the 17 colour themes
-  await record(page, "themes", async () => {
-    for (const t of ["graphite", "midnight", "nord", "sand", "ocean", "dracula", "graphite"]) {
-      await page.evaluate((theme) => { settings().theme = theme; applyAppearance(); }, t);
-      await wait(page, 900);
+  // 4. Maps and themes: the map menu (OpenStreetMap in the dark map theme, then the light theme, then
+  // satellite), then colour themes in Settings. The theme switch is shown on OpenStreetMap, where it is
+  // instant; the vector map reloads its style for it.
+  await page.click('.tabs button[data-tab="teleport"]'); // a stray map click then only picks a point
+  await page.evaluate(() => { map.setView([51.5055, -0.1], 15); });
+  await mapIdle(page);
+  if (want("themes")) {
+    // load each map once, so during the recording its tiles come from the browser cache at once
+    for (const [theme, provider] of [["dark", "osm"], ["light", "satellite"], ["dark", "openfreemap"]]) {
+      await page.evaluate(([t, p]) => { settings().map_theme = t; settings().map_provider = p; applyAppearance(); }, [theme, provider]);
+      await mapIdle(page);
+      await wait(page, 1800);
     }
+  }
+  await record(page, "themes", async () => {
+    await wait(page, 100);
+    await click(page, await center(page, ".map-switch-btn"));
+    await wait(page, 260); // the menu's pop-in has finished, so the buttons are where they look
+    await click(page, await center(page, '.map-card:has-text("OpenStreetMap")'));
+    await wait(page, 700);
+    await click(page, await center(page, '.map-theme-seg button:has-text("Light")'));
+    await wait(page, 700);
+    await click(page, await center(page, '.map-card:has-text("Satellite")'));
+    await wait(page, 750);
+    await page.keyboard.press("Escape");
+    await click(page, await center(page, "#btn-settings"));
+    await wait(page, 300);
+    await click(page, await center(page, ".theme-more > summary"));
+    await wait(page, 260);
+    for (const t of ["nord", "sand", "ocean", "dracula", "midnight"]) {
+      await click(page, await center(page, `.theme-card[data-theme="${t}"]`), { min: 200, max: 360 });
+      await wait(page, 320);
+    }
+    await click(page, await center(page, '.theme-card[data-theme="graphite"]'), { min: 200, max: 400 });
+    await wait(page, 450);
   });
 
   console.log(errors.length ? `page errors: ${JSON.stringify(errors)}` : "no page errors");

@@ -1,9 +1,7 @@
 /* Location Spoofer website.
-   Colours follow the app's default Graphite theme (near-black, emerald accent). Dark is the default;
-   light is a warm paper version with a darker emerald so text keeps AA contrast. */
+   Colours follow the app's default Graphite theme: near-black with an emerald accent. Dark only. */
 
-:root,
-:root[data-theme="dark"] {
+:root {
   --bg: #121316;
   --bg-band: #16171a;
   --surface: #1b1d21;
@@ -25,34 +23,8 @@
   --contour: #2f5f4d;
   --shadow-lg: 0 40px 80px -30px rgba(0, 0, 0, 0.75), 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-md: 0 12px 30px -12px rgba(0, 0, 0, 0.6), 0 1px 3px rgba(0, 0, 0, 0.3);
-  --header-bg: rgba(18, 19, 22, 0.78);
+  --header-bg: rgba(18, 19, 22, 0.96);
   color-scheme: dark;
-}
-
-:root[data-theme="light"] {
-  --bg: #f4f4f1;
-  --bg-band: #ecece7;
-  --surface: #ffffff;
-  --surface-2: #f6f6f3;
-  --surface-3: #ebebe6;
-  --line: #dddcd5;
-  --line-2: #c8c7bf;
-  --text: #16181b;
-  --text-2: #3c4147;
-  --muted: #5d636b;
-  --accent: #047857;
-  --accent-hover: #065f46;
-  --accent-text: #047857;
-  --accent-ink: #ffffff;
-  --accent-soft: rgba(4, 120, 87, 0.09);
-  --accent-line: rgba(4, 120, 87, 0.4);
-  --hot: #c2410c;
-  --danger: #b91c1c;
-  --contour: #9fc7b5;
-  --shadow-lg: 0 40px 80px -36px rgba(30, 35, 30, 0.35), 0 2px 8px rgba(30, 35, 30, 0.08);
-  --shadow-md: 0 12px 30px -16px rgba(30, 35, 30, 0.3), 0 1px 3px rgba(30, 35, 30, 0.08);
-  --header-bg: rgba(244, 244, 241, 0.8);
-  color-scheme: light;
 }
 
 :root {
@@ -91,7 +63,6 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow-x: clip;
-  transition: background-color 0.35s var(--ease-out), color 0.35s var(--ease-out);
 }
 img, video, svg { display: block; max-width: 100%; }
 a { color: inherit; }
@@ -141,8 +112,8 @@ p { margin: 0; text-wrap: pretty; }
 /* ---------- header ---------- */
 .site-header {
   position: sticky; top: 0; z-index: 50; height: var(--header-h);
-  background: var(--header-bg); backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px);
-  border-bottom: 1px solid transparent; transition: border-color 0.3s, background-color 0.35s;
+  background: var(--header-bg);
+  border-bottom: 1px solid transparent; transition: border-color 0.3s;
 }
 .site-header.scrolled { border-bottom-color: var(--line); }
 .site-header .container { height: 100%; display: flex; align-items: center; gap: 24px; }

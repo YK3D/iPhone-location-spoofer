@@ -7,15 +7,41 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import { bearing, buildTimeline, destination, distance, sampleAt } from "./engine.js";
 import { routeLeg } from "./routing.js";
-import { useThemeValue } from "../lib/theme.js";
 import Icon from "../components/Icon.jsx";
 
 maplibregl.setWorkerUrl(workerUrl);
 
-const STYLES = {
-  dark: "https://tiles.openfreemap.org/styles/dark",
-  light: "https://tiles.openfreemap.org/styles/positron",
-};
+const STYLE = "https://tiles.openfreemap.org/styles/dark";
+// The app's own tuning of OpenFreeMap's dark style (DARK_MAP_PAINT in ui/app.js), so the demo map looks
+// like the app's: readable water, parks, buildings, road hierarchy and labels. Missing layers are skipped.
+const DARK_MAP_PAINT = [
+  ["background", "background-color", "#14161a"],
+  ["water", "fill-color", "#0f2236"], ["waterway", "line-color", "#173250"],
+  ["water_name", "text-color", "#6d8fb3"], ["water_name", "text-halo-color", "#0b1520"],
+  ["landuse_park", "fill-color", "#15231b"], ["landcover_wood", "fill-color", "#15231b"],
+  ["landuse_residential", "fill-color", "#1a1c21"],
+  ["building", "fill-color", "#1e2126"], ["building", "fill-outline-color", "#2a2e35"],
+  ["road_area_pier", "fill-color", "#14161a"], ["road_pier", "line-color", "#14161a"],
+  ["highway_path", "line-color", "#2e333a"],
+  ["highway_minor", "line-color", "#32363e"], ["highway_minor", "line-opacity", 1],
+  ["highway_major_casing", "line-color", "#2a2e35"], ["highway_major_inner", "line-color", "#4a505a"],
+  ["highway_major_subtle", "line-color", "#3d424a"],
+  ["highway_motorway_casing", "line-color", "#2e3138"], ["highway_motorway_inner", "line-color", "#6b6250"],
+  ["highway_motorway_subtle", "line-color", "#4a4538"],
+  ["railway", "line-color", "#3b3e45"], ["railway_minor", "line-color", "#33363c"], ["railway_transit", "line-color", "#33363c"],
+  ["railway_dashline", "line-color", "#14161a"], ["railway_minor_dashline", "line-color", "#14161a"], ["railway_transit_dashline", "line-color", "#14161a"],
+  ["highway_name_other", "text-color", "#949aa3"], ["highway_name_other", "text-halo-color", "#14161a"],
+  ["highway_name_motorway", "text-color", "#a9a294"],
+  ...["place_other", "place_suburb", "place_village", "place_town", "place_city", "place_city_large", "place_state",
+    "place_country_other", "place_country_minor", "place_country_major"].flatMap((id) => [
+    [id, "text-color", "#b2b8c0"], [id, "text-halo-color", "rgba(10,11,14,.85)"]]),
+];
+function tuneDarkStyle(m) {
+  for (const [id, prop, value] of DARK_MAP_PAINT) {
+    if (!m.getLayer(id)) continue;
+    try { m.setPaintProperty(id, prop, value); } catch { /* the style changed shape: keep its own colour */ }
+  }
+}
 const MODES = [
   { key: "car", label: "Roads (car)", kmh: 50 },
   { key: "bike", label: "Cycle paths", kmh: 18 },
@@ -104,7 +130,6 @@ function webglOk() {
 }
 
 export default function Simulator() {
-  const theme = useThemeValue();
   const mapBox = useRef(null);
   const map = useRef(null);
   const marks = useRef({});
@@ -228,11 +253,12 @@ export default function Simulator() {
     try {
       m = new maplibregl.Map({
         container: mapBox.current,
-        style: STYLES[document.documentElement.dataset.theme === "light" ? "light" : "dark"],
+        style: STYLE,
         center: ll(START),
         zoom: 15,
         attributionControl: { compact: true },
         cooperativeGestures: true,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2), // 3x screens draw a third fewer pixels
         dragRotate: false,
         pitchWithRotate: false,
         touchPitch: false,
@@ -251,7 +277,7 @@ export default function Simulator() {
     marks.current.pick = new maplibregl.Marker({ element: pk, anchor: "center" }).setLngLat(ll(START)).addTo(m);
     pk.style.display = "none";
 
-    m.on("style.load", drawOverlay);
+    m.on("style.load", () => { tuneDarkStyle(m); drawOverlay(); });
     m.on("load", () => setReady(true));
     m.on("error", (e) => {
       if (String(e?.error?.message || "").includes("Failed to fetch")) setMapError("The map tiles couldn't be loaded. Check your connection and reload.");
@@ -269,13 +295,6 @@ export default function Simulator() {
     return () => { m.remove(); map.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapError]);
-
-  // the map follows the site's dark/light switch
-  const firstTheme = useRef(true);
-  useEffect(() => {
-    if (firstTheme.current) { firstTheme.current = false; return; }
-    map.current?.setStyle(STYLES[theme]);
-  }, [theme]);
 
   // ---------- picked point ----------
   useEffect(() => {

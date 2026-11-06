@@ -14,7 +14,8 @@ const listeners = new Set();
 
 export function startSmoothScroll() {
   if (lenis || prefersReducedMotion()) return lenis;
-  lenis = new Lenis({ lerp: 0.11, smoothWheel: true, wheelMultiplier: 0.95, touchMultiplier: 1.4 });
+  // a higher lerp follows the wheel more closely, so fast flicks don't feel like they lag behind
+  lenis = new Lenis({ lerp: 0.15, smoothWheel: true, wheelMultiplier: 1, touchMultiplier: 1.3 });
   lenis.on("scroll", (e) => {
     ScrollTrigger.update();
     listeners.forEach((fn) => fn(e));
@@ -51,13 +52,39 @@ export function onScroll(fn) {
   return () => { window.removeEventListener("scroll", handler); cancelAnimationFrame(raf); };
 }
 
-export function scrollToId(id) {
+// Where a jump to a section lands: its title (kicker) just below the header, not the section's padded top.
+export function scrollTargetFor(id) {
+  if (id === "top") return 0;
   const el = document.getElementById(id);
-  if (!el) return;
-  const offset = -(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--header-h")) || 60) + 1;
-  if (lenis) lenis.scrollTo(el, { offset, duration: 1.3, easing: (t) => 1 - Math.pow(1 - t, 4) });
-  else window.scrollTo({ top: el.getBoundingClientRect().top + window.scrollY + offset, behavior: prefersReducedMotion() ? "auto" : "smooth" });
-  history.replaceState(null, "", `#${id}`);
+  if (!el) return 0;
+  const title = el.querySelector(".sec-head") || el;
+  const header = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--header-h")) || 60;
+  const max = document.documentElement.scrollHeight - window.innerHeight;
+  return Math.max(0, Math.min(max, title.getBoundingClientRect().top + window.scrollY - header - 28));
+}
+
+export function scrollToId(id) {
+  if (id !== "top" && !document.getElementById(id)) return;
+  const top = scrollTargetFor(id);
+  if (lenis) lenis.scrollTo(top, { duration: 1.1, easing: (t) => 1 - Math.pow(1 - t, 4) });
+  else window.scrollTo({ top, behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  history.replaceState(null, "", id === "top" ? location.pathname : `#${id}`);
+}
+
+// Run fn when the browser is idle (or after `timeout` ms), so set-up for content further down the page
+// doesn't compete with the first paint and the intro animation. Returns a cleanup function; fn may
+// return a gsap.context (or anything with revert()).
+export function whenIdle(fn, timeout = 1500) {
+  let result = null;
+  let cancelled = false;
+  const run = () => { if (!cancelled) result = fn(); };
+  const ric = typeof window !== "undefined" && "requestIdleCallback" in window;
+  const id = ric ? window.requestIdleCallback(run, { timeout }) : setTimeout(run, 200);
+  return () => {
+    cancelled = true;
+    if (ric) window.cancelIdleCallback(id); else clearTimeout(id);
+    result?.revert?.();
+  };
 }
 
 export { gsap, ScrollTrigger };

@@ -5,6 +5,7 @@ import "@fontsource-variable/jetbrains-mono";
 import "./styles/global.css";
 import "./styles/sections.css";
 import "./styles/sim.css";
+import "./styles/docs.css";
 import App from "./App.jsx";
 
 createRoot(document.getElementById("root")).render(

@@ -6,7 +6,7 @@ import Clip from "../components/Clip.jsx";
 import Icon from "../components/Icon.jsx";
 import { go } from "../components/Header.jsx";
 import { gsap, prefersReducedMotion } from "../lib/motion.js";
-import { formatSize } from "../lib/releases.js";
+import { formatSize, useReleases } from "../lib/releases.js";
 
 const PLACES = [
   ["Trafalgar Square, London", 51.50803, -0.12807],
@@ -22,7 +22,7 @@ function DeviceCard() {
   const [i, setI] = useState(0);
   useEffect(() => {
     if (prefersReducedMotion()) return undefined;
-    const id = setInterval(() => { if (!document.hidden) setI((n) => (n + 1) % PLACES.length); }, 3800);
+    const id = setInterval(() => { if (!document.hidden) setI((n) => (n + 1) % PLACES.length); }, 3000);
     return () => clearInterval(id);
   }, []);
   const [name, lat, lon] = PLACES[i];
@@ -34,23 +34,24 @@ function DeviceCard() {
         <span className="dc-usb mono">USB</span>
       </div>
       <div className="dc-coords mono tnum">
-        <DecryptedText key={`a${i}`} text={fmt(lat)} animateOn="view" sequential speed={28} characters="0123456789" className="dc-real" encryptedClassName="dc-enc" />
-        <DecryptedText key={`b${i}`} text={fmt(lon)} animateOn="view" sequential speed={28} characters="0123456789" className="dc-real" encryptedClassName="dc-enc" />
+        <DecryptedText key={`a${i}`} text={fmt(lat)} animateOn="view" sequential speed={20} characters="0123456789" className="dc-real" encryptedClassName="dc-enc" />
+        <DecryptedText key={`b${i}`} text={fmt(lon)} animateOn="view" sequential speed={20} characters="0123456789" className="dc-real" encryptedClassName="dc-enc" />
       </div>
       <div className="dc-place">{name}</div>
     </div>
   );
 }
 
-export default function Hero({ releases }) {
+export default function Hero() {
+  const releases = useReleases();
   const root = useRef(null);
   const s = releases.status === "ok" ? releases.standalone : null;
 
   useEffect(() => {
     if (prefersReducedMotion()) return undefined;
     const ctx = gsap.context(() => {
-      gsap.from(".hero-lede, .cta-row, .hero-facts", { y: 18, opacity: 0, duration: 0.9, ease: "power3.out", stagger: 0.08, delay: 0.35 });
-      gsap.from(".hero-visual", { y: 70, opacity: 0, duration: 1.3, ease: "power3.out", delay: 0.5 });
+      gsap.from(".hero-lede, .cta-row, .hero-facts", { y: 14, opacity: 0, duration: 0.55, ease: "power3.out", stagger: 0.05, delay: 0.2 });
+      gsap.from(".hero-visual", { y: 48, opacity: 0, duration: 0.8, ease: "power3.out", delay: 0.3 });
       gsap.fromTo(
         ".hero-window",
         { rotateX: 16, scale: 0.93, transformOrigin: "50% 0%" },
@@ -74,8 +75,8 @@ export default function Hero({ releases }) {
           splitType="words"
           effect="rise"
           mask
-          delay={55}
-          duration={1.05}
+          delay={32}
+          duration={0.7}
           trigger="load"
           textAlign="left"
         />
@@ -103,7 +104,7 @@ export default function Hero({ releases }) {
         </div>
         <div className="hero-visual">
           <AppWindow className="hero-window">
-            <Clip name="route-build" label="The app building a car route across central London, with three alternative routes labelled by their extra time" />
+            <Clip name="route-build" startDelay={900} preload="metadata" label="The app building a car route across central London, with three alternative routes labelled by their extra time" />
           </AppWindow>
           <DeviceCard />
         </div>

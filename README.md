@@ -6,6 +6,7 @@
 Teleport anywhere, drive routes that follow real roads at realistic speeds (with bends, roundabouts and braking), replay GPX files, or walk around live with the keyboard. No accounts, no telemetry.</p>
 
 <p align="center">
+  <a href="https://iphone-spoofer.vercel.app"><b>Website and live demo</b></a> ·
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true"><b>⬇ Download the app (Standalone)</b></a> ·
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=browser&expanded=true">Browser edition</a> ·
   <a href="#getting-started">Getting started</a> ·
@@ -14,7 +15,8 @@ Teleport anywhere, drive routes that follow real roads at realistic speeds (with
   <a href="TERMS.md">Terms</a>
 </p>
 
-<p align="center"><img src="docs/screenshots/route-alternatives.webp" width="900" alt="Route tab: the main route and three alternatives, labelled on the map with their extra time"></p>
+<p align="center"><a href="https://iphone-spoofer.vercel.app"><img src="docs/screenshots/demo.webp" width="900" alt="The app building a car route across London: two checkpoints are placed, the build shows each step, then three alternative routes appear labelled with their extra time"></a><br>
+<sub>Try a smaller version of the app in your browser at <a href="https://iphone-spoofer.vercel.app">iphone-spoofer.vercel.app</a>.</sub></p>
 
 > **Use it responsibly.** Location simulation is meant for testing apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the [Terms of Use](TERMS.md).
 

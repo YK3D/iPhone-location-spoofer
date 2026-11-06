@@ -1,62 +1,74 @@
-import { useEffect, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useState } from "react";
+import repo from "../generated/repo.json";
+import { RELEASES_API, pickReleases } from "./release-pick.js";
 
 export const REPO = "YK3D/iPhone-location-spoofer";
 export const REPO_URL = `https://github.com/${REPO}`;
+export const SITE_URL = "https://iphone-spoofer.vercel.app";
 export const RELEASES = {
   standalone: `${REPO_URL}/releases?q=standalone&expanded=true`,
   browser: `${REPO_URL}/releases?q=browser&expanded=true`,
 };
+// The standalone app is the release GitHub marks "latest", so this always downloads its newest version,
+// even when the version data below couldn't be loaded.
+export const LATEST_STANDALONE_EXE = `${REPO_URL}/releases/latest/download/LocationSpooferStandalone.exe`;
 
-const CACHE_KEY = "ls-site-releases";
-const CACHE_MS = 10 * 60 * 1000;
+// Facts read from the repository when the site was built (scripts/repo-data.mjs).
+export const REPO_FACTS = { themes: repo.themes };
 
-function pick(list, prefix) {
-  const rel = list.find((r) => !r.prerelease && !r.draft && r.tag_name.startsWith(prefix));
-  if (!rel) return null;
-  const exe = rel.assets.find((a) => a.name.endsWith(".exe"));
-  const sha = rel.assets.find((a) => a.name.endsWith(".sha256"));
-  return {
-    version: rel.tag_name.slice(prefix.length),
-    tag: rel.tag_name,
-    published: rel.published_at,
-    page: rel.html_url,
-    url: exe?.browser_download_url,
-    file: exe?.name,
-    size: exe?.size,
-    shaUrl: sha?.browser_download_url,
-  };
+const CACHE_KEY = "ls-site-releases-v2";
+const CACHE_MS = 5 * 60 * 1000;
+
+async function load(signal) {
+  // 1. our cached endpoint (Vercel function); 2. GitHub directly, for local previews or an outage
+  try {
+    const r = await fetch("/api/releases", { signal });
+    if (r.ok) {
+      const data = await r.json();
+      if (data && (data.standalone || data.browser)) return data;
+    }
+  } catch (e) {
+    if (e.name === "AbortError") throw e;
+  }
+  const r = await fetch(RELEASES_API, { headers: { Accept: "application/vnd.github+json" }, signal });
+  if (!r.ok) throw new Error(`GitHub answered ${r.status}`);
+  return pickReleases(await r.json());
 }
 
-// Latest stable release of each edition, straight from GitHub (no server of ours in between).
-// Falls back to the release pages if GitHub can't be reached or rate-limits the visitor.
-export function useReleases() {
-  const [state, setState] = useState({ status: "loading" });
+function initial() {
+  try {
+    const hit = JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
+    if (hit && Date.now() - hit.at < CACHE_MS) return { status: "ok", fresh: true, ...hit.data };
+  } catch { /* storage unavailable */ }
+  // the build's snapshot shows real numbers straight away; live data replaces it moments later
+  return repo.releases ? { status: "ok", fresh: false, ...repo.releases } : { status: "loading" };
+}
+
+function useReleaseData() {
+  const [state, setState] = useState(initial);
   useEffect(() => {
-    let cancelled = false;
-    try {
-      const hit = JSON.parse(sessionStorage.getItem(CACHE_KEY) || "null");
-      if (hit && Date.now() - hit.at < CACHE_MS) {
-        setState({ status: "ok", ...hit.data });
-        return undefined;
-      }
-    } catch { /* storage unavailable */ }
+    if (state.fresh) return undefined;
     const ctrl = new AbortController();
-    fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`, {
-      headers: { Accept: "application/vnd.github+json" },
-      signal: ctrl.signal,
-    })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`GitHub answered ${r.status}`))))
-      .then((list) => {
-        const data = { standalone: pick(list, "standalone-v"), browser: pick(list, "browser-v") };
-        if (cancelled) return;
-        setState({ status: "ok", ...data });
+    load(ctrl.signal)
+      .then((data) => {
+        setState({ status: "ok", fresh: true, ...data });
         try { sessionStorage.setItem(CACHE_KEY, JSON.stringify({ at: Date.now(), data })); } catch { /* ignore */ }
       })
-      .catch((e) => { if (!cancelled && e.name !== "AbortError") setState({ status: "error" }); });
-    return () => { cancelled = true; ctrl.abort(); };
+      .catch((e) => {
+        if (e.name === "AbortError") return;
+        setState((s) => (s.status === "ok" ? s : { status: "error" })); // keep the snapshot if there is one
+      });
+    return () => ctrl.abort();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return state;
 }
+
+const Ctx = createContext({ status: "loading" });
+export function ReleasesProvider({ children }) {
+  return createElement(Ctx.Provider, { value: useReleaseData() }, children);
+}
+export const useReleases = () => useContext(Ctx);
 
 export function formatSize(bytes) {
   if (!bytes) return "";
@@ -66,6 +78,11 @@ export function formatSize(bytes) {
 export function formatDate(iso) {
   if (!iso) return "";
   return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
+
+// "a 14 MB download" when the size is known, otherwise a neutral phrase
+export function sizePhrase(rel, fallback) {
+  return rel?.size ? `a ${formatSize(rel.size)} download` : fallback;
 }
 
 export function detectPlatform() {
