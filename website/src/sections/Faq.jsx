@@ -5,7 +5,7 @@ import { REPO_URL } from "../lib/releases.js";
 const QA = [
   [
     "Will it work in my game or app?",
-    <>Location simulation is meant for testing apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the <a href={`${REPO_URL}/blob/main/TERMS.md`} target="_blank" rel="noreferrer">Terms of Use</a>.</>,
+    <>Location simulation is meant for testing apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the <a href="/terms">Terms of Use</a>.</>,
   ],
   [
     "Why does a speedometer app on the iPhone show 0?",
@@ -17,7 +17,7 @@ const QA = [
   ],
   [
     "Does it send my data anywhere?",
-    <>There are no accounts, analytics or telemetry. Favourites, routes and settings stay on your computer. Maps, searches and routes are requested directly from the services listed in the <a href={`${REPO_URL}/blob/main/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy Policy</a>.</>,
+    <>There are no accounts, analytics or telemetry. Favourites, routes and settings stay on your computer. Maps, searches and routes are requested directly from the services listed in the <a href="/privacy">Privacy Policy</a>.</>,
   ],
   [
     "How do I get my real location back?",

@@ -1,4 +1,6 @@
-"""Draw the topographic contour lines used behind the website's hero (public/contours.svg).
+"""Draw the topographic contour lines used behind the website's hero (src/assets/contours.svg).
+
+The colour is baked in (the site is dark only), so the browser can show it as a plain image layer.
 
 Smooth random terrain (a few octaves of interpolated value noise, fixed seed) traced with marching
 squares, segments joined into polylines. Needs only numpy:  python website/scripts/make-contours.py
@@ -107,7 +109,7 @@ for n in range(1, LEVELS):
 
 svg = (
     f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid slice">'
-    '<style>path{fill:none;stroke:currentColor;stroke-width:1;vector-effect:non-scaling-stroke;opacity:.55}'
+    '<style>path{fill:none;stroke:#2f5f4d;stroke-width:1;vector-effect:non-scaling-stroke;opacity:.55}'
     "path.m{stroke-width:1.4;opacity:.9}</style>" + "".join(paths) + "</svg>"
 )
 out = Path(__file__).resolve().parent.parent / "src" / "assets" / "contours.svg"

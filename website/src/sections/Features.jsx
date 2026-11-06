@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import AppWindow from "../components/AppWindow.jsx";
 import Clip from "../components/Clip.jsx";
-import { gsap, prefersReducedMotion } from "../lib/motion.js";
+import { gsap, prefersReducedMotion, whenIdle } from "../lib/motion.js";
+import { REPO_FACTS } from "../lib/releases.js";
 
 const ITEMS = [
   {
@@ -42,14 +43,14 @@ const ITEMS = [
   },
   {
     key: "comfort",
-    title: "Made to stay open all day.",
+    title: "Your colours, your map.",
     clip: "themes",
-    label: "The app switching between several of its colour themes",
-    body: "Seventeen colour themes, a dark or light vector map, folding sections, and a side menu you can resize or hide.",
+    label: "The app switching between map styles (vector, OpenStreetMap, satellite, topographic), a dark and light map theme, and several of its colour themes",
+    body: `${REPO_FACTS.themes} colour themes for the app, and four map styles with a dark or light map theme, all a click away in the map button or Settings.`,
     specs: [
+      "Maps: a sharp vector map, OpenStreetMap, satellite and topographic",
+      "Map theme: dark, light, or matching the app's colours",
       "Single-key shortcuts for common actions, all changeable (H shows them)",
-      "A setup guide on first run, and help on every tool",
-      "Updates itself in the background and checks each download's SHA-256",
     ],
   },
 ];
@@ -70,19 +71,18 @@ export default function Features() {
 
   useEffect(() => {
     if (prefersReducedMotion()) return undefined;
-    const ctx = gsap.context(() => {
+    return whenIdle(() => gsap.context(() => {
       gsap.utils.toArray(".feat-item").forEach((el) => {
         gsap.from(el.querySelectorAll(".feat-n, h3, .feat-body, .feat-specs li, .feat-inline"), {
-          y: 26, opacity: 0, duration: 0.8, ease: "power3.out", stagger: 0.06,
-          scrollTrigger: { trigger: el, start: "top 78%", once: true },
+          y: 20, opacity: 0, duration: 0.5, ease: "power3.out", stagger: 0.04,
+          scrollTrigger: { trigger: el, start: "top 80%", once: true },
         });
       });
       gsap.from(".feat-stage", {
-        clipPath: "inset(8% 8% 8% 8% round 18px)", opacity: 0.4, duration: 1.2, ease: "power3.out",
-        scrollTrigger: { trigger: ".feat-grid", start: "top 75%", once: true },
+        clipPath: "inset(6% 6% 6% 6% round 18px)", opacity: 0.4, duration: 0.7, ease: "power3.out",
+        scrollTrigger: { trigger: ".feat-grid", start: "top 78%", once: true },
       });
-    }, root);
-    return () => ctx.revert();
+    }, root));
   }, []);
 
   return (
@@ -90,7 +90,7 @@ export default function Features() {
       <div className="container">
         <header className="sec-head">
           <p className="kicker"><span className="idx">01–04</span> What it does</p>
-          <h2>Four ways to move a phone you aren't moving.</h2>
+          <h2>Four ways to change your location</h2>
           <p>Every clip below is a recording of the real app, using its built-in simulated iPhone.</p>
         </header>
         <div className="feat-grid">

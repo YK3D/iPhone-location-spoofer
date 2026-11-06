@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import Icon from "../components/Icon.jsx";
-import { gsap, prefersReducedMotion } from "../lib/motion.js";
-import { RELEASES, REPO_URL, detectPlatform, formatDate, formatSize } from "../lib/releases.js";
+import { gsap, prefersReducedMotion, whenIdle } from "../lib/motion.js";
+import { LATEST_STANDALONE_EXE, RELEASES, REPO_URL, detectPlatform, formatDate, formatSize, sizePhrase, useReleases } from "../lib/releases.js";
 
 const STEPS = [
   ["Install Apple's iPhone software", <>Get <a href="https://apps.microsoft.com/detail/9np83lwlpz9k" target="_blank" rel="noreferrer"><b>Apple Devices</b> from the Microsoft Store</a> (free, made by Apple; iTunes also works). It lets Windows talk to an iPhone. You don't need to keep it open.</>],
@@ -17,7 +17,8 @@ const PLATFORM_NOTE = {
   mobile: "You're on a phone. The app runs on a Windows 10 or 11 PC, with the iPhone plugged into it.",
 };
 
-export default function Install({ releases }) {
+export default function Install() {
+  const releases = useReleases();
   const root = useRef(null);
   const platform = useMemo(detectPlatform, []);
   const ok = releases.status === "ok";
@@ -26,14 +27,13 @@ export default function Install({ releases }) {
 
   useEffect(() => {
     if (prefersReducedMotion()) return undefined;
-    const ctx = gsap.context(() => {
+    return whenIdle(() => gsap.context(() => {
       gsap.fromTo(".steps-line-fill", { scaleY: 0 }, { scaleY: 1, ease: "none", scrollTrigger: { trigger: ".steps", start: "top 70%", end: "bottom 60%", scrub: 0.5 } });
       gsap.utils.toArray(".step").forEach((el) => {
-        gsap.from(el, { x: -16, opacity: 0, duration: 0.7, ease: "power3.out", scrollTrigger: { trigger: el, start: "top 80%", once: true } });
+        gsap.from(el, { x: -12, opacity: 0, duration: 0.45, ease: "power3.out", scrollTrigger: { trigger: el, start: "top 82%", once: true } });
       });
-      gsap.from(".dl-card", { y: 30, opacity: 0, duration: 0.9, stagger: 0.1, ease: "power3.out", scrollTrigger: { trigger: ".dl-cards", start: "top 85%", once: true } });
-    }, root);
-    return () => ctx.revert();
+      gsap.from(".dl-card", { y: 22, opacity: 0, duration: 0.55, stagger: 0.07, ease: "power3.out", scrollTrigger: { trigger: ".dl-cards", start: "top 85%", once: true } });
+    }, root));
   }, []);
 
   return (
@@ -51,7 +51,7 @@ export default function Install({ releases }) {
               <div className="dl-top">
                 <span className="tag mono">Recommended</span>
                 <h3>Standalone app</h3>
-                <p>Its own window, under 20 MB, starts instantly. iOS 17.4 and newer, and iOS 16 and older.</p>
+                <p>Its own window, {sizePhrase(s, "a small download")}, starts instantly. iOS 17.4 and newer, and iOS 16 and older.</p>
               </div>
               <dl className="dl-meta mono">
                 <div><dt>Version</dt><dd>{s ? s.version : releases.status === "loading" ? "…" : "see GitHub"}</dd></div>
@@ -59,8 +59,8 @@ export default function Install({ releases }) {
                 <div><dt>Released</dt><dd>{s ? formatDate(s.published) : "–"}</dd></div>
               </dl>
               <div className="dl-actions">
-                <a className="btn btn-primary" href={s?.url || RELEASES.standalone} {...(s?.url ? {} : { target: "_blank", rel: "noreferrer" })}>
-                  <Icon name="download" /> {s?.file || "Download from GitHub"}
+                <a className="btn btn-primary" href={s?.url || LATEST_STANDALONE_EXE}>
+                  <Icon name="download" /> {s?.file || "LocationSpooferStandalone.exe"}
                 </a>
                 {s?.shaUrl && <a className="text-link mono" href={s.shaUrl}>SHA-256</a>}
                 <a className="text-link mono" href={s?.page || RELEASES.standalone} target="_blank" rel="noreferrer">Release notes</a>
@@ -70,7 +70,7 @@ export default function Install({ releases }) {
             <article className="dl-card">
               <div className="dl-top">
                 <h3>Browser edition</h3>
-                <p>Opens in your web browser. About 80 MB and 10–20 s to start. Needed only for iOS 17.0–17.3, where it asks for administrator permission once per session.</p>
+                <p>Opens in your web browser; {sizePhrase(b, "a larger download")}, 10–20 s to start. Needed only for iOS 17.0–17.3, where it asks for administrator permission once per session.</p>
               </div>
               <dl className="dl-meta mono">
                 <div><dt>Version</dt><dd>{b ? b.version : releases.status === "loading" ? "…" : "see GitHub"}</dd></div>
@@ -84,7 +84,7 @@ export default function Install({ releases }) {
               </div>
             </article>
             {PLATFORM_NOTE[platform] && <p className="platform-note">{PLATFORM_NOTE[platform]}</p>}
-            {releases.status === "error" && <p className="platform-note">Couldn't reach GitHub for the latest version, so the buttons open the release pages instead.</p>}
+            {releases.status === "error" && <p className="platform-note">Couldn't reach GitHub for the version details. The Standalone button still downloads the latest version.</p>}
           </div>
 
           <div className="steps-wrap">

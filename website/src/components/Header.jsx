@@ -18,7 +18,8 @@ export function go(id) {
   };
 }
 
-export default function Header({ theme, onToggleTheme }) {
+// On the home page the links scroll to sections; on a document page they go to the home page's sections.
+export default function Header({ home = true }) {
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
     const on = () => setScrolled(window.scrollY > 8);
@@ -26,27 +27,23 @@ export default function Header({ theme, onToggleTheme }) {
     window.addEventListener("scroll", on, { passive: true });
     return () => window.removeEventListener("scroll", on);
   }, []);
-  const next = theme === "dark" ? "light" : "dark";
   return (
     <header className={`site-header${scrolled ? " scrolled" : ""}`}>
       <div className="container">
-        <a className="brand" href="#top" onClick={go("top")}>
+        <a className="brand" href={home ? "#top" : "/"} onClick={home ? go("top") : undefined}>
           <img src="/icon-64.png" alt="" width="28" height="28" />
           <span>Location Spoofer</span>
         </a>
         <nav className="nav" aria-label="Sections">
           {LINKS.map(([id, label]) => (
-            <a key={id} href={`#${id}`} onClick={go(id)}>{label}</a>
+            <a key={id} href={home ? `#${id}` : `/#${id}`} onClick={home ? go(id) : undefined}>{label}</a>
           ))}
         </nav>
         <div className="header-end">
           <a className="icon-btn gh" href={REPO_URL} target="_blank" rel="noreferrer" aria-label="Source code on GitHub">
             <Icon name="github" />
           </a>
-          <button className="icon-btn" type="button" onClick={onToggleTheme} aria-label={`Switch to ${next} mode`} title={`Switch to ${next} mode`}>
-            <Icon name={theme === "dark" ? "sun" : "moon"} />
-          </button>
-          <a className="btn btn-primary btn-sm" href="#install" onClick={go("install")}>
+          <a className="btn btn-primary btn-sm" href={home ? "#install" : "/#install"} onClick={home ? go("install") : undefined}>
             <Icon name="download" /> Download
           </a>
         </div>
