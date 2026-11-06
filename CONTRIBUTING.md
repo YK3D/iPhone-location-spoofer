@@ -6,14 +6,22 @@ Bug reports and ideas are welcome as [GitHub issues](https://github.com/YK3D/iPh
 
 Location Spoofer is source-available, not open source (see [LICENSE](LICENSE)). By opening a pull request you confirm that you have the right to submit the change, and you grant YK3D the licence described in section 4 of [LICENSE](LICENSE), so the change can be included and relicensed with the app. You keep the copyright in your contribution and are credited in the history.
 
-## Trying a feature test
+## Feature tests
 
-Feature tests are experiments in pull requests into the `feature-testing` branch. *Settings › Updates › Show feature tests* in the app lists them and opens one on GitHub. They have no download yet, so they are run from the source code:
+Feature tests are experiments in pull requests. For every pull request from this repository into the `feature-testing` branch, `.github/workflows/feature-tests.yml` builds the standalone app, encrypts it with the developer password and uploads it, with an encrypted list of builds, to the `feature-tests` pre-release. Any other pull request (open or merged) can be built from the *Actions* tab: *Feature-test builds › Run workflow*, with its number.
+
+In the app, click the *About* tab in Settings 7 times to turn on developer mode. *Settings › Updates › Developer access* then unlocks the list with the password and downloads every build in the background; *Open* checks a build and starts it as a separate app in its own window (own data folder, own port, no self-update). The builds are Windows apps.
+
+**Setup (once):** add a repository secret named `FEATURE_TEST_PASSWORD` (GitHub › Settings › Secrets and variables › Actions) with a long password. Without it the workflow builds nothing. Changing it later makes older builds unreadable with the new password; push to the pull requests again to rebuild them.
+
+What this protects: the builds and the list of builds. The pull requests and their source code stay public, like the rest of the repository.
+
+To try a feature test from source instead:
 
 ```bash
 git clone https://github.com/YK3D/iPhone-location-spoofer.git
 cd iPhone-location-spoofer
-git checkout feature-testing      # or one pull request: git fetch origin pull/<number>/head:test && git checkout test
+git fetch origin pull/<number>/head:test && git checkout test
 
 # standalone app (needs Rust: https://rustup.rs)
 cd standalone
@@ -25,7 +33,7 @@ pip install -r requirements.txt
 python -m spoofer                  # opens http://127.0.0.1:8765
 ```
 
-Set `SPOOFER_DATA_DIR` to an empty folder first if you don't want the experiment to touch your saved routes and settings. Comment on the pull request with what worked and what didn't.
+Set `SPOOFER_DATA_DIR` to an empty folder first if you don't want the experiment to touch your saved routes and settings.
 
 ## Branches
 

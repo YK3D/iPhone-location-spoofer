@@ -98,7 +98,7 @@ const guard = (fn) => async (...a) => {
 // Disable a button while an async action runs, so double clicks don't send twice.
 const busy = (btn, label, fn) => guard(async (...a) => {
   if (btn.disabled) return;
-  const old = [...btn.childNodes];
+  const old = [...btn.childNodes].filter((n) => !(n.classList && n.classList.contains("ripple")));
   btn.disabled = true;
   if (label) btn.textContent = label;
   try { await fn(...a); } finally { btn.disabled = false; btn.replaceChildren(...old); }
@@ -161,7 +161,58 @@ let nextId = 1;
 const settings = () => state.store.settings || (state.store.settings = {});
 
 // ------------------------------------------------------------------ map
-const map = L.map("map", { zoomControl: true, worldCopyJump: true }).setView([51.505, -0.09], 13);
+// Wheel and trackpad zoom use SmoothWheelZoom (below) instead of Leaflet's stepped wheel zoom;
+// fractional zoom levels (zoomSnap 0) let a pinch stop exactly where the fingers stop.
+const map = L.map("map", { zoomControl: true, worldCopyJump: true, scrollWheelZoom: false, zoomSnap: 0 }).setView([51.505, -0.09], 13);
+
+// Leaflet's own wheel zoom collects wheel events and then animates a whole zoom step. A trackpad
+// sends dozens of small events per gesture, so the steps queue up and overlap, and the vector map
+// (drawn by MapLibre, kept in step with Leaflet after each animation) jumps and flickers. This
+// handler follows the gesture frame by frame instead: every frame moves the map part of the way to
+// the zoom the gesture asks for, around the point under the pointer, without animations.
+const SmoothWheelZoom = L.Handler.extend({
+  addHooks() { L.DomEvent.on(this._map.getContainer(), "wheel", this._onWheel, this); },
+  removeHooks() { L.DomEvent.off(this._map.getContainer(), "wheel", this._onWheel, this); },
+  _onWheel(e) {
+    L.DomEvent.preventDefault(e); // also stops ctrl+wheel / pinch from zooming the whole page
+    const m = this._map;
+    const px = e.deltaY * (e.deltaMode === 1 ? 20 : e.deltaMode === 2 ? 400 : 1);
+    // A pinch arrives as ctrl+wheel with small steps; two-finger scrolls and mouse wheels zoom slower.
+    const dz = Math.max(-1.5, Math.min(1.5, -px * (e.ctrlKey ? 0.012 : 0.006)));
+    if (!this._frame) {
+      m._stop(); // ends a pan animation or a running zoom
+      this._target = m.getZoom();
+    }
+    this._target = Math.max(m.getMinZoom(), Math.min(m.getMaxZoom(), this._target + dz));
+    this._anchor = m.mouseEventToContainerPoint(e);
+    this._lastEvent = performance.now();
+    if (!this._frame) this._frame = L.Util.requestAnimFrame(this._step, this);
+  },
+  _zoomAround(zoom, data) {
+    const m = this._map;
+    const scale = m.getZoomScale(zoom, m.getZoom());
+    const half = m.getSize().divideBy(2);
+    const center = m.containerPointToLatLng(half.add(this._anchor.subtract(half).multiplyBy(1 - 1 / scale)));
+    m._move(center, zoom, data);
+  },
+  _step() {
+    const m = this._map;
+    const z = m.getZoom(), diff = this._target - z;
+    if (Math.abs(diff) > 0.002) {
+      // pinch-like: tiles keep their current level, scaled, until the gesture ends
+      this._zoomAround(z + diff * 0.35, { pinch: true });
+      this._frame = L.Util.requestAnimFrame(this._step, this);
+    } else if (performance.now() - this._lastEvent < 120) {
+      this._frame = L.Util.requestAnimFrame(this._step, this); // the fingers may still be moving
+    } else {
+      this._zoomAround(this._target); // settle: tile layers load the new level
+      this._frame = null;
+      m._moveEnd(true);
+    }
+  },
+});
+map.addHandler("smoothWheelZoom", SmoothWheelZoom);
+map.smoothWheelZoom.enable();
 
 // Base maps. OpenFreeMap is drawn from vector data (MapLibre, loaded on first use), so it has a real
 // dark style and stays sharp at street level; free, no key, commercial use allowed. The raster maps
@@ -226,6 +277,12 @@ function tuneDarkStyle(gl) {
     try { gl.setPaintProperty(id, prop, value); } catch (_) { /* the style changed shape: keep its own colour */ }
   }
 }
+// OpenFreeMap requests go through the app's offline cache (/ofm/...): downloaded areas, styles and
+// fonts then work without internet. Everything else is fetched as before.
+const OFM = "https://tiles.openfreemap.org/";
+function viaOfflineCache(url) {
+  return url.startsWith(OFM) ? { url: `${location.origin}/ofm/${url.slice(OFM.length)}` } : undefined;
+}
 const VectorBaseMap = L.Layer.extend({
   options: { maxZoom: 20, minZoom: 0,
     attribution: "&copy; OpenFreeMap &copy; OpenMapTiles &copy; OpenStreetMap contributors" },
@@ -240,7 +297,7 @@ const VectorBaseMap = L.Layer.extend({
       if (!this._active || !this._map || this._glLayer) return;
       if (!webglAvailable()) { mapProviderFailed("this computer's graphics don't support it (WebGL is off)"); return; }
       try {
-        this._glLayer = L.maplibreGL({ style: this.styleUrl(), attributionControl: false }).addTo(m);
+        this._glLayer = L.maplibreGL({ style: this.styleUrl(), attributionControl: false, transformRequest: viaOfflineCache }).addTo(m);
       } catch (_) {
         this._glLayer = null;
         mapProviderFailed("this computer's graphics don't support it");
@@ -285,8 +342,89 @@ const savedProvider = (s) => (MAP_PROVIDERS[s.map_provider] ? s.map_provider : D
 let startProvider = DEFAULT_MAP_PROVIDER;
 try { startProvider = savedProvider(JSON.parse(localStorage.getItem("ls-appearance") || "{}")); } catch (_) { /* storage blocked */ }
 MAP_PROVIDERS[startProvider].layer.addTo(map);
-const layerControl = L.control.layers(baseLayers).addTo(map);
+// The map menu (top right): pick the map, its theme (dark, light, or matching the app) and open
+// offline maps. Replaces Leaflet's plain layer list; like it, it reports "baselayerchange" when
+// one of its maps is shown, whoever switched it.
+const MAP_PREVIEWS = {
+  openfreemap: '<rect width="56" height="38" fill="#1b1f25"/><path d="M-2 26 20 14 58 30M14-2 22 40M36-2 32 40" stroke="#4a515c" stroke-width="2.4" fill="none"/><path d="M-2 9 58 4" stroke="#7a6a48" stroke-width="3" fill="none"/><circle cx="40" cy="20" r="5" fill="#15301f"/><path d="M0 34h56v4H0z" fill="#10263a"/>',
+  osm: '<rect width="56" height="38" fill="#f2efe9"/><path d="M-2 26 20 14 58 30M14-2 22 40M36-2 32 40" stroke="#fff" stroke-width="3" fill="none"/><path d="M-2 9 58 4" stroke="#f7c66b" stroke-width="3.2" fill="none"/><circle cx="40" cy="20" r="5" fill="#c8e6b9"/><path d="M0 33h56v5H0z" fill="#aad3df"/>',
+  topo: '<rect width="56" height="38" fill="#e9eedc"/><g fill="none" stroke="#b8a17a" stroke-width="1"><path d="M6 30c8-14 22-20 40-14"/><path d="M12 32c6-9 18-13 30-9"/><path d="M18 34c4-5 11-7 18-5"/><path d="M2 22c10-16 30-22 52-14"/></g><path d="M-2 12 58 18" stroke="#d64a3a" stroke-width="1.6" fill="none"/>',
+  satellite: '<rect width="56" height="38" fill="#3c4a2c"/><path d="M0 0h22l6 14-10 10H0z" fill="#566b3a"/><path d="M30 0h26v16l-12 4-10-8z" fill="#7a7448"/><path d="M0 28l20-6 14 8 22-6v14H0z" fill="#2c3a24"/><path d="M-2 20 58 8" stroke="#b9b09a" stroke-width="1.4" fill="none"/>',
+  google: '<rect width="56" height="38" fill="#e8eaed"/><path d="M-2 24 58 12M18-2 26 40" stroke="#fff" stroke-width="3.4" fill="none"/><path d="M-2 6 58 30" stroke="#fdd663" stroke-width="3" fill="none"/><path d="M40 34h16v4H40z" fill="#9cc0f9"/>',
+};
+const MapSwitcher = L.Control.extend({
+  options: { position: "topright" },
+  initialize(layers) { this._layers = []; for (const [name, layer] of Object.entries(layers)) this.addBaseLayer(layer, name); },
+  onAdd(m) {
+    const box = L.DomUtil.create("div", "map-switch leaflet-control");
+    this._btn = el("button", { type: "button", class: "map-switch-btn", title: "Map and map theme", "aria-label": "Map and map theme",
+      "aria-expanded": "false", onclick: () => this.toggle() }, svgIcon("layers"));
+    this._panel = el("div", { class: "map-switch-panel", hidden: true, role: "dialog", "aria-label": "Map" });
+    box.append(this._btn, this._panel);
+    L.DomEvent.disableClickPropagation(box);
+    L.DomEvent.disableScrollPropagation(box);
+    this._onDoc = (e) => { if (!box.contains(e.target)) this.toggle(false); };
+    this._onKey = (e) => { if (e.key === "Escape") { this.toggle(false); this._btn.focus(); } };
+    m.on("layeradd", (e) => {
+      const entry = this._layers.find((l) => l.layer === e.layer);
+      if (entry) { m.fire("baselayerchange", { layer: entry.layer, name: entry.name }); this.refresh(); }
+    });
+    return box;
+  },
+  addBaseLayer(layer, name) { if (!this._layers.some((l) => l.layer === layer)) this._layers.push({ layer, name }); this.refresh(); return this; },
+  removeLayer(layer) { this._layers = this._layers.filter((l) => l.layer !== layer); this.refresh(); return this; },
+  toggle(open = this._panel.hidden) {
+    if (open === !this._panel.hidden) return;
+    if (open) {
+      this._panel.hidden = false;
+      this.refresh();
+      flash(this._panel, "pop-in");
+      document.addEventListener("pointerdown", this._onDoc, true);
+      document.addEventListener("keydown", this._onKey);
+    } else {
+      this._panel.hidden = true;
+      document.removeEventListener("pointerdown", this._onDoc, true);
+      document.removeEventListener("keydown", this._onKey);
+    }
+    this._btn.setAttribute("aria-expanded", String(open));
+  },
+  refresh() {
+    if (!this._panel || this._panel.hidden) return;
+    const current = this._layers.find((l) => this._map && this._map.hasLayer(l.layer));
+    const cards = this._layers.map(({ layer, name }) => {
+      const id = providerOf(layer) || "google";
+      const pic = document.createElementNS(SVG_NS, "svg");
+      pic.setAttribute("viewBox", "0 0 56 38");
+      pic.innerHTML = MAP_PREVIEWS[id] || "";
+      return el("button", { type: "button", class: "map-card" + (current && current.layer === layer ? " active" : ""),
+        "aria-pressed": String(!!current && current.layer === layer), onclick: () => chooseBaseMap(id) },
+        pic, el("span", { textContent: name }));
+    });
+    const mt = mapTheme(settings());
+    const themeBtn = (value, icon, label) => el("button", { type: "button", class: mt === value ? "active" : "", "aria-pressed": String(mt === value),
+      onclick: () => { settings().map_theme = value; applyAppearance(); saveSettingsSoon(); } }, svgIcon(icon), el("span", { textContent: label }));
+    const google = current && state.google.layer && current.layer === state.google.layer;
+    this._panel.replaceChildren(
+      el("div", { class: "map-switch-title", textContent: "Map" }),
+      el("div", { class: "map-cards" }, ...cards),
+      el("div", { class: "map-switch-title", textContent: "Map theme" }),
+      el("div", { class: "seg map-theme-seg" + (google || (current && providerOf(current.layer) === "satellite") ? " muted-seg" : "") },
+        themeBtn("dark", "moon", "Dark"), themeBtn("light", "sun", "Light"), themeBtn("auto", "auto", "Auto")),
+      el("button", { type: "button", class: "map-switch-offline", onclick: () => { this.toggle(false); openSettings("offline"); } },
+        svgIcon("offline"), el("span", { textContent: "Offline maps…" })));
+  },
+});
+const layerControl = new MapSwitcher(baseLayers).addTo(map);
 L.control.scale().addTo(map);
+// A map picked in the map menu: it becomes the saved choice (Google only while a Google route is shown).
+function chooseBaseMap(id) {
+  if (id === "google") { useGoogleBase().catch((e) => toast(e.message, true)); return; }
+  if (state.google.layer && map.hasLayer(state.google.layer)) map.removeLayer(state.google.layer);
+  settings().map_provider = id;
+  providerWarned = false;
+  applyAppearance();
+  saveSettingsSoon();
+}
 // Shows the chosen base map (unless a Google map is on screen for a Google route).
 // Switches made here (settings, fallback) are not the user's pick in the map's layer menu.
 let switchingBase = false;
@@ -593,6 +731,7 @@ function applyAppearance() {
   $("pref-map-provider").value = provider;
   applyMapProvider(provider);
   rememberAppearance(theme, nightMap);
+  layerControl.refresh();
 }
 // remembered for the first paint of the next start (index.html applies it before the CSS renders)
 function rememberAppearance(theme = document.documentElement.dataset.theme, nightMap = document.documentElement.classList.contains("night-map")) {
@@ -796,8 +935,10 @@ function renderDevice(st) {
     const msg = state.devicesError;
     if (box.dataset.msg !== msg || !box.textContent.startsWith(msg)) {
       box.dataset.msg = msg;
-      box.replaceChildren(msg);
-      if (/Apple Devices/.test(msg)) box.append(" ", el("a", { href: APPLE_DEVICES_URL, target: "_blank", rel: "noopener", textContent: "Get Apple Devices" }));
+      // one inline block, so the link flows with the text (the status box is a flex row)
+      const text = el("span", {}, msg);
+      if (/Apple Devices/.test(msg)) text.append(" ", el("a", { href: APPLE_DEVICES_URL, target: "_blank", rel: "noopener", textContent: "Get Apple Devices" }));
+      box.replaceChildren(text);
     }
     chip.className = "chip warn"; chip.textContent = "Not ready";
     $("dev-summary").textContent = "Not connected";
@@ -2706,11 +2847,13 @@ const settingsDlg = $("settings-dialog");
 settingsDlg.querySelector("form").addEventListener("submit", (e) => { e.preventDefault(); closeDialog(settingsDlg); });
 function openSettings(pane = "appearance") {
   $("key-status").textContent = "";
+  applyDeveloperMode();
   morphHeight(settingsDlg, () => {
     document.querySelectorAll("#settings-tabs button").forEach((b) => b.classList.toggle("active", b.dataset.pane === pane));
     document.querySelectorAll("#settings-dialog .pane").forEach((p) => (p.hidden = p.dataset.pane !== pane));
     if (pane === "keys") renderShortcutEditor();
   });
+  if (pane === "offline") { pollOffline().catch((e) => toast(e.message, true)); updateOfflineEstimate(); }
   if (!settingsDlg.open) settingsDlg.showModal();
 }
 document.querySelectorAll("#settings-tabs button").forEach((b) => (b.onclick = () => openSettings(b.dataset.pane)));
@@ -2866,46 +3009,142 @@ $("btn-update-install").onclick = guard(async () => {
   $("update-text").textContent = "Restarting with the new version… this page reloads by itself.";
   $("btn-update-install").hidden = true;
 });
-// Feature tests: pull requests into the feature-testing branch, listed straight from GitHub's API
-// (on demand only) so testers can open the ones they want to try in the browser.
-const GITHUB_REPO_RE = /^[\w.-]+\/[\w.-]+$/;
-function featureTestRepo() {
-  const r = state.status && state.status.update && state.status.update.repo;
-  return typeof r === "string" && GITHUB_REPO_RE.test(r) ? r : "YK3D/iPhone-location-spoofer";
-}
-function featureTestLabel(pr) {
-  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
-  if (pr.merged_at) return `Merged ${day(pr.merged_at)}`;
-  return pr.draft ? "Draft" : `Open since ${day(pr.created_at)}`;
-}
-async function loadFeatureTests() {
-  const repo = featureTestRepo();
-  $("feature-tests-all").href = `https://github.com/${repo}/pulls?q=is%3Apr+base%3Afeature-testing`;
-  const list = $("feature-test-list");
-  let prs;
-  try {
-    const r = await fetch(`https://api.github.com/repos/${repo}/pulls?base=feature-testing&state=all&sort=created&direction=desc&per_page=20`,
-      { headers: { Accept: "application/vnd.github+json" } });
-    if (r.status === 403 || r.status === 429) throw new Error("GitHub is limiting requests from this network right now. Try again later, or use the link to see them on GitHub.");
-    if (!r.ok) throw new Error(`GitHub answered ${r.status}. Use the link to see the feature tests on GitHub.`);
-    prs = await r.json();
-  } catch (e) {
-    if (e instanceof TypeError) throw new Error("Couldn't reach GitHub. Check the internet connection.");
-    throw e;
+// Feature tests (Settings › Updates › Developer access): encrypted builds of unreleased
+// experiments. The app checks the password by opening the encrypted list of builds; "Open"
+// downloads a build once, then starts it as a separate app in its own window.
+const devAccess = $("dev-access");
+devAccess.addEventListener("toggle", () => { if (devAccess.open) refreshFeatureTests(false); }); // folds like other sections (wireSections)
+// Developer mode: hidden until the About tab is clicked 7 times in a row (like phones do).
+let aboutClicks = 0, aboutClickAt = 0;
+function applyDeveloperMode() { devAccess.hidden = !settings().developer_mode; }
+document.querySelector('#settings-tabs button[data-pane="about"]').addEventListener("click", () => {
+  const now = performance.now();
+  aboutClicks = now - aboutClickAt < 1500 ? aboutClicks + 1 : 1;
+  aboutClickAt = now;
+  if (settings().developer_mode) { if (aboutClicks === 7) toast("Developer mode is already on (Settings › Updates)."); return; }
+  if (aboutClicks >= 4 && aboutClicks < 7) toast(`${7 - aboutClicks} more to turn on developer mode.`);
+  if (aboutClicks === 7) {
+    settings().developer_mode = true;
+    saveStore().catch(() => {});
+    applyDeveloperMode();
+    toast("Developer mode is on. Developer access is in Settings › Updates.");
   }
-  // Closed without being merged means the experiment was dropped: nothing left to try.
-  const items = (Array.isArray(prs) ? prs : []).filter((pr) => pr && (pr.state === "open" || pr.merged_at)
-    && typeof pr.html_url === "string" && pr.html_url.startsWith("https://github.com/"));
-  morphHeight(settingsDlg, () => {
-    list.replaceChildren(...(items.length ? items.map((pr) => el("li", {},
-      el("span", { textContent: `#${pr.number} · ${pr.title}`, title: pr.title }),
-      el("span", { class: "tag", textContent: featureTestLabel(pr) }),
-      el("a", { href: pr.html_url, target: "_blank", rel: "noopener", textContent: "Open", title: `Open #${pr.number} on GitHub in your browser` })))
-      : [el("li", { class: "hint", textContent: "No feature tests at the moment." })]));
-    list.hidden = false;
+});
+$("btn-dev-off").onclick = guard(async () => {
+  await api("/api/feature-tests/lock", { body: {} });
+  settings().developer_mode = false;
+  await saveStore();
+  morphHeight(settingsDlg, () => { devAccess.open = false; applyDeveloperMode(); renderFeatureTests({ locked: true }); });
+  toast("Developer mode is off.");
+});
+let ftTimer = null;
+function watchFeatureTests(r) {
+  clearTimeout(ftTimer);
+  if (r.locked || !(r.builds || []).some((b) => !b.ready)) return;
+  ftTimer = setTimeout(guard(async () => {
+    if (!settingsDlg.open || devAccess.hidden || !devAccess.open) return;
+    const p = await api("/api/feature-tests/progress");
+    renderFeatureTests(p, false);
+  }), 1500);
+}
+function featureTestDate(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+function renderFeatureTests(r, animate = true) {
+  watchFeatureTests(r);
+  const run = animate ? (fn) => morphHeight(settingsDlg, fn) : (fn) => fn();
+  run(() => {
+    $("ft-locked").hidden = !r.locked;
+    $("ft-unlocked").hidden = !!r.locked;
+    if (r.locked) return;
+    const builds = r.builds || [];
+    $("feature-test-list").replaceChildren(...(builds.length ? builds.map((b) => {
+      const open = el("button", { type: "button", textContent: "Open", class: b.ready ? "primary" : "",
+        title: b.ready ? "Start it in its own window" : "Download it, then start it in its own window" });
+      open.onclick = busy(open, "Opening…", async () => {
+        await api("/api/feature-tests/open", { body: { pr: b.pr } });
+        toast(`Feature test #${b.pr} is starting in its own window.`);
+      });
+      const page = typeof b.url === "string" && b.url.startsWith("https://github.com/")
+        ? el("a", { href: b.url, target: "_blank", rel: "noopener", class: "icon-link", title: "Open the pull request on GitHub", "aria-label": `Pull request #${b.pr} on GitHub` }, svgIcon("external"))
+        : el("span");
+      return el("li", {},
+        el("span", { textContent: `#${b.pr} · ${b.title || "Untitled"}`, title: b.title || "" }),
+        el("span", { class: "tag", textContent: b.ready ? "Ready" : b.downloading ? "Downloading…" : "Not downloaded",
+          title: `${b.state === "merged" ? "Merged" : "Open"} pull request · built ${featureTestDate(b.built_at)}` }),
+        page, open);
+    }) : [el("li", { class: "hint", textContent: "No feature-test builds at the moment." })]));
   });
 }
-$("btn-feature-tests").onclick = busy($("btn-feature-tests"), "Loading…", loadFeatureTests);
+async function refreshFeatureTests(report = true) {
+  try { renderFeatureTests(await api("/api/feature-tests")); } catch (e) { if (report) throw e; }
+}
+$("btn-ft-unlock").onclick = busy($("btn-ft-unlock"), "Checking…", async () => {
+  const r = await api("/api/feature-tests/unlock", { body: { password: $("ft-password").value, remember: $("ft-remember").checked } });
+  $("ft-password").value = "";
+  renderFeatureTests(r);
+});
+$("ft-password").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); $("btn-ft-unlock").click(); } });
+$("btn-ft-refresh").onclick = busy($("btn-ft-refresh"), "Refreshing…", () => refreshFeatureTests(true));
+$("btn-ft-lock").onclick = guard(async () => renderFeatureTests(await api("/api/feature-tests/lock", { body: {} })));
+
+// ------------------------------------------------------------------ offline maps (Settings › Offline maps)
+let offlineTimer = null;
+const offlineBounds = () => {
+  const b = map.getBounds();
+  return { south: b.getSouth(), west: Math.max(-180, b.getWest()), north: b.getNorth(), east: Math.min(180, b.getEast()) };
+};
+async function updateOfflineEstimate() {
+  const out = $("offline-estimate");
+  try {
+    const r = await api("/api/offline/estimate", { body: { bounds: offlineBounds(), max_zoom: +$("offline-detail").value } });
+    out.className = "small " + (r.ok ? "muted" : "warn");
+    out.textContent = r.ok
+      ? `The area on screen needs ${r.tiles.toLocaleString()} map tiles (up to ${r.max_tiles.toLocaleString()} per download).`
+      : `The area on screen needs ${r.tiles.toLocaleString()} map tiles, more than the ${r.max_tiles.toLocaleString()} one download may have. Zoom in, or choose less detail.`;
+    $("btn-offline-download").disabled = !r.ok || !!(state.offline && state.offline.job.running);
+  } catch (e) { out.className = "small warn"; out.textContent = e.message; }
+}
+function renderOffline(st) {
+  state.offline = st;
+  const j = st.job;
+  $("btn-offline-cancel").hidden = !j.running;
+  $("btn-offline-download").disabled = j.running;
+  const bar = $("offline-progress");
+  bar.hidden = !j.running;
+  bar.firstElementChild.style.width = `${j.total ? Math.round((j.done / j.total) * 100) : 0}%`;
+  if (j.running) $("offline-estimate").textContent = `Downloading “${j.name}”: ${j.done.toLocaleString()} of ${j.total.toLocaleString()} tiles, ${(j.bytes / 1048576).toFixed(1)} MB…`;
+  const areas = st.areas || [];
+  $("offline-areas").replaceChildren(...(areas.length ? areas.map((a) => {
+    const show = el("button", { type: "button", textContent: "Show", title: "Show this area on the map",
+      onclick: () => { closeDialog(settingsDlg); map.fitBounds([[a.south, a.west], [a.north, a.east]]); } });
+    const del = el("button", { type: "button", class: "danger", textContent: "Delete" });
+    del.onclick = busy(del, "Deleting…", async () => { renderOffline(await api(`/api/offline/${encodeURIComponent(a.id)}`, { method: "DELETE" })); });
+    return el("li", {},
+      el("span", { textContent: a.name, title: a.name }),
+      el("span", { class: "tag", textContent: `${(a.bytes / 1048576).toFixed(1)} MB`, title: `${a.tiles.toLocaleString()} map tiles` }), show, del);
+  }) : [el("li", { class: "hint", textContent: "No offline areas yet." })]));
+}
+async function pollOffline() {
+  clearTimeout(offlineTimer);
+  const st = await api("/api/offline");
+  const wasRunning = state.offline && state.offline.job.running;
+  morphHeight(settingsDlg, () => renderOffline(st));
+  if (st.job.running) offlineTimer = setTimeout(() => pollOffline().catch(() => {}), 600);
+  else if (wasRunning) {
+    if (st.job.error) toast(st.job.error, true);
+    else if (st.job.finished) toast(`“${st.job.finished}” is saved for offline use.`);
+    updateOfflineEstimate();
+  }
+}
+$("btn-offline-download").onclick = busy($("btn-offline-download"), "Starting…", async () => {
+  renderOffline(await api("/api/offline/download", { body: { name: $("offline-name").value, bounds: offlineBounds(), max_zoom: +$("offline-detail").value } }));
+  $("offline-name").value = "";
+  await pollOffline();
+});
+$("btn-offline-cancel").onclick = guard(async () => { await api("/api/offline/cancel", { body: {} }); });
+$("offline-detail").addEventListener("change", updateOfflineEstimate);
 $("btn-tunneld").onclick = busy($("btn-tunneld"), "Starting…", async () => toast((await api("/api/tunneld/start", { body: {} })).message));
 function renderUpdate(st) {
   const u = st.update;
@@ -2936,7 +3175,7 @@ async function poll() {
   try {
     const st = await api("/api/status");
     state.status = st;
-    $("version").textContent = `v${st.version}${st.app === "standalone" ? "" : " · browser"}`;
+    $("version").textContent = `v${st.version}${st.app === "standalone" ? "" : " · browser"}${st.feature_test ? ` · feature test #${st.feature_test}` : ""}`;
     document.querySelector(".brand h1").title = `Location Spoofer ${$("version").textContent}`;
     $("about-version").textContent = `Version ${st.version} (${st.app === "standalone" ? "standalone app" : "browser version"})`;
     if (!state.bootVersion) { state.bootVersion = st.version; applyFeatures(st.features); }
@@ -2951,6 +3190,31 @@ async function poll() {
   const active = state.status && ["playing", "joystick"].includes(state.status.player.state);
   pollTimer = setTimeout(poll, active ? 500 : 2000);
 }
+
+// ------------------------------------------------------------------ pressed buttons
+// A pressed button sinks in slightly (CSS :active) and a single circular wave spreads from the
+// exact point that was pressed to the button's far edges, fading as it goes.
+const RIPPLE_TARGETS = "button, .leaflet-bar a";
+document.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || reducedMotion()) return;
+  const btn = e.target.closest(RIPPLE_TARGETS);
+  if (!btn || btn.disabled || btn.matches(".wp-grip")) return;
+  const r = btn.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  const x = e.clientX - r.left, y = e.clientY - r.top;
+  const radius = Math.hypot(Math.max(x, r.width - x), Math.max(y, r.height - y));
+  if (getComputedStyle(btn).position === "static") btn.classList.add("ripple-static");
+  btn.classList.add("ripple-host");
+  const wave = el("span", { class: "ripple", "aria-hidden": "true" });
+  wave.style.cssText = `left:${x - radius}px;top:${y - radius}px;width:${radius * 2}px;height:${radius * 2}px`;
+  btn.append(wave);
+  const done = () => {
+    wave.remove();
+    if (!btn.querySelector(":scope > .ripple")) btn.classList.remove("ripple-host", "ripple-static");
+  };
+  wave.addEventListener("animationend", done, { once: true });
+  setTimeout(done, 1200); // in case the animation never runs (hidden button)
+}, { passive: true });
 
 // ------------------------------------------------------------------ boot
 wireInfoButtons();

@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 
 
 def _run_pmd3_cli(args: list[str]) -> int:
@@ -125,7 +126,11 @@ def main() -> None:
     if args.wait_pid:
         _wait_for_pid(args.wait_pid)
 
-    from spoofer.updater import Updater
+    from spoofer.updater import Updater, is_frozen, refresh_shell_icons
+
+    if args.wait_pid and is_frozen():
+        # started by the updater: show the new version's icon on pinned taskbar buttons right away
+        refresh_shell_icons(Path(sys.executable))
 
     updater = Updater()
     if args.no_update:

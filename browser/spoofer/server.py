@@ -17,6 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__, geo, gmaps_links, google_api, routing
+from .feature_tests import FeatureTestError, FeatureTests
+from .offline import Bounds, Offline
 from .device.base import DeviceDriver, DeviceError
 from .device.cli import CliDriver
 from .device.mock import MockDriver
@@ -32,7 +34,7 @@ from .profile import (
     build_timeline,
     timeline_from_timed_points,
 )
-from .store import Store
+from .store import Store, data_dir
 from .updater import Updater
 
 log = logging.getLogger(__name__)
@@ -58,6 +60,8 @@ class AppState:
         self.timelines: "OrderedDict[str, tuple[Timeline, str, list, bool]]" = OrderedDict()
         self.store = Store()
         self.updater = Updater()  # replaced by __main__ with the real one; disabled from source
+        self.offline = Offline(data_dir())
+        self.feature_tests = FeatureTests(data_dir())
 
     @property
     def driver(self) -> DeviceDriver:
@@ -133,6 +137,11 @@ async def _routing_error(_: Request, exc: routing.RoutingError):
 @app.exception_handler(google_api.GoogleError)
 async def _google_error(_: Request, exc: google_api.GoogleError):
     return JSONResponse({"detail": str(exc)}, status_code=502)
+
+
+@app.exception_handler(FeatureTestError)
+async def _feature_test_error(_: Request, exc: FeatureTestError):
+    return JSONResponse({"detail": str(exc)}, status_code=exc.status)
 
 
 @app.exception_handler(ValueError)
@@ -265,6 +274,7 @@ async def status():
     return {
         "version": __version__,
         "app": "browser",
+        "feature_test": None,
         "features": {"cli_driver": True, "tunnel_helper": True},
         "driver": s.driver_key,
         "drivers": [{"key": k, "label": v.label, "live": v.live} for k, v in s.drivers.items()],
@@ -747,6 +757,102 @@ async def store_get():
 @app.put("/api/store")
 async def store_put(body: dict):
     return S().store.save(body)
+
+
+# ---------------------------------------------------------------- offline maps
+@app.get("/ofm/{path:path}")
+async def ofm(request: Request):
+    # the raw (still percent-encoded) path, as the cache and OpenFreeMap use it
+    raw = request.scope.get("raw_path", b"").decode("latin-1")
+    path = raw.split("?", 1)[0].removeprefix("/ofm/")
+    status_code, ctype, body = await S().offline.proxy(path)
+    return Response(body, status_code=status_code, media_type=ctype, headers={"Cache-Control": "no-cache"})
+
+
+class BoundsIn(BaseModel):
+    south: float
+    west: float
+    north: float
+    east: float
+
+
+class EstimateIn(BaseModel):
+    bounds: BoundsIn
+    min_zoom: Optional[int] = Field(None, ge=0, le=22)
+    max_zoom: int = Field(..., ge=0, le=22)
+
+
+class DownloadIn(EstimateIn):
+    name: Optional[str] = None
+
+
+@app.get("/api/offline")
+async def offline_status():
+    return S().offline.status()
+
+
+@app.post("/api/offline/estimate")
+async def offline_estimate(body: EstimateIn):
+    return Offline.estimate(Bounds(**body.bounds.model_dump()), body.min_zoom or 0, body.max_zoom)
+
+
+@app.post("/api/offline/download")
+async def offline_download(body: DownloadIn):
+    try:
+        return S().offline.start(body.name, Bounds(**body.bounds.model_dump()), body.min_zoom, body.max_zoom)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e)) from None
+
+
+@app.post("/api/offline/cancel")
+async def offline_cancel():
+    S().offline.cancel()
+    return S().offline.status()
+
+
+@app.delete("/api/offline/{area_id}")
+async def offline_delete(area_id: str):
+    try:
+        await asyncio.to_thread(S().offline.delete_area, area_id)
+    except LookupError as e:
+        raise HTTPException(404, str(e)) from None
+    return S().offline.status()
+
+
+# ---------------------------------------------------------------- feature tests
+class UnlockIn(BaseModel):
+    password: str
+    remember: bool = False
+
+
+class FeatureTestOpenIn(BaseModel):
+    pr: int
+
+
+@app.get("/api/feature-tests")
+async def feature_tests_list():
+    return await S().feature_tests.list()
+
+
+@app.post("/api/feature-tests/unlock")
+async def feature_tests_unlock(body: UnlockIn):
+    return await S().feature_tests.unlock(body.password, body.remember)
+
+
+@app.get("/api/feature-tests/progress")
+async def feature_tests_progress():
+    return S().feature_tests.progress()
+
+
+@app.post("/api/feature-tests/lock")
+async def feature_tests_lock():
+    S().feature_tests.lock()
+    return {"locked": True}
+
+
+@app.post("/api/feature-tests/open")
+async def feature_tests_open(body: FeatureTestOpenIn):
+    return await S().feature_tests.open_build(body.pr)
 
 
 # ---------------------------------------------------------------- UI
