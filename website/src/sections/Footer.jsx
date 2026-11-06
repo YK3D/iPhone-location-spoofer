@@ -14,18 +14,20 @@ export default function Footer() {
             </div>
           </div>
           <nav className="foot-links" aria-label="Project">
-            <a href={REPO_URL} target="_blank" rel="noreferrer">Source code</a>
+            <a href={REPO_URL} target="_blank" rel="noreferrer">GitHub</a>
             <a href={`${REPO_URL}/releases`} target="_blank" rel="noreferrer">Releases</a>
             <a href={`${REPO_URL}/blob/main/CHANGELOG.md`} target="_blank" rel="noreferrer">Changelog</a>
             <a href={`${REPO_URL}/blob/main/PRIVACY.md`} target="_blank" rel="noreferrer">Privacy</a>
             <a href={`${REPO_URL}/blob/main/TERMS.md`} target="_blank" rel="noreferrer">Terms</a>
-            <a href={`${REPO_URL}/blob/main/LICENSE`} target="_blank" rel="noreferrer">MIT licence</a>
+            <a href={`${REPO_URL}/blob/main/LICENSE`} target="_blank" rel="noreferrer">Licence</a>
+            <a href={`${REPO_URL}/blob/main/THIRD_PARTY_NOTICES.md`} target="_blank" rel="noreferrer">Third-party notices</a>
           </nav>
         </div>
         <div className="foot-notes">
-          <p><b>Use it responsibly.</b> Location simulation is for testing your own apps, demos and privacy. Many apps forbid fake locations and may suspend your account.</p>
+          <p><b>Use it responsibly.</b> Location simulation is meant for testing apps, demos and privacy. Many apps forbid fake locations and may suspend your account.</p>
           <p>This site sets no cookies and loads no analytics. The demo map uses <a href="https://openfreemap.org" target="_blank" rel="noreferrer">OpenFreeMap</a> (© OpenMapTiles, © OpenStreetMap contributors) and routes from the <a href="https://routing.openstreetmap.de/about.html" target="_blank" rel="noreferrer">FOSSGIS</a> OSRM servers; version numbers come from GitHub.</p>
-          <p className="mono">© {year} YK3D and Location Spoofer contributors. iPhone and iPad are trademarks of Apple Inc.; this project is not affiliated with Apple.</p>
+          <p>Location Spoofer is free to download and use, but it is not open source. Location Spoofer is an independent project and is not affiliated with, endorsed by or sponsored by Apple Inc. or Google LLC. iPhone and iPad are trademarks of Apple Inc.; Google Maps is a trademark of Google LLC.</p>
+          <p className="mono">© {year} YK3D. All rights reserved.</p>
         </div>
       </div>
     </footer>

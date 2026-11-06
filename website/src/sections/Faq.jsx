@@ -5,7 +5,7 @@ import { REPO_URL } from "../lib/releases.js";
 const QA = [
   [
     "Will it work in my game or app?",
-    <>Location simulation is meant for testing your own apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the <a href={`${REPO_URL}/blob/main/TERMS.md`} target="_blank" rel="noreferrer">Terms of Use</a>.</>,
+    <>Location simulation is meant for testing apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the <a href={`${REPO_URL}/blob/main/TERMS.md`} target="_blank" rel="noreferrer">Terms of Use</a>.</>,
   ],
   [
     "Why does a speedometer app on the iPhone show 0?",
@@ -13,7 +13,7 @@ const QA = [
   ],
   [
     "Which iPhones and iOS versions work?",
-    <>Any iPhone or iPad with Developer Mode. The Standalone app supports iOS 17.4 and newer, and iOS 16 and older. iOS 17.0–17.3 needs the Browser edition with its administrator “tunnel helper”.</>,
+    <>Any iPhone or iPad with Developer Mode. The Standalone app supports iOS 17.4 and newer, and iOS 16 and older. iOS 17.0–17.3 needs the Browser edition, which asks for administrator permission once per session.</>,
   ],
   [
     "Does it send my data anywhere?",
@@ -25,7 +25,7 @@ const QA = [
   ],
   [
     "Why does Windows warn me when I open it?",
-    <>The app is not code-signed yet, so SmartScreen shows “Windows protected your PC”. Choose <b>More info → Run anyway</b>. Each update is checked against its SHA-256 checksum before it installs, and the source is on GitHub.</>,
+    <>The app is not code-signed yet, so SmartScreen shows “Windows protected your PC”. Choose <b>More info → Run anyway</b>. Each update is checked against its SHA-256 checksum before it installs, and the source code is public on GitHub.</>,
   ],
 ];
 

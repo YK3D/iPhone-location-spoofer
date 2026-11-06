@@ -95,7 +95,7 @@ export default function Hero({ releases }) {
               </a>
             </div>
             <ul className="hero-facts mono">
-              <li>Free · MIT licence</li>
+              <li>Free · no jailbreak</li>
               <li>No account, no telemetry</li>
               <li>Windows 10 &amp; 11</li>
             </ul>

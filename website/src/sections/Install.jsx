@@ -4,7 +4,7 @@ import { gsap, prefersReducedMotion } from "../lib/motion.js";
 import { RELEASES, REPO_URL, detectPlatform, formatDate, formatSize } from "../lib/releases.js";
 
 const STEPS = [
-  ["Install Apple's iPhone software", <>Get <b>Apple Devices</b> from the Microsoft Store (iTunes also works). It provides the driver Windows needs to talk to an iPhone. You don't need to keep it open.</>],
+  ["Install Apple's iPhone software", <>Get <a href="https://apps.microsoft.com/detail/9np83lwlpz9k" target="_blank" rel="noreferrer"><b>Apple Devices</b> from the Microsoft Store</a> (free, made by Apple; iTunes also works). It lets Windows talk to an iPhone. You don't need to keep it open.</>],
   ["Download and save the app", <>Save <span className="mono">LocationSpooferStandalone.exe</span> in a folder you own, such as Desktop or Documents, so it can update itself.</>],
   ["Run it", <>The app isn't code-signed yet, so Windows may say “Windows protected your PC”. Choose <b>More info → Run anyway</b>.</>],
   ["Follow the setup guide", <>Plug in the iPhone, unlock it and tap <b>Trust</b>. Press <b>Reveal Developer Mode</b>, turn it on in <i>Settings › Privacy &amp; Security</i>, restart the iPhone, then press <b>Connect</b>.</>],
@@ -12,8 +12,8 @@ const STEPS = [
 ];
 
 const PLATFORM_NOTE = {
-  mac: "You're on a Mac. The downloads are Windows apps; the Browser edition can also run from source on macOS.",
-  linux: "You're on Linux. The downloads are Windows apps; the Browser edition can also run from source on Linux.",
+  mac: "You're on a Mac. Location Spoofer runs on Windows 10 and 11; you can still try the demo above.",
+  linux: "You're on Linux. Location Spoofer runs on Windows 10 and 11; you can still try the demo above.",
   mobile: "You're on a phone. The app runs on a Windows 10 or 11 PC, with the iPhone plugged into it.",
 };
 
@@ -70,7 +70,7 @@ export default function Install({ releases }) {
             <article className="dl-card">
               <div className="dl-top">
                 <h3>Browser edition</h3>
-                <p>Opens in your web browser. About 80 MB and 10–20 s to start, and adds iOS 17.0–17.3 with an administrator “tunnel helper”.</p>
+                <p>Opens in your web browser. About 80 MB and 10–20 s to start. Needed only for iOS 17.0–17.3, where it asks for administrator permission once per session.</p>
               </div>
               <dl className="dl-meta mono">
                 <div><dt>Version</dt><dd>{b ? b.version : releases.status === "loading" ? "…" : "see GitHub"}</dd></div>
@@ -80,7 +80,7 @@ export default function Install({ releases }) {
                 <a className="btn btn-ghost" href={b?.url || RELEASES.browser} {...(b?.url ? {} : { target: "_blank", rel: "noreferrer" })}>
                   <Icon name="download" /> {b?.file || "Browser edition"}
                 </a>
-                <a className="text-link mono" href={`${REPO_URL}#building-from-source`} target="_blank" rel="noreferrer">Run from source</a>
+                <a className="text-link mono" href={`${REPO_URL}#which-download-should-i-use`} target="_blank" rel="noreferrer">Which one?</a>
               </div>
             </article>
             {PLATFORM_NOTE[platform] && <p className="platform-note">{PLATFORM_NOTE[platform]}</p>}

@@ -3,14 +3,14 @@ import Icon from "../components/Icon.jsx";
 import { gsap, prefersReducedMotion } from "../lib/motion.js";
 
 const ROWS = [
+  ["map", "Offline maps", "Save the area on screen, about a city per download, and the map keeps working without internet."],
   ["file", "GPX files", "Drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes export as GPX."],
   ["joystick", "Joystick", "Walk or drive live with W A S D, the arrow keys or the on-screen pad, at any speed you set."],
   ["crosshair", "Stop spoofing", "One click gives the iPhone its real GPS back and shows your computer's real location on the map."],
-  ["map", "Google Maps, if you want it", "Add your own API key for Google routes and map tiles. Without one, routing uses free OpenStreetMap services."],
+  ["pin", "Google Maps, if you want it", "Add your own API key for Google routes and map tiles. Without one, routing uses free OpenStreetMap services."],
   ["route", "Road-aware driving", "Experimental: follows each road's typical speed and aims for the same trip time as Google Maps or OpenStreetMap."],
   ["shield", "Private by design", "No accounts, no analytics, no telemetry. Favourites, routes and settings stay on your computer."],
-  ["keyboard", "Keyboard first", "Single-key shortcuts for the common actions, each one changeable in Settings."],
-  ["refresh", "Two editions", "Standalone (Rust, under 20 MB, starts instantly) or the Browser edition (Python), which adds iOS 17.0–17.3."],
+  ["refresh", "Two editions", "The Standalone app (under 20 MB, starts instantly) for most people, or the Browser edition for iOS 17.0–17.3."],
 ];
 
 export default function Details() {

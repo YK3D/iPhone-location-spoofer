@@ -6,7 +6,7 @@ Location Spoofer is built on open-source software and public data services. This
 
 | Part | Licence |
 |---|---|
-| Standalone app (`standalone/`), shared interface (`ui/`), icon artwork (`assets/`), documentation | Location Spoofer License, © YK3D, all rights reserved (source-available; reuse needs written permission and credit). See [LICENSE](LICENSE) |
+| Standalone app (`standalone/`), shared interface (`ui/`), icon artwork (`assets/`), website (`website/`), documentation | Location Spoofer License, © YK3D, all rights reserved (source-available; reuse needs written permission and credit). See [LICENSE](LICENSE) |
 | Browser version (`browser/`) and the `LocationSpooferBrowser.exe` build | GNU GPL v3 or later with additional attribution terms. See [browser/LICENSE](browser/LICENSE) and [browser/NOTICE](browser/NOTICE) |
 
 The licences below belong to the third-party components and are not changed by this project's licence.
@@ -45,6 +45,21 @@ The exe bundles a Python runtime and these packages, with their dependencies, vi
 | [PyInstaller](https://pyinstaller.org/) bootloader | Single-file exe | GPL-2.0 with an exception that allows bundling (the bootloader does not change the app's licence) |
 
 Each package's full licence text is included inside the exe's bundled package metadata. The complete source of the browser version is this repository's `browser/` folder; the exact dependency versions are pinned in `browser/requirements.txt` at the release's commit.
+
+## Website (`website/`)
+
+The showcase website bundles these components into the pages it serves. The versions are pinned in `website/package.json`.
+
+| Component | Use | Licence |
+|---|---|---|
+| [React](https://react.dev/) and React DOM | Page framework | MIT, © Meta Platforms, Inc. and affiliates |
+| [GSAP](https://gsap.com/) with ScrollTrigger and SplitText, [@gsap/react](https://github.com/greensock/react) | Scroll animations | GSAP Standard "no charge" License, © GreenSock (Webflow). See [gsap.com/standard-license](https://gsap.com/standard-license) |
+| [Lenis](https://github.com/darkroomengineering/lenis) | Smooth scrolling | MIT, © darkroom.engineering |
+| [MapLibre GL JS](https://maplibre.org/) | The demo map | BSD-3-Clause, © MapLibre contributors, © Mapbox |
+| [React Bits](https://reactbits.dev/) SplitText and DecryptedText (`website/src/components/reactbits`) | Headline and coordinate text effects | MIT + Commons Clause, © David Haz. See `website/src/components/reactbits/LICENSE.md` |
+| [IBM Plex Sans](https://github.com/IBM/plex) and [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) fonts, via Fontsource | Typography | SIL Open Font License 1.1 |
+
+The website's demo also uses OpenFreeMap and routing.openstreetmap.de (see below), and reads release versions from the GitHub API.
 
 ## Apple and Google material
 

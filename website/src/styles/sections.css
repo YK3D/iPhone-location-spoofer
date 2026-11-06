@@ -261,3 +261,4 @@ input[type="range"]::-moz-range-thumb { width: 12px; height: 12px; border-radius
 .rail-hud .u { margin-left: 4px; }
 .rail-hud .row { display: flex; justify-content: space-between; margin-top: 2px; color: var(--text-2); }
 .rail-hud .cap { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); text-transform: uppercase; letter-spacing: 0.06em; font-size: 9.5px; }
+.step a { color: var(--text); text-underline-offset: 3px; }
