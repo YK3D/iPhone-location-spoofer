@@ -50,6 +50,7 @@ Set `SPOOFER_DATA_DIR` to an empty folder first if you don't want the experiment
 | `ui/` | The interface both editions serve (HTML, CSS, JavaScript; no build step) |
 | `assets/icon/` | Icon artwork; `make_icons.py` regenerates every icon file from `source.jpg` |
 | `docs/screenshots/` | README screenshots; `capture.js` makes them |
+| `website/` | The showcase website with an in-browser demo (Vite + React, hosted on Vercel); see `website/README.md` |
 
 ## Before you open a pull request
 
