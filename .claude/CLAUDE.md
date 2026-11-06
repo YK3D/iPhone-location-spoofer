@@ -19,6 +19,7 @@
 - `browser/` is the Python edition (FastAPI); `standalone/` is the Rust edition (axum, native window). Backend behaviour must stay the same in both: port every API or engine change to the other edition, with tests.
 - `assets/icon/source.jpg` is the original icon artwork. Never edit it; `assets/icon/make_icons.py` regenerates every icon file from it.
 - `docs/screenshots/capture.js` makes the README screenshots with the default look (Graphite theme, dark OpenFreeMap map).
+- `website/` is the showcase site (Vite + React, deployed on Vercel, root directory `website`). `website/src/sim/engine.js` is a compact port of the speed engine for its demo: when the cornering or acceleration constants change in the app, update it too and run `cd website && npm test`. Pushes that only touch `website/` don't publish test builds.
 
 ## Checks before pushing
 

@@ -9,3 +9,4 @@ build/
 *.spec
 target/
 .DS_Store
+node_modules/
