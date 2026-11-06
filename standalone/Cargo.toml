@@ -3,7 +3,8 @@ name = "location-spoofer"
 version = "0.1.0"
 edition = "2021"
 description = "Standalone desktop app that simulates an iPhone's GPS location over USB"
-license = "MIT"
+license-file = "../LICENSE"
+authors = ["YK3D"]
 publish = false
 default-run = "location-spoofer"
 
@@ -33,6 +34,7 @@ rust-embed = { version = "8", features = ["include-exclude"] }
 mime_guess = "2"
 dirs = "6"
 sha2 = "0.10"
+ring = "0.17"
 hex = "0.4"
 plist = "1"
 tracing = "0.1"

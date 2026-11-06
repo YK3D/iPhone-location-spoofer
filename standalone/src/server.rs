@@ -4,7 +4,7 @@
 use crate::device::{DeviceManager, DriverKind, Via};
 use crate::player::{Devices, Player};
 use crate::profile::{self, Leg, ProfileSettings, Ramp, Timeline, Waypoint};
-use crate::{geo, gmaps_links, gpx, routing, store::Store, updater::Updater};
+use crate::{feature_tests::FeatureTests, geo, gmaps_links, gpx, offline::Offline, routing, store::Store, updater::Updater};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Multipart, Path, Query, State},
@@ -17,8 +17,11 @@ use rust_embed::RustEmbed;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Mutex as AsyncMutex;
+
+/// Set when this copy was started as a feature test (`--feature-test <pull request>`).
+pub static FEATURE_TEST: OnceLock<u64> = OnceLock::new();
 
 #[derive(RustEmbed)]
 #[folder = "../ui/"]
@@ -40,6 +43,8 @@ pub struct AppState {
     pub updater: Arc<Updater>,
     pub restart: tokio::sync::Notify,
     pub restart_requested: std::sync::atomic::AtomicBool,
+    pub offline: Arc<Offline>,
+    pub feature_tests: Arc<FeatureTests>,
 }
 
 pub type App = Arc<AppState>;
@@ -47,7 +52,10 @@ pub type App = Arc<AppState>;
 impl AppState {
     pub fn new(store: Store, updater: Updater) -> App {
         let devices: Devices = Arc::new(AsyncMutex::new(DeviceManager::default()));
+        let dir = store.dir();
         Arc::new(Self {
+            offline: Offline::new(&dir),
+            feature_tests: FeatureTests::new(&dir, crate::updater::REPO, Box::new(crate::feature_tests::launch_process)),
             player: Arc::new(Player::new(devices.clone())),
             devices,
             timelines: Mutex::new(VecDeque::new()),
@@ -137,6 +145,17 @@ pub fn router(app: App) -> Router {
         .route("/api/google/copyright", get(google_copyright))
         .route("/api/store", get(store_get).put(store_put))
         .route("/api/app/quit", post(app_quit))
+        .route("/ofm/{*path}", get(ofm))
+        .route("/api/offline", get(offline_status))
+        .route("/api/offline/estimate", post(offline_estimate))
+        .route("/api/offline/download", post(offline_download))
+        .route("/api/offline/cancel", post(offline_cancel))
+        .route("/api/offline/{id}", delete(offline_delete))
+        .route("/api/feature-tests", get(ft_list))
+        .route("/api/feature-tests/unlock", post(ft_unlock))
+        .route("/api/feature-tests/lock", post(ft_lock))
+        .route("/api/feature-tests/open", post(ft_open))
+        .route("/api/feature-tests/progress", get(ft_progress))
         .layer(DefaultBodyLimit::max(64 * 1024 * 1024))
         .layer(axum::middleware::from_fn(local_only))
         .with_state(app)
@@ -159,6 +178,96 @@ async fn local_only(req: axum::extract::Request, next: axum::middleware::Next) -
         return (StatusCode::FORBIDDEN, "forbidden").into_response();
     }
     next.run(req).await
+}
+
+// ---------------------------------------------------------------- offline maps
+/// OpenFreeMap through the local cache (the page rewrites its map requests to /ofm/...).
+async fn ofm(State(app): State<App>, uri: axum::http::Uri) -> Response {
+    let path = uri.path().strip_prefix("/ofm/").unwrap_or("").to_string();
+    let a = app.offline.proxy(&path).await;
+    Response::builder()
+        .status(a.status)
+        .header(header::CONTENT_TYPE, a.content_type)
+        .header(header::CACHE_CONTROL, "no-cache")
+        .body(Body::from(a.body))
+        .unwrap()
+}
+
+async fn offline_status(State(app): State<App>) -> R {
+    Ok(Json(app.offline.status()))
+}
+
+#[derive(Deserialize)]
+struct EstimateIn {
+    bounds: crate::offline::Bounds,
+    min_zoom: Option<u8>,
+    max_zoom: u8,
+}
+
+async fn offline_estimate(Json(b): Json<EstimateIn>) -> R {
+    Offline::estimate(b.bounds, b.min_zoom.unwrap_or(0), b.max_zoom).map(Json).map_err(bad)
+}
+
+async fn offline_download(State(app): State<App>, Json(b): Json<crate::offline::DownloadIn>) -> R {
+    app.offline.start(b).map(Json).map_err(bad)
+}
+
+async fn offline_cancel(State(app): State<App>) -> R {
+    app.offline.cancel();
+    Ok(Json(app.offline.status()))
+}
+
+async fn offline_delete(State(app): State<App>, Path(id): Path<String>) -> R {
+    let off = app.offline.clone();
+    tokio::task::spawn_blocking(move || off.delete_area(&id)).await.map_err(|e| ApiError(500, e.to_string()))?.map_err(|e| ApiError(404, e))?;
+    Ok(Json(app.offline.status()))
+}
+
+// ---------------------------------------------------------------- feature tests
+fn ft_error(e: String) -> ApiError {
+    let code = if e == "Wrong password." {
+        403
+    } else if e.starts_with("No feature-test builds") || e.starts_with("That feature test") {
+        404
+    } else if e.starts_with("Unlock") || e.starts_with("Enter") || e.starts_with("Feature-test builds are Windows") {
+        400
+    } else {
+        502
+    };
+    ApiError(code, e)
+}
+
+async fn ft_list(State(app): State<App>) -> R {
+    app.feature_tests.list().await.map(Json).map_err(ft_error)
+}
+
+#[derive(Deserialize)]
+struct UnlockIn {
+    password: String,
+    #[serde(default)]
+    remember: bool,
+}
+
+async fn ft_unlock(State(app): State<App>, Json(b): Json<UnlockIn>) -> R {
+    app.feature_tests.unlock(&b.password, b.remember).await.map(Json).map_err(ft_error)
+}
+
+async fn ft_progress(State(app): State<App>) -> R {
+    Ok(Json(app.feature_tests.progress()))
+}
+
+async fn ft_lock(State(app): State<App>) -> R {
+    app.feature_tests.lock();
+    Ok(Json(json!({"locked": true})))
+}
+
+#[derive(Deserialize)]
+struct FtOpenIn {
+    pr: u64,
+}
+
+async fn ft_open(State(app): State<App>, Json(b): Json<FtOpenIn>) -> R {
+    app.feature_tests.open_build(b.pr).await.map(Json).map_err(ft_error)
 }
 
 /// Lets a newer copy of the app close an older one that still holds the port.
@@ -198,6 +307,7 @@ async fn status(State(app): State<App>) -> R {
     Ok(Json(json!({
         "version": crate::updater::current_version(),
         "app": "standalone",
+        "feature_test": FEATURE_TEST.get(),
         "driver": d.kind.key(),
         "drivers": [{"key": "pmd3", "label": "Direct", "live": true}, {"key": "mock", "label": "Simulator (no iPhone)", "live": true}],
         "features": {"cli_driver": false, "tunnel_helper": false, "multi_device": true, "wifi": true},

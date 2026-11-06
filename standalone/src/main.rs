@@ -1,4 +1,5 @@
 //! Location Spoofer — standalone desktop app.
+//! Copyright (c) 2026 YK3D. All rights reserved. Licensed under the Location Spoofer License (LICENSE).
 //!
 //! A local HTTP server (axum) serves the UI and its JSON API on 127.0.0.1; a native window
 //! (WebView2 on Windows) shows it. With `--no-window` (or without the `gui` feature) the system
@@ -7,9 +8,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod device;
+mod feature_tests;
 mod geo;
 mod gmaps_links;
 mod gpx;
+mod offline;
 mod player;
 mod profile;
 mod routing;
@@ -29,12 +32,14 @@ struct Args {
     self_test: bool,
     version: bool,
     wait_pid: Option<u32>,
+    /// Started from Settings › Updates › Feature tests: the pull request it was built from.
+    feature_test: Option<u64>,
     raw: Vec<String>,
 }
 
 fn parse_args() -> Args {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    let mut a = Args { port: DEFAULT_PORT, no_window: false, no_update: false, self_test: false, version: false, wait_pid: None, raw: raw.clone() };
+    let mut a = Args { port: DEFAULT_PORT, no_window: false, no_update: false, self_test: false, version: false, wait_pid: None, feature_test: None, raw: raw.clone() };
     let mut it = raw.iter();
     while let Some(x) = it.next() {
         match x.as_str() {
@@ -44,6 +49,7 @@ fn parse_args() -> Args {
             "--self-test" => a.self_test = true,
             "--version" => a.version = true,
             "--wait-pid" => a.wait_pid = it.next().and_then(|v| v.parse().ok()),
+            "--feature-test" => a.feature_test = it.next().and_then(|v| v.parse().ok()),
             _ => {}
         }
     }
@@ -77,9 +83,18 @@ fn main() {
     }
     if let Some(pid) = args.wait_pid {
         wait_for_pid_exit(pid);
+        // Started by the updater: show the new version's icon on pinned taskbar buttons right away
+        // (the older copy that installed the update may not know how to).
+        if let Ok(exe) = std::env::current_exe() {
+            std::thread::spawn(move || updater::refresh_shell_icons(&exe));
+        }
+    }
+    if let Some(pr) = args.feature_test {
+        let _ = server::FEATURE_TEST.set(pr);
     }
 
-    let update_enabled = cfg!(windows) && !cfg!(feature = "store") && !cfg!(debug_assertions) && !args.no_update;
+    // A feature test never updates itself: it would turn into the regular app.
+    let update_enabled = cfg!(windows) && !cfg!(feature = "store") && !cfg!(debug_assertions) && !args.no_update && args.feature_test.is_none();
     let upd = updater::Updater::new(update_enabled);
     if update_enabled {
         match upd.swap_in_staged() {
@@ -122,7 +137,11 @@ fn main() {
     #[cfg(feature = "gui")]
     if !args.no_window {
         let restart = server_task.clone();
-        gui::run(url, restart, args.raw.clone(), rt);
+        let title = match args.feature_test {
+            Some(pr) => format!("Location Spoofer · feature test #{pr}"),
+            None => "Location Spoofer".to_string(),
+        };
+        gui::run(url, title, restart, args.raw.clone(), rt);
         return;
     }
     let _ = open::that(&url);
@@ -282,7 +301,7 @@ mod gui {
         }
     }
 
-    pub fn run(url: String, app: Option<crate::server::App>, raw_args: Vec<String>, rt: tokio::runtime::Runtime) {
+    pub fn run(url: String, title: String, app: Option<crate::server::App>, raw_args: Vec<String>, rt: tokio::runtime::Runtime) {
         let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
         let proxy = event_loop.create_proxy();
         if let Some(app) = app.clone() {
@@ -294,7 +313,7 @@ mod gui {
         }
         // Hidden until the page has loaded and painted with its theme (the page posts "ready").
         let window = WindowBuilder::new()
-            .with_title("Location Spoofer")
+            .with_title(title)
             .with_window_icon(window_icon())
             .with_inner_size(LogicalSize::new(1280.0, 820.0))
             .with_min_inner_size(LogicalSize::new(720.0, 520.0))

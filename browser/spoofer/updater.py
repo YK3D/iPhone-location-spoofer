@@ -202,6 +202,7 @@ class Updater:
         except OSError:
             pass
         log.info("Installed update %s", version)
+        refresh_shell_icons(self.exe)
         return True
 
     def relaunch(self, args: list[str]) -> None:
@@ -305,6 +306,30 @@ class Updater:
         while True:
             await self.check()
             await asyncio.sleep(CHECK_EVERY_S)
+
+
+def refresh_shell_icons(exe: Path) -> None:
+    """Make Windows show the updated exe's icon.
+
+    Windows keeps a program's icon in its icon cache, and pinned taskbar buttons and shortcuts show
+    that cached copy, so a new icon would not appear until the cache is rebuilt. Tell the shell
+    the file and the icons changed, and refresh the icon cache (best effort).
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        shcne_updateitem, shcne_assocchanged = 0x00002000, 0x08000000
+        shcnf_idlist, shcnf_pathw, shcnf_flushnowait = 0x0000, 0x0005, 0x3000
+        shell32 = ctypes.windll.shell32  # type: ignore[attr-defined]
+        shell32.SHChangeNotify(shcne_updateitem, shcnf_pathw | shcnf_flushnowait, ctypes.c_wchar_p(str(exe)), None)
+        shell32.SHChangeNotify(shcne_assocchanged, shcnf_idlist | shcnf_flushnowait, None, None)
+        tool = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "ie4uinit.exe"
+        if tool.exists():
+            subprocess.Popen([str(tool), "-show"], creationflags=0x08000000)  # CREATE_NO_WINDOW
+    except Exception as e:  # never let an icon refresh break an update
+        log.warning("icon refresh failed: %r", e)
 
 
 def _check_url(url: str) -> None:

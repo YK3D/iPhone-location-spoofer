@@ -1,6 +1,6 @@
 # Privacy Policy
 
-_Last updated: 1 November 2026_
+_Last updated: 5 November 2026_
 
 This policy covers both editions of Location Spoofer: the standalone app (`LocationSpooferStandalone.exe`) and the browser version (`LocationSpooferBrowser.exe` or run from source). Together they are called "the app".
 
@@ -19,6 +19,8 @@ This policy covers both editions of Location Spoofer: the standalone app (`Locat
 | Google Maps API key (only if you enter one) | The same `data.json` file | So the app can call Google on your behalf. It is never included in backup exports |
 | iPhone pairing record | Managed by Apple's device service (or the built-in service in experimental builds) | Needed for the iPhone to trust this computer |
 | Apple Developer Disk Image cache | `ddi` folder next to `data.json` | Avoids downloading it again |
+| Offline maps: downloaded map areas, and the map styles and fonts | `offline` folder next to `data.json` | So the map works without internet. Delete areas in Settings › Offline maps |
+| Developer access only: the remembered developer password and downloaded feature-test builds | `feature-tests` folder next to `data.json` | Only if the developer unlocks feature tests and ticks "Remember" |
 | Downloaded updates | Next to the app's `.exe` until installed | Self-update |
 
 You can delete all of it at any time by deleting those folders. Uninstalling the app (deleting the `.exe`) does not delete `data.json`.
@@ -29,7 +31,7 @@ The app sends requests **directly** to these services. No data passes through se
 
 | Service | When | What it receives | Policy |
 |---|---|---|---|
-| OpenFreeMap (`tiles.openfreemap.org`) | Showing the OpenFreeMap map (the default) | Map tile coordinates, IP address | [OpenFreeMap terms](https://openfreemap.org/tos/) |
+| OpenFreeMap (`tiles.openfreemap.org`) | Showing the OpenFreeMap map (the default), and downloading offline map areas | Map tile coordinates, IP address, the app's name and version | [OpenFreeMap terms](https://openfreemap.org/tos/) |
 | OpenStreetMap tile servers (`tile.openstreetmap.org`) | Showing the OpenStreetMap map | Map tile coordinates, IP address | [OSMF privacy policy](https://osmfoundation.org/wiki/Privacy_Policy) |
 | Esri World Imagery | Showing the Satellite map | Map tile coordinates, IP address | [Esri privacy](https://www.esri.com/en-us/privacy/overview) |
 | OpenTopoMap | Showing the Topographic map | Map tile coordinates, IP address | [OpenTopoMap](https://opentopomap.org/about) |
@@ -38,10 +40,10 @@ The app sends requests **directly** to these services. No data passes through se
 | Overpass API (`overpass-api.de`) | Only when "Use public speed limits" is turned on | OpenStreetMap node IDs along the route, IP address | [Overpass API](https://wiki.openstreetmap.org/wiki/Overpass_API) |
 | Google Maps Platform (Routes API, Map Tiles API) | Only if you add your own API key and choose Google routing | Route coordinates, map tile requests, your API key, IP address | [Google Privacy Policy](https://policies.google.com/privacy) |
 | Google short links (`maps.app.goo.gl`) | Only when you paste a short Google Maps link | The link, IP address | [Google Privacy Policy](https://policies.google.com/privacy) |
-| GitHub (`api.github.com`, `github.com`, `release-assets.githubusercontent.com`) | Update checks (at start-up and every few hours) and update downloads | Your IP address and app version (in the request) | [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) |
+| GitHub (`api.github.com`, `github.com`, `release-assets.githubusercontent.com`) | Update checks (at start-up and every few hours) and update downloads; for the developer only, encrypted feature-test builds after unlocking *Developer access* | Your IP address and app version (in the request) | [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) |
 | GitHub raw content (`raw.githubusercontent.com/doronz88/DeveloperDiskImage`) | Only when the iPhone has no Developer Disk Image mounted | The requested file path, IP address | [GitHub Privacy Statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement) |
 
-Straight-line and sea-lane routes, coordinate entry, GPX files and the simulator work **offline** and contact none of these services. Update checks can be turned off by starting the app with `--no-update`.
+Straight-line and sea-lane routes, coordinate entry, GPX files, the simulator and downloaded offline map areas work **offline** and contact none of these services. Update checks can be turned off by starting the app with `--no-update`.
 
 ## Your real location
 

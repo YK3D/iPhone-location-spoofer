@@ -1,0 +1,46 @@
+Location Spoofer, browser edition
+Copyright (c) 2026 YK3D
+
+The browser edition (this browser/ folder and the LocationSpooferBrowser.exe
+builds made from it) is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version, together with the additional terms below. The full license
+text is in the LICENSE file next to this notice.
+
+It is licensed under the GPL because it is distributed together with
+GPL-3.0-or-later libraries (pymobiledevice3 and others).
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+
+ADDITIONAL TERMS (GNU GPL version 3, section 7)
+
+These terms apply to the material in this folder that YK3D holds the
+copyright to. As section 7 of the GPL allows, everyone who conveys this
+material, modified or not, must follow them.
+
+1. Attribution (section 7(b)). Keep this notice and every copyright notice in
+   the source code. Any work that contains or is based on this material must
+   show the following credit, in its source code and wherever it displays
+   legal notices or credits to its users (for example an About screen, a
+   README or a project description):
+
+       Based on Location Spoofer by YK3D
+       https://github.com/YK3D/iPhone-location-spoofer
+
+2. No misrepresentation (section 7(c)). Modified versions must be clearly
+   marked as changed and must not be presented as the original Location
+   Spoofer or as made or endorsed by YK3D.
+
+3. Names and logos (section 7(e)). This license grants no right to use the
+   names "Location Spoofer" or "YK3D", or the app's icon, as a name, logo or
+   trademark for another product. The icon and artwork (assets/) are not
+   covered by the GPL: see the LICENSE file at the root of the repository.
+
+The shared interface (ui/) and the icon that the browser edition serves and
+includes are not part of this GPL-licensed program: they are separate works
+under the Location Spoofer License (the LICENSE file at the root of the
+repository).

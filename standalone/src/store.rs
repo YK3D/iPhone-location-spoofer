@@ -23,6 +23,11 @@ impl Store {
         Self { path: path.unwrap_or_else(|| data_dir().join("data.json")), lock: Mutex::new(()) }
     }
 
+    /// The folder that holds data.json (offline maps and feature tests live next to it).
+    pub fn dir(&self) -> PathBuf {
+        self.path.parent().map(PathBuf::from).unwrap_or_else(data_dir)
+    }
+
     pub fn load(&self) -> Value {
         let _g = self.lock.lock().unwrap();
         let mut v: Value = std::fs::read_to_string(&self.path)

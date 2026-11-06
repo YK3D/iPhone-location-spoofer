@@ -1,28 +1,125 @@
-MIT License
+Location Spoofer License
 
-Copyright (c) 2026 YK3D and Location Spoofer contributors
+Copyright (c) 2026 YK3D. All rights reserved.
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+This license applies to the Location Spoofer software in this repository:
+the standalone app (standalone/), the shared interface (ui/), the icon and
+artwork (assets/), the screenshots and documentation, and the release builds
+made from them (together, "the Software"). It does NOT apply to:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+  * the browser edition (browser/), which is licensed under the GNU General
+    Public License, version 3 or later, with additional terms: see
+    browser/LICENSE and browser/NOTICE;
+  * third-party components, which keep their own licenses: see
+    THIRD_PARTY_NOTICES.md.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The Software is source-available, not open source. Being able to read the
+source code does not give you permission to reuse it.
 
--------------------------------------------------------------------------------
-Scope: this MIT licence covers everything in this repository EXCEPT the
-browser/ folder. The browser version (browser/) is licensed under the GNU
-General Public License, version 3 or later — see browser/LICENSE — because it
-is distributed together with GPL-3.0 libraries (pymobiledevice3 and others).
-Third-party components keep their own licences; see THIRD_PARTY_NOTICES.md.
+1. WHAT YOU MAY DO
+
+   Subject to the conditions of this license, you may, free of charge:
+
+   a) download the official releases published on this repository's GitHub
+      Releases page, install them and use them on your own devices;
+   b) read the source code, and build and run it on your own devices for your
+      own personal use, including to try unreleased changes (for example the
+      feature-testing branch);
+   c) fork this repository on GitHub, as GitHub's Terms of Service allow, and
+      change your own copy, for the sole purpose of proposing those changes
+      back to this repository through pull requests;
+   d) link to this repository and its release pages.
+
+2. WHAT YOU MAY NOT DO WITHOUT PRIOR WRITTEN PERMISSION
+
+   Unless the copyright holder has given you written permission first, you
+   may not:
+
+   a) copy any part of the Software's source code, user interface, artwork or
+      documentation into another project, product, website or service;
+   b) distribute, publish, upload, mirror, sell, rent, lend or sublicense the
+      Software or any modified version of it, in source or compiled form,
+      except for a fork on GitHub as allowed in section 1(c);
+   c) publish or distribute a modified version, a translation, a port to
+      another programming language, or any other work based on the Software;
+   d) use the Software, or any part of it, in a commercial product or service,
+      or to offer location-simulation as a paid service;
+   e) remove, hide or change the copyright, license, credit or trademark
+      notices in the Software, or present the Software as your own work;
+   f) use the names "Location Spoofer" or "YK3D", or the app's icon, for
+      another product, or in a way that suggests that the copyright holder
+      endorses you or your work;
+   g) use the Software's source code, artwork or documentation as data to
+      train or fine-tune a machine-learning model.
+
+   To ask for permission, open an issue at
+   https://github.com/YK3D/iPhone-location-spoofer/issues or contact YK3D
+   through https://github.com/YK3D. Permission is only valid in writing from
+   the copyright holder, and only for what it explicitly states.
+
+3. CREDIT
+
+   Wherever you have permission to use, show, share or build on any part of
+   the Software, you must give clear credit, in a place where users of your
+   work will see it (for example the About screen, the README or the
+   description):
+
+       Based on Location Spoofer by YK3D
+       https://github.com/YK3D/iPhone-location-spoofer
+
+   and you must keep this license and every copyright notice with each copy.
+   Credit does not replace permission: section 2 applies in any case.
+
+4. CONTRIBUTIONS
+
+   If you submit a contribution (for example a pull request, a patch, a
+   suggestion in code, or artwork) to this repository, you confirm that you
+   have the right to submit it, and you grant YK3D a perpetual, worldwide,
+   non-exclusive, royalty-free, irrevocable license to use, copy, modify,
+   distribute, sublicense and relicense it as part of the Software or
+   otherwise. You keep the copyright in your contribution and will be
+   credited in the repository's history.
+
+5. EARLIER VERSIONS
+
+   Versions of the Software published before this license was adopted
+   (November 2026) were released under the MIT License. Copies of those
+   earlier versions that were obtained under the MIT License remain under it.
+   Every later version, and every change made after that date, is licensed
+   only under this license.
+
+6. TERMINATION
+
+   Your rights under this license end automatically, without notice, if you
+   break any of its terms. You must then stop using the Software and delete
+   every copy you have made of it, except copies you obtained under a
+   separate written permission that is still in force.
+
+7. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT.
+
+8. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE COPYRIGHT
+   HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE. Nothing in this license limits liability that
+   cannot be limited by law.
+
+9. GENERAL
+
+   All rights not expressly granted in this license are reserved by the
+   copyright holder. If a court finds part of this license unenforceable,
+   the rest of it remains in force. Using the Software is also subject to
+   the Terms of Use (TERMS.md).
+
+   The shared interface (ui/) and the icon are also included, unmodified, in
+   the official browser edition. They are separate works that the browser
+   edition's program serves to your web browser; including them there does
+   not place them under the GNU General Public License. You may pass on an
+   unmodified official browser edition build as the GNU General Public
+   License allows, with these files in it.
