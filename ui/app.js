@@ -363,6 +363,10 @@ const MapSwitcher = L.Control.extend({
     box.append(this._btn, this._panel);
     L.DomEvent.disableClickPropagation(box);
     L.DomEvent.disableScrollPropagation(box);
+    // Leaflet decides whether a click belongs to the map by walking up from the clicked element; a card
+    // re-renders the panel in its own click handler, so that element is already detached and the walk
+    // never reaches this box. Stopping the click here keeps it from also picking a point on the map.
+    L.DomEvent.on(box, "click", L.DomEvent.stopPropagation);
     this._onDoc = (e) => { if (!box.contains(e.target)) this.toggle(false); };
     this._onKey = (e) => { if (e.key === "Escape") { this.toggle(false); this._btn.focus(); } };
     m.on("layeradd", (e) => {
@@ -2888,12 +2892,12 @@ async function refreshGoogleStatus() {
 }
 
 // ------------------------------------------------------------------ first-run tutorial
-const REPO = "https://github.com/YK3D/iPhone-location-spoofer/blob/main";
+const SITE = "https://iphone-spoofer.vercel.app"; // the website hosts the Terms, Privacy Policy and licences
 const TUTORIAL = [
   { title: "Welcome", body: [
       "This app sets your iPhone's location from this computer over a USB cable: jump to any place, follow routes at realistic speeds, or replay GPX files.",
       "Use it only where it is allowed, for example testing your own apps. Games and dating, school or work apps often ban fake locations and can suspend accounts.",
-      ["By continuing you agree to the ", ["Terms of Use", `${REPO}/TERMS.md`], ". The ", ["Privacy Policy", `${REPO}/PRIVACY.md`], " explains which online map services the app contacts. Nothing is collected by the app's authors."],
+      ["By continuing you agree to the ", ["Terms of Use", `${SITE}/terms`], ". The ", ["Privacy Policy", `${SITE}/privacy`], " explains which online map services the app contacts. Nothing is collected by the app's authors."],
       "Want to look around first? Pick “Simulator (no iPhone)” as the connection and skip ahead." ], art: "welcome" },
   { title: "1 · Install Apple's device software", body: [
       ["Windows needs Apple's iPhone drivers. Install ", ["Apple Devices from the Microsoft Store", APPLE_DEVICES_URL], " (free, made by Apple). iTunes also works."],

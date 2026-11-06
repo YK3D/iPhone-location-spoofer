@@ -8,6 +8,7 @@ Test builds from the `dev` branch are marked as pre-releases.
 ## Unreleased (dev)
 
 ### New
+- **Website:** [iphone-spoofer.vercel.app](https://iphone-spoofer.vercel.app) shows what the app does, has the downloads, and lets you try a small version of it in your browser. The Terms of Use, Privacy Policy and licences now open there (setup guide and *Settings › About*).
 - **Offline maps:** *Settings › Offline maps* saves the area on screen (up to 3,000 map tiles, about a city, per download; as many areas as you like), so the map works without internet. Saved areas can be shown on the map or deleted.
 - **New map menu** (top right): picture previews of each map, the map theme (Dark, Light or Auto) and a shortcut to offline maps.
 - **Smooth trackpad zoom:** pinching or two-finger scrolling zooms smoothly to exactly where your fingers stop, instead of jumping in steps and flickering.
@@ -32,6 +33,7 @@ Test builds from the `dev` branch are marked as pre-releases.
 - A new app icon. The taskbar shows just the red location pin, so it stays clear at small sizes.
 
 ### Fixed
+- Choosing a map or map theme in the map menu also picked a point on the map underneath it (or added a checkpoint on the Route tab).
 - After an update, Windows kept showing the old icon on pinned taskbar buttons and shortcuts until the app was downloaded again. The app now asks Windows to refresh its icons when it installs an update and when the new version first starts.
 - With a checkpoint's right-click menu open, a left click on the map added a checkpoint. It now only closes the menu.
 - Dropdowns in Settings opened behind the Settings window.
