@@ -38,7 +38,7 @@ site when anything under `website/` or one of those files changes (`ignoreComman
 | `src/sim/routing.js` | Routes from the same public OSRM servers the app uses, at most one request per second |
 | `src/sim/Simulator.jsx` | The in-browser demo (MapLibre, OpenFreeMap tiles with the app's dark-map colours). Its code loads while the browser is idle; the map starts once the demo is on screen and scrolling has stopped |
 | `api/releases.js` | Latest stable release of each edition. An optional `GITHUB_TOKEN` environment variable raises GitHub's rate limit |
-| `public/media/` | Clips of the real app made by `scripts/record-clips.cjs` |
+| `public/media/` | Clips of the real app made by `scripts/record-clips.cjs`, and the showreel made by `scripts/showreel/` |
 | `scripts/make-contours.py` | Draws the topographic lines behind the hero (`src/assets/contours.svg`) |
 
 ## Clips
@@ -52,6 +52,24 @@ cd browser && SPOOFER_DATA_DIR=$(mktemp -d) python -m spoofer --port 8765 --no-b
 node website/scripts/record-clips.cjs                 # all clips; needs Playwright and ffmpeg
 ONLY=themes node website/scripts/record-clips.cjs     # just some of them
 ```
+
+## Showreel
+
+The video at the top of the page (`public/media/showreel.*`) is an edited tour of the real app:
+camera moves that zoom in on what the pointer does, title cards between the features, and the name at
+the end. It is made in two steps, both from source:
+
+```bash
+node website/scripts/showreel/record.cjs   # raw footage: starts the app itself (Python with the browser edition's packages)
+node website/scripts/showreel/edit.cjs     # cuts it together: showreel.webm, showreel.mp4, showreel-poster.webp
+```
+
+`record.cjs` captures the app one frame at a time at 3x scale, with the page's clock and the app
+server's clock (`app-server.py`, which runs the browser edition unchanged) both moving exactly 1/30 s
+per frame, so nothing stutters however slow the capture is. The shots are listed in
+`scripts/showreel/shots.cjs`; `SHEET=1 node website/scripts/showreel/edit.cjs` writes contact sheets
+instead of the videos, for checking an edit quickly. Both need Playwright and ffmpeg, and the recording
+needs an internet connection (map tiles, routes and place search).
 
 ## Hosting
 
