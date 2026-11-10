@@ -10,6 +10,7 @@ Teleport anywhere, drive routes that follow real roads at realistic speeds (with
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true"><b>⬇ Download the app (Standalone)</b></a> ·
   <a href="https://github.com/YK3D/iPhone-location-spoofer/releases?q=browser&expanded=true">Browser edition</a> ·
   <a href="#getting-started">Getting started</a> ·
+  <a href="#features">Features</a> ·
   <a href="https://apps.microsoft.com/detail/9np83lwlpz9k">Apple Devices (required)</a> ·
   <a href="PRIVACY.md">Privacy</a> ·
   <a href="TERMS.md">Terms</a>
@@ -20,7 +21,125 @@ Teleport anywhere, drive routes that follow real roads at realistic speeds (with
 
 > **Use it responsibly.** Location simulation is meant for testing apps, demos and privacy. Many games, dating, banking, school, work and delivery apps forbid fake locations and may suspend your account. Apps can also detect simulation or use Wi-Fi, IP address and motion sensors, which this tool does not change. See the [Terms of Use](TERMS.md).
 
+## Contents
+
+[Which download](#which-download-should-i-use) · [Getting started](#getting-started) · [Features](#features) · [Screenshots](#screenshots) · [Updates](#updates-and-test-builds) · [Google Maps](#optional-google-maps) · [Privacy](#privacy) · [Licence](#licence)
+
+## Which download should I use?
+
+Most people should use the **standalone app**. The browser edition exists for iPhones on iOS 17.0–17.3.
+
+| | **Standalone app** (recommended) | Browser edition |
+|---|---|---|
+| Download | [`LocationSpooferStandalone.exe`](https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true) | [`LocationSpooferBrowser.exe`](https://github.com/YK3D/iPhone-location-spoofer/releases?q=browser&expanded=true) |
+| Window | Its own app window | Opens in your web browser, plus a console window |
+| Size and start-up | Under 20 MB, starts instantly | About 80 MB, 10–20 s to start |
+| iOS 17.4 and newer, iOS 16 and older | ✅ | ✅ |
+| iOS 17.0–17.3 | ❌ | ✅ (needs administrator permission once per session) |
+
+Both have the same look and features, and both update themselves.
+
+## Getting started
+
+1. **Install Apple's iPhone software.** Get [**Apple Devices** from the Microsoft Store](https://apps.microsoft.com/detail/9np83lwlpz9k) (free, made by Apple; iTunes also works). It lets Windows talk to an iPhone. You don't need to keep its window open.
+2. **Download** the [standalone app](https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true). Save `LocationSpooferStandalone.exe` in a folder you own, such as Desktop or Documents, so it can update itself.
+3. **Run it.** Windows may show "Windows protected your PC" because the app is not code-signed yet. Choose **More info → Run anyway**.
+4. **Follow the setup guide** that opens on first run:
+   1. Plug in the iPhone, unlock it and tap **Trust**.
+   2. Press **Reveal Developer Mode**.
+   3. On the iPhone, turn on *Settings › Privacy & Security › Developer Mode* and restart it.
+   4. Press **Connect**.
+5. **Pick a place and press Teleport here**, or build a route and press **Play**. Press **Stop spoofing** when you're done.
+
+<details>
+<summary><b>Requirements</b></summary>
+
+* Windows 10 or 11 (64-bit) with the Microsoft Edge WebView2 Runtime, which is built into Windows 11 and installed on up-to-date Windows 10.
+* An iPhone or iPad with Developer Mode.
+* A USB cable.
+* An internet connection for maps and road routing.
+
+</details>
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+| Message | What to do |
+|---|---|
+| "Cannot reach the Apple device service" | Install [Apple Devices](https://apps.microsoft.com/detail/9np83lwlpz9k) (or iTunes), then reconnect the cable |
+| "Tap Trust on the iPhone" | Unlock the phone, tap Trust and enter the passcode |
+| "Developer Mode is off" | Device tools › Reveal Developer Mode, then turn it on in Settings on the iPhone |
+| Location doesn't change in an app | Check Apple Maps first, then fully close and reopen the app |
+| A speedometer app on the iPhone shows 0, or the heading arrow doesn't turn | Apple's location simulation only carries a position, so iOS reports no speed or course for it. Apps that work out speed from movement (navigation apps, most games) are fine. The app's own map shows the simulated speed and heading |
+| "My real location" says Windows blocked it | Turn on *Settings › Privacy & security › Location* and "Let desktop apps access your location" (the message has a button for it) |
+| Location stays wrong after you finish | Press **Stop spoofing**, or restart the iPhone |
+| The app shows an older version number | An older copy is still running in the background. Close every Location Spoofer window, end any **location-spoofer** or **LocationSpooferStandalone** task in Task Manager, then open the new file |
+| Something else | [Open an issue](https://github.com/YK3D/iPhone-location-spoofer/issues/new) and describe what happened, with the app's version (*Settings › About*) |
+
+</details>
+
+## Features
+
+<details>
+<summary><b>Map and places</b></summary>
+
+* **Map:** a sharp map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps. The map button in the top right corner switches maps and the map theme (dark, light, or matching the app). Click to pick a point; right-click to jump there instantly. Pinch or scroll on a trackpad to zoom smoothly.
+* **Offline maps:** save the area on screen (about a city per download) in *Settings › Offline maps*, and the map keeps working without internet.
+* **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
+* **Stop spoofing:** one click returns the iPhone to its real GPS and shows your computer's real location on the map.
+
+</details>
+
+<details>
+<summary><b>Building routes</b></summary>
+
+* Add checkpoints on the map, then drag them on the map or in the list to move and reorder them.
+* Drag the route line to add a checkpoint there (the route rebuilds itself), double-click a checkpoint to delete it, or right-click it for **Delete**, **Insert after**, **Set wait** and **Make start**.
+* A checkpoint can **hold until you press Continue** (or **N**), for example to wait at a door until your test is ready.
+* Each leg follows roads, cycle paths, footpaths, sea lanes or a straight line, routed by OpenStreetMap or by Google with your own API key.
+* Ask for up to three alternative routes, labelled on the map with their extra time, and pick one in the list or on the map.
+* The Build route button shows each step as it happens (routing each leg, speed limits, turns, ETA) and how far along it is; Cancel (or Esc) stops it, and changing the route or its settings cancels it by itself.
+* The route line is outlined so it stands out from the roads, and coloured by speed in a smooth gradient, with a speed chart.
+* Hover a checkpoint in the list to highlight it on the map.
+
+</details>
+
+<details>
+<summary><b>Speed and driving realism</b></summary>
+
+* Set a speed per leg, an exact speed at chosen checkpoints, and wait times; acceleration and braking change speed smoothly.
+* **Roundabouts:** always driven at a normal roundabout speed for their size (about 20–40 km/h by car), whatever the road's own speed.
+* **Road-aware driving (experimental):**
+  * follows each road's typical speed, and optionally public speed limits (not recommended: the public service is slow and often incomplete);
+  * takes every bend at the speed its radius allows for the vehicle (cars, bikes, walkers and boats differ), and slows on private or gated roads;
+  * aims for the same trip time (ETA) as Google Maps or OpenStreetMap, shown side by side.
+
+</details>
+
+<details>
+<summary><b>GPX, playback and joystick</b></summary>
+
+* **GPX files** (a common file format for recorded trips): drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes can be exported as GPX.
+* **Playback:** play, pause, seek, 0.25×–30× speed, loop or back-and-forth with an optional number of laps, optional GPS jitter, and a live speed and heading display on the map.
+* **Joystick:** walk or drive live with W A S D, the arrow keys or the on-screen pad.
+
+</details>
+
+<details>
+<summary><b>Comfort and customisation</b></summary>
+
+* 17 colour themes (Graphite by default) and a dark or light map.
+* Folding sections, and a side menu you can resize or hide.
+* Single-key keyboard shortcuts that you can change (press **H** to see them).
+* A setup guide on first run, and help icons that explain every tool.
+* Favourites, saved routes, and backup or restore.
+
+</details>
+
 ## Screenshots
+
+<details>
+<summary><b>Show screenshots</b></summary>
 
 <table>
   <tr>
@@ -56,91 +175,23 @@ Teleport anywhere, drive routes that follow real roads at realistic speeds (with
 
 The screenshots are made by [`docs/screenshots/capture.js`](docs/screenshots/capture.js) with the default look (Graphite theme, dark OpenFreeMap map).
 
-## Which download should I use?
-
-Most people should use the **standalone app**. The browser edition exists for iPhones on iOS 17.0–17.3.
-
-| | **Standalone app** (recommended) | Browser edition |
-|---|---|---|
-| Download | [`LocationSpooferStandalone.exe`](https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true) | [`LocationSpooferBrowser.exe`](https://github.com/YK3D/iPhone-location-spoofer/releases?q=browser&expanded=true) |
-| Window | Its own app window | Opens in your web browser, plus a console window |
-| Size and start-up | Under 20 MB, starts instantly | About 80 MB, 10–20 s to start |
-| iOS 17.4 and newer, iOS 16 and older | ✅ | ✅ |
-| iOS 17.0–17.3 | ❌ | ✅ (needs administrator permission once per session) |
-
-Both have the same look and features, and both update themselves.
-
-## Features
-
-* **Map:** a sharp map with a true dark style (OpenFreeMap), plus OpenStreetMap, satellite and topographic maps. The map button in the top right corner switches maps and the map theme (dark, light, or matching the app). Click to pick a point; right-click to jump there instantly. Pinch or scroll on a trackpad to zoom smoothly.
-* **Offline maps:** save the area on screen (about a city per download) in *Settings › Offline maps*, and the map keeps working without internet.
-* **Find places:** search by name, paste coordinates (decimal or 40°42'46"N), or paste any **Google Maps link**, including `maps.app.goo.gl` short links and directions links with several stops.
-* **Routes:**
-  * add checkpoints on the map, then drag them on the map or in the list to move and reorder them;
-  * drag the route line to add a checkpoint there (the route rebuilds itself), double-click a checkpoint to delete it, or right-click it for **Delete**, **Insert after**, **Set wait** and **Make start**;
-  * a checkpoint can **hold until you press Continue** (or **N**), for example to wait at a door until your test is ready;
-  * each leg follows roads, cycle paths, footpaths, sea lanes or a straight line, routed by OpenStreetMap or by Google with your own API key;
-  * set a speed per leg, an exact speed at chosen checkpoints, and wait times;
-  * acceleration and braking change speed smoothly;
-  * ask for up to three alternative routes, labelled on the map with their extra time, and pick one in the list or on the map;
-  * the Build route button shows each step as it happens (routing each leg, speed limits, turns, ETA) and how far along it is; Cancel (or Esc) stops it, and changing the route or its settings cancels it by itself;
-  * the route line is outlined so it stands out from the roads, and coloured by speed in a smooth gradient, with a speed chart;
-  * hover a checkpoint in the list to highlight it on the map.
-* **Roundabouts:** always driven at a normal roundabout speed for their size (about 20–40 km/h by car), whatever the road's own speed.
-* **Road-aware driving (experimental):**
-  * follows each road's typical speed, and optionally public speed limits (not recommended: the public service is slow and often incomplete);
-  * takes every bend at the speed its radius allows for the vehicle (cars, bikes, walkers and boats differ), and slows on private or gated roads;
-  * aims for the same trip time (ETA) as Google Maps or OpenStreetMap, shown side by side.
-* **GPX files** (a common file format for recorded trips): drop a file in to replay it with its own timing, re-time it, reverse it, or edit it as checkpoints. Routes can be exported as GPX.
-* **Playback:** play, pause, seek, 0.25×–30× speed, loop or back-and-forth with an optional number of laps, optional GPS jitter, and a live speed and heading display on the map.
-* **Joystick:** walk or drive live with W A S D, the arrow keys or the on-screen pad.
-* **Stop spoofing:** one click returns the iPhone to its real GPS and shows your computer's real location on the map.
-* **Made to be comfortable:**
-  * 17 colour themes (Graphite by default) and a dark or light map;
-  * folding sections, and a side menu you can resize or hide;
-  * single-key keyboard shortcuts that you can change (press **H** to see them);
-  * a setup guide on first run, and help icons that explain every tool;
-  * favourites, saved routes, and backup or restore.
-
-## Getting started
-
-1. **Install Apple's iPhone software.** Get [**Apple Devices** from the Microsoft Store](https://apps.microsoft.com/detail/9np83lwlpz9k) (free, made by Apple; iTunes also works). It lets Windows talk to an iPhone. You don't need to keep its window open.
-2. **Download** the [standalone app](https://github.com/YK3D/iPhone-location-spoofer/releases?q=standalone&expanded=true). Save `LocationSpooferStandalone.exe` in a folder you own, such as Desktop or Documents, so it can update itself.
-3. **Run it.** Windows may show "Windows protected your PC" because the app is not code-signed yet. Choose **More info → Run anyway**.
-4. **Follow the setup guide** that opens on first run:
-   1. Plug in the iPhone, unlock it and tap **Trust**.
-   2. Press **Reveal Developer Mode**.
-   3. On the iPhone, turn on *Settings › Privacy & Security › Developer Mode* and restart it.
-   4. Press **Connect**.
-5. **Pick a place and press Teleport here**, or build a route and press **Play**. Press **Stop spoofing** when you're done.
-
-**Requirements:**
-* Windows 10 or 11 (64-bit) with the Microsoft Edge WebView2 Runtime, which is built into Windows 11 and installed on up-to-date Windows 10.
-* An iPhone or iPad with Developer Mode.
-* A USB cable.
-* An internet connection for maps and road routing.
-
-### Troubleshooting
-
-| Message | What to do |
-|---|---|
-| "Cannot reach the Apple device service" | Install [Apple Devices](https://apps.microsoft.com/detail/9np83lwlpz9k) (or iTunes), then reconnect the cable |
-| "Tap Trust on the iPhone" | Unlock the phone, tap Trust and enter the passcode |
-| "Developer Mode is off" | Device tools › Reveal Developer Mode, then turn it on in Settings on the iPhone |
-| Location doesn't change in an app | Check Apple Maps first, then fully close and reopen the app |
-| A speedometer app on the iPhone shows 0, or the heading arrow doesn't turn | Apple's location simulation only carries a position, so iOS reports no speed or course for it. Apps that work out speed from movement (navigation apps, most games) are fine. The app's own map shows the simulated speed and heading |
-| "My real location" says Windows blocked it | Turn on *Settings › Privacy & security › Location* and "Let desktop apps access your location" (the message has a button for it) |
-| Location stays wrong after you finish | Press **Stop spoofing**, or restart the iPhone |
-| The app shows an older version number | An older copy is still running in the background. Close every Location Spoofer window, end any **location-spoofer** or **LocationSpooferStandalone** task in Task Manager, then open the new file |
-| Something else | [Open an issue](https://github.com/YK3D/iPhone-location-spoofer/issues/new) and describe what happened, with the app's version (*Settings › About*) |
+</details>
 
 ## Updates and test builds
+
+<details>
+<summary><b>How updates work</b></summary>
 
 The app checks for updates when it starts and every few hours. It downloads them in the background, checks that the download is intact and installs them when you press **Restart now**, or the next time you open the app.
 
 Want new features early? In **⚙ Settings › Updates** you can switch to **Test builds**. They may contain bugs; switch back to *Stable releases* at any time.
 
+</details>
+
 ## Optional: Google Maps
+
+<details>
+<summary><b>Use Google for routing</b></summary>
 
 Routes can come from Google Maps if you add your own API key in **⚙ Settings › Google Maps**:
 
@@ -149,6 +200,8 @@ Routes can come from Google Maps if you add your own API key in **⚙ Settings �
 3. Restrict the key to those two APIs.
 
 Google bills per request after its free monthly allowance. As Google's terms require, Google routes are shown on Google's map and cannot be exported as GPX. Without a key, routing uses free OpenStreetMap services, and Google Maps links still work.
+
+</details>
 
 ## Privacy
 
