@@ -104,7 +104,12 @@ export default function Hero() {
         </div>
         <div className="hero-visual">
           <AppWindow className="hero-window">
-            <Clip name="route-build" startDelay={900} preload="metadata" label="The app building a car route across central London, with three alternative routes labelled by their extra time" />
+            <Clip
+              name="showreel"
+              startDelay={900}
+              preload="metadata"
+              label="A quick tour of the app: three checkpoints placed in London, reordered and built into a car route; the route played back with the live speed and heading; a search for the Eiffel Tower and a jump there; driving with the joystick; map styles and colour themes"
+            />
           </AppWindow>
           <DeviceCard />
         </div>

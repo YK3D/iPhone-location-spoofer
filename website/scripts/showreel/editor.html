@@ -1,0 +1,202 @@
+<!doctype html>
+<!-- The showreel's renderer, driven frame by frame by edit.cjs: footage with camera moves and motion
+     blur on a canvas, the pointer, and the title cards as styled text on top. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "Plex"; font-weight: 100 700; src: url("/font/ibm-plex-sans-latin-wght-normal.woff2") format("woff2"); }
+  html, body { margin: 0; width: 1920px; height: 1200px; overflow: hidden; background: #0c0d0f; }
+  body { position: relative; font-family: "Plex", sans-serif; color: #f3f4f6; -webkit-font-smoothing: antialiased; }
+  #bg { position: absolute; inset: 0; background:
+    radial-gradient(ellipse 46% 40% at 50% 54%, rgba(16, 185, 129, var(--glow, 0.16)), transparent 70%),
+    radial-gradient(ellipse 120% 90% at 50% 50%, #131417 0%, #0b0c0e 70%); }
+  canvas { position: absolute; inset: 0; }
+  #vignette { position: absolute; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(ellipse 80% 75% at 50% 50%, transparent 55%, rgba(0, 0, 0, 0.55) 100%); }
+  #card { position: absolute; inset: 0; display: grid; place-items: center; }
+  .line { display: flex; align-items: baseline; justify-content: center; gap: 0.32em; font-size: 74px;
+    font-weight: 520; letter-spacing: -0.02em; white-space: nowrap; }
+  .line + .line { margin-top: 10px; }
+  .w { display: inline-block; will-change: transform, filter, opacity; }
+  .w.accent { color: #34d399; }
+  .w.small { font-size: 0.5em; }
+  #logo { position: absolute; inset: 0; display: grid; place-items: center; }
+  #logo[hidden] { display: none; }
+  .lockup { display: flex; align-items: center; }
+  .lockup img { width: 176px; height: 176px; filter: drop-shadow(0 0 36px rgba(16, 185, 129, 0.55)); }
+  .wordmark { overflow: hidden; }
+  .wordmark span { display: inline-block; white-space: nowrap; font-size: 88px; font-weight: 600; letter-spacing: -0.035em; padding: 0 6px 0 18px; }
+  .tagline { position: absolute; left: 0; right: 0; top: calc(50% + 128px); text-align: center; font-size: 34px;
+    font-weight: 450; color: #b9bec6; letter-spacing: 0.01em; }
+  .tagline b { color: #34d399; font-weight: 550; }
+</style>
+</head>
+<body>
+<div id="bg"></div>
+<canvas id="cv" width="1920" height="1200"></canvas>
+<div id="vignette"></div>
+<div id="card"></div>
+<div id="logo" hidden>
+  <div class="lockup">
+    <img src="/icon.png" alt="">
+    <div class="wordmark"><span>Location Spoofer</span></div>
+  </div>
+  <div class="tagline"></div>
+</div>
+<script>
+const W = 1920, H = 1200;
+const cv = document.getElementById("cv");
+const ctx = cv.getContext("2d");
+const acc = new OffscreenCanvas(W, H);
+const actx = acc.getContext("2d");
+for (const c of [ctx, actx]) { c.imageSmoothingEnabled = true; c.imageSmoothingQuality = "high"; }
+
+// decoded frames, newest last (a frame is ~37 MB decoded, so keep only a few)
+const cache = new Map();
+function frame(url) {
+  if (cache.has(url)) { const p = cache.get(url); cache.delete(url); cache.set(url, p); return p; }
+  const p = fetch(url).then((r) => r.blob()).then((b) => createImageBitmap(b));
+  cache.set(url, p);
+  while (cache.size > 6) { const [k, old] = cache.entries().next().value; cache.delete(k); old.then((b) => b.close()); }
+  return p;
+}
+
+function drawPointer(c, p, m) {
+  // the earlier recordings' round pointer: a white dot with a thin dark edge and a soft shadow
+  const [x, y] = [m[0] * p.x + m[2] * p.y + m[4], m[1] * p.x + m[3] * p.y + m[5]];
+  c.save();
+  c.setTransform(1, 0, 0, 1, 0, 0);
+  for (const ring of p.rings || []) {
+    c.globalAlpha = ring.a;
+    c.lineWidth = 3;
+    c.strokeStyle = "rgba(255,255,255,0.9)";
+    c.beginPath(); c.arc(x, y, ring.r, 0, Math.PI * 2); c.stroke();
+  }
+  c.globalAlpha = 1;
+  c.shadowColor = "rgba(0,0,0,0.38)"; c.shadowBlur = 12; c.shadowOffsetY = 3;
+  c.fillStyle = "rgba(255,255,255,0.94)";
+  c.beginPath(); c.arc(x, y, p.r, 0, Math.PI * 2); c.fill();
+  c.shadowColor = "transparent";
+  c.lineWidth = 2.2; c.strokeStyle = "rgba(0,0,0,0.55)";
+  c.beginPath(); c.arc(x, y, p.r + 1.1, 0, Math.PI * 2); c.stroke();
+  c.restore();
+}
+
+// A footage layer: the same frame drawn once per camera position across the shutter, averaged
+// (each new sample is laid over the running mean with 1/(k+1) opacity), so fast camera moves blur.
+async function drawFootage(L) {
+  const bmp = await frame(L.url);
+  actx.setTransform(1, 0, 0, 1, 0, 0);
+  actx.globalAlpha = 1;
+  actx.fillStyle = "#0c0d0f";
+  actx.fillRect(0, 0, W, H);
+  L.samples.forEach((m, k) => {
+    const tmp = k === 0 ? actx : sampleCtx;
+    if (k > 0) { sampleCtx.setTransform(1, 0, 0, 1, 0, 0); sampleCtx.fillStyle = "#0c0d0f"; sampleCtx.fillRect(0, 0, W, H); }
+    tmp.setTransform(m[0], m[1], m[2], m[3], m[4], m[5]);
+    tmp.drawImage(bmp, 0, 0);
+    if (L.pointer) drawPointer(tmp, L.pointer, L.ptMats[k]);
+    if (k > 0) {
+      actx.setTransform(1, 0, 0, 1, 0, 0);
+      actx.globalAlpha = 1 / (k + 1);
+      actx.drawImage(sample, 0, 0);
+      actx.globalAlpha = 1;
+    }
+  });
+  ctx.save();
+  ctx.globalAlpha = L.alpha;
+  ctx.filter = L.blur > 0.05 ? `blur(${L.blur.toFixed(2)}px) brightness(${L.bright})` : `brightness(${L.bright})`;
+  ctx.drawImage(acc, 0, 0);
+  ctx.restore();
+}
+const sample = new OffscreenCanvas(W, H);
+const sampleCtx = sample.getContext("2d");
+sampleCtx.imageSmoothingEnabled = true; sampleCtx.imageSmoothingQuality = "high";
+
+// ---- title cards: each word comes in blurred and spaced out, then settles; the card leaves blurred
+const ease = { out: (x) => 1 - Math.pow(1 - x, 4), inOut: (x) => (x < 0.5 ? 8 * x ** 4 : 1 - (-2 * x + 2) ** 4 / 2),
+  back: (x) => { const c1 = 1.5, c3 = c1 + 1; return 1 + c3 * (x - 1) ** 3 + c1 * (x - 1) ** 2; } };
+const clamp01 = (x) => Math.max(0, Math.min(1, x));
+let builtCard = null;
+function renderCard(card) {
+  const root = document.getElementById("card");
+  if (!card) { if (builtCard) { root.replaceChildren(); builtCard = null; } return; }
+  if (builtCard !== card.id) {
+    root.replaceChildren();
+    const box = document.createElement("div");
+    for (const line of card.lines) {
+      const l = document.createElement("div");
+      l.className = "line";
+      for (const w of line) {
+        const s = document.createElement("span");
+        s.className = "w" + (w.accent ? " accent" : "");
+        s.textContent = w.text;
+        l.append(s);
+      }
+      box.append(l);
+    }
+    root.append(box);
+    builtCard = card.id;
+  }
+  const spans = root.querySelectorAll(".w");
+  const words = card.lines.flat();
+  const out = clamp01((card.t - (card.dur - card.outMs)) / card.outMs);
+  words.forEach((w, i) => {
+    const k = ease.out(clamp01((card.t - w.at) / 520));
+    const o = ease.inOut(out);
+    const s = spans[i];
+    s.style.opacity = (k * (1 - o)).toFixed(3);
+    s.style.filter = `blur(${((1 - k) * 14 + o * 12).toFixed(2)}px)`;
+    s.style.letterSpacing = `${((1 - k) * 0.42).toFixed(3)}em`;
+    s.style.transform = `translateY(${((1 - k) * 18 - o * 10).toFixed(2)}px) scale(${(1 + o * 0.05).toFixed(3)})`;
+  });
+}
+
+// ---- the closing logo: the icon pops in, then the name slides out from behind it
+function renderLogo(L) {
+  const root = document.getElementById("logo");
+  root.hidden = !L;
+  if (!L) return;
+  const t = L.t;
+  const img = root.querySelector("img"), wm = root.querySelector(".wordmark"), span = wm.querySelector("span");
+  const tag = root.querySelector(".tagline");
+  if (!tag.innerHTML) tag.innerHTML = L.tagline;
+  const pop = clamp01(t / 520);
+  img.style.opacity = clamp01(t / 220).toFixed(3);
+  img.style.transform = `scale(${(0.55 + 0.45 * ease.back(pop)).toFixed(4)})`;
+  const slide = ease.inOut(clamp01((t - 520) / 700));
+  const full = L.wordWidth;
+  wm.style.width = `${(full * slide).toFixed(1)}px`;
+  span.style.transform = `translateX(${(-(1 - slide) * 60).toFixed(1)}px)`;
+  span.style.opacity = slide.toFixed(3);
+  const tg = ease.out(clamp01((t - 1150) / 600));
+  tag.style.opacity = tg.toFixed(3);
+  tag.style.filter = `blur(${((1 - tg) * 8).toFixed(2)}px)`;
+  tag.style.transform = `translateY(${((1 - tg) * 14).toFixed(1)}px)`;
+  const out = ease.inOut(clamp01((t - (L.dur - 600)) / 600));
+  root.style.opacity = (1 - out).toFixed(3);
+  root.style.filter = `blur(${(out * 10).toFixed(2)}px)`;
+}
+
+window.render = async (f) => {
+  document.getElementById("bg").style.setProperty("--glow", f.glow.toFixed(3));
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  for (const L of f.layers) await drawFootage(L);
+  document.getElementById("vignette").style.opacity = f.vignette.toFixed(3);
+  renderCard(f.card);
+  renderLogo(f.logo);
+  await new Promise((r) => requestAnimationFrame(() => r()));
+};
+window.wordWidth = () => {
+  const root = document.getElementById("logo");
+  root.hidden = false;
+  const w = root.querySelector(".wordmark span").getBoundingClientRect().width;
+  root.hidden = true;
+  return w;
+};
+window.ready = async () => { await document.fonts.load('520 74px "Plex"'); await document.fonts.ready; await document.querySelector("img").decode(); };
+</script>
+</body>
+</html>
