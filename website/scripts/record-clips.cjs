@@ -56,25 +56,26 @@ async function mapIdle(page) {
 
 // ---------- the pointer ----------
 const CURSOR_CSS = `
-#rec-cursor { position: fixed; z-index: 2147483647; left: 0; top: 0; width: 22px; height: 28px; pointer-events: none;
-  transform-origin: 3px 2px; transition: transform .07s ease-in; filter: drop-shadow(0 2px 3px rgba(0,0,0,.45)); }
-#rec-cursor.down { transform: scale(.8); }
-#rec-cursor.up { transform: scale(1); transition: transform .32s cubic-bezier(.34,1.9,.6,1); }
+#rec-cursor { position: fixed; z-index: 2147483647; left: 0; top: 0; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+  border-radius: 50%; pointer-events: none; background: rgba(255,255,255,.94);
+  box-shadow: 0 0 0 1.5px rgba(0,0,0,.55), 0 3px 10px rgba(0,0,0,.38);
+  transition: transform .09s cubic-bezier(.4,0,.6,1); }
+#rec-cursor.down { transform: scale(.74); }
+#rec-cursor.up { transform: scale(1); transition: transform .42s cubic-bezier(.3,1.75,.55,1); }
 #rec-ring { position: fixed; z-index: 2147483646; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%;
   border: 2px solid rgba(255,255,255,.75); pointer-events: none; opacity: 0; transform: scale(.4); }
-#rec-ring.go { animation: rec-ring .38s ease-out; }
-@keyframes rec-ring { from { opacity: .9; transform: scale(.35); } to { opacity: 0; transform: scale(1.15); } }`;
+#rec-ring.go { animation: rec-ring .45s ease-out; }
+@keyframes rec-ring { from { opacity: .9; transform: scale(.35); } to { opacity: 0; transform: scale(1.2); } }`;
 
 async function addCursor(page) {
   await page.addStyleTag({ content: CURSOR_CSS });
   await page.evaluate(() => {
     const c = document.createElement("div");
     c.id = "rec-cursor";
-    c.innerHTML = '<svg viewBox="0 0 22 28" width="22" height="28"><path d="M2 2v20.5l5.2-5 3.4 8 3.6-1.6-3.4-7.8H17L2 2z" fill="#fff" stroke="#111" stroke-width="1.6" stroke-linejoin="round"/></svg>';
     const ring = document.createElement("div");
     ring.id = "rec-ring";
     document.body.append(ring, c);
-    addEventListener("mousemove", (e) => { c.style.left = `${e.clientX - 2}px`; c.style.top = `${e.clientY - 2}px`; }, true);
+    addEventListener("mousemove", (e) => { c.style.left = `${e.clientX}px`; c.style.top = `${e.clientY}px`; }, true);
     addEventListener("mousedown", (e) => {
       c.classList.remove("up"); c.classList.add("down");
       ring.style.left = `${e.clientX}px`; ring.style.top = `${e.clientY}px`;
@@ -85,17 +86,19 @@ async function addCursor(page) {
 }
 
 let pointer = { x: VIEW.width - 160, y: 120 };
-// Speed ramp: quintic ease in-out over a duration that grows with the distance, along a slight arc.
-async function moveTo(page, to, { min = 260, max = 620 } = {}) {
+// A gentle speed ramp (sine-blended cubic ease in-out) over a duration that grows with the distance,
+// along a slight arc, in small steps so the dot glides rather than hops.
+async function moveTo(page, to, { min = 320, max = 700 } = {}) {
   const from = { ...pointer };
   const dist = Math.hypot(to.x - from.x, to.y - from.y);
-  const ms = Math.max(min, Math.min(max, 180 + dist * 0.42));
+  const ms = Math.max(min, Math.min(max, 240 + dist * 0.45));
   const steps = Math.max(10, Math.round(ms / 16));
   const bend = Math.min(60, dist * 0.12) * (to.x > from.x ? -1 : 1);
   const nx = -(to.y - from.y) / (dist || 1), ny = (to.x - from.x) / (dist || 1);
   for (let i = 1; i <= steps; i++) {
     const f = i / steps;
-    const e = f < 0.5 ? 16 * f ** 5 : 1 - (-2 * f + 2) ** 5 / 2;
+    const cubic = f < 0.5 ? 4 * f ** 3 : 1 - (-2 * f + 2) ** 3 / 2;
+    const e = 0.5 * cubic + 0.5 * (0.5 - 0.5 * Math.cos(Math.PI * f));
     const arc = Math.sin(Math.PI * e) * bend;
     await page.mouse.move(from.x + (to.x - from.x) * e + nx * arc, from.y + (to.y - from.y) * e + ny * arc);
     await wait(page, 16);
@@ -128,15 +131,18 @@ async function record(page, name, body, { readme = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `clip-${name}-`));
   const cdp = await page.context().newCDPSession(page);
   const frames = [];
+  const speeds = []; // [time, playback speed from then on]; body calls speed(v) to fast-forward a wait
+  const speed = (v) => speeds.push([Date.now() / 1000, v]);
+  const speedAt = (t) => { let v = 1; for (const [at, x] of speeds) if (t >= at) v = x; return v; };
   cdp.on("Page.screencastFrame", async (f) => {
     const file = path.join(dir, `f${String(frames.length).padStart(5, "0")}.jpg`);
     fs.writeFileSync(file, Buffer.from(f.data, "base64"));
-    frames.push({ file, t: f.metadata.timestamp });
+    frames.push({ file, t: f.metadata.timestamp, wall: Date.now() / 1000 });
     await cdp.send("Page.screencastFrameAck", { sessionId: f.sessionId }).catch(() => {});
   });
   await cdp.send("Page.startScreencast", { format: "jpeg", quality: 92, maxWidth: VIEW.width, maxHeight: VIEW.height, everyNthFrame: 1 });
   const started = Date.now() / 1000;
-  await body();
+  await body(speed);
   const ended = Date.now() / 1000;
   await cdp.send("Page.stopScreencast");
   await wait(page, 200);
@@ -144,7 +150,7 @@ async function record(page, name, body, { readme = false } = {}) {
   const lines = ["ffconcat version 1.0"];
   frames.forEach((fr, i) => {
     const next = i + 1 < frames.length ? frames[i + 1].t : Math.max(ended, fr.t + 0.04);
-    lines.push(`file '${fr.file}'`, `duration ${Math.max(0.001, next - fr.t).toFixed(4)}`);
+    lines.push(`file '${fr.file}'`, `duration ${Math.max(0.001, (next - fr.t) / speedAt(fr.wall)).toFixed(4)}`);
   });
   lines.push(`file '${frames[frames.length - 1].file}'`);
   const list = path.join(dir, "list.txt");
@@ -194,14 +200,17 @@ async function record(page, name, body, { readme = false } = {}) {
     map.setView([51.512, -0.095], 14);
   });
   await mapIdle(page);
-  await record(page, "route-build", async () => {
+  await record(page, "route-build", async (speed) => {
     await wait(page, 200);
     await click(page, await mapPoint(page, 51.5074, -0.1278));
     await wait(page, 200);
     await click(page, await mapPoint(page, 51.5194, -0.0618));
     await wait(page, 250);
     await click(page, await center(page, "#btn-build"));
+    await wait(page, 250);
+    speed(3); // the build's wait for the routing server plays at 3x
     await page.waitForFunction(() => !state.building && state.built, null, { timeout: 120000 });
+    speed(1);
     await moveTo(page, { x: VIEW.width - 160, y: 140 });
     await mapIdle(page);
     await wait(page, 1100);
@@ -245,7 +254,8 @@ async function record(page, name, body, { readme = false } = {}) {
       await wait(page, 1800);
     }
   }
-  await record(page, "themes", async () => {
+  await record(page, "themes", async (speed) => {
+    speed(1.3); // a tour of many settings: keep it brisk
     await wait(page, 100);
     await click(page, await center(page, ".map-switch-btn"));
     await wait(page, 260); // the menu's pop-in has finished, so the buttons are where they look

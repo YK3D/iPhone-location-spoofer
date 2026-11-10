@@ -39,7 +39,8 @@ module.exports = ({ take, has, footage, card, logo, fit, bound, timeOf, FULL, FP
     const tk = take("route");
     const [pa, pb, pc, , , pBuild] = tk.presses;
     const s = footage("route", { from: Math.max(0, pa - 16), fadeIn: 380 });
-    speedUp(s, [[tk.mark("list").f + 4, 1.35], [pBuild - 8, 1]]);
+    // the route build is real time in the footage; play its wait at 3x so the result arrives quickly
+    speedUp(s, [[tk.mark("list").f + 4, 1.35], [pBuild - 8, 1], [tk.mark("build-start").f + 4, 3], [tk.mark("built").f - 3, 1]]);
     const clicks = [pa, pb, pc].map((f) => tk.frames[f]);
     const near = (p) => fit(ptRect(p, 560, 350), { pad: 0 });
     const all = fit(bbox(clicks), { pad: 90 });

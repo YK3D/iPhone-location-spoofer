@@ -149,21 +149,42 @@ function timeOf(s, frame) {
 }
 
 // ---------------------------------------------------------------- one output frame
-function pointerAt(tk, i) {
-  const fr = tk.frames[i];
-  if (!fr) return null;
-  // pressing shrinks the dot over ~4 frames and lets it spring back
-  let press = 0;
-  for (let k = 0; k < 4; k++) press += (tk.frames[i - k] || fr).down ? 0.25 : 0;
-  const r = 13.5 - 3.8 * press;
+// The pointer at a fractional source frame: its position interpolated between recorded frames and
+// lightly averaged (centred, so it never lags a click), and a press that shrinks the dot smoothly and
+// springs it back with a slight overshoot when released.
+function pointerAt(tk, sf) {
+  const n = tk.frames.length;
+  const at = (k) => tk.frames[clamp(k, 0, n - 1)];
+  const i0 = Math.floor(sf), fr = sf - i0;
+  if (!at(i0)) return null;
+  let x = 0, y = 0, w = 0;
+  for (let k = -2; k <= 2; k++) {
+    const a = at(i0 + k), b = at(i0 + k + 1), wt = 3 - Math.abs(k);
+    x += wt * (a.x + (b.x - a.x) * fr);
+    y += wt * (a.y + (b.y - a.y) * fr);
+    w += wt;
+  }
+  // press: frames since the button last changed state
+  const down = at(Math.round(sf)).down;
+  let k = Math.round(sf);
+  while (k > 0 && k > sf - 40 && at(k - 1).down === down) k--;
+  const since = Math.max(0, sf - k);
+  let squeeze;
+  if (down) squeeze = 1 - Math.exp(-since / 1.1); // in over ~3 frames
+  else {
+    let held = 0; // how far it had shrunk when released
+    for (let j = k - 1; j >= 0 && j > k - 40 && at(j).down; j--) held = 1 - Math.exp(-(k - j) / 1.1);
+    squeeze = held * Math.exp(-since / 3.2) * Math.cos(since * 0.62); // back out, a little past, and settle
+  }
+  const r = 13.5 - 3.8 * squeeze;
   const rings = [];
   for (const p of tk.presses) {
-    const age = (i - p) / FPS;
+    const age = (sf - p) / FPS;
     if (age < 0 || age > 0.45) continue;
-    const k = age / 0.45;
-    rings.push({ r: 12 + 30 * (1 - (1 - k) ** 3), a: 0.75 * (1 - k) });
+    const q = age / 0.45;
+    rings.push({ r: 12 + 30 * (1 - (1 - q) ** 3), a: 0.75 * (1 - q) });
   }
-  return { x: fr.x, y: fr.y, r, rings };
+  return { x: x / w, y: y / w, r, rings };
 }
 function frameSpec(s, t, url) {
   if (s.kind === "card") return { glow: 0.16, vignette: 0.4, layers: [], card: { id: s.id, t, dur: s.dur, outMs: s.outMs, lines: s.lines } };
@@ -191,7 +212,7 @@ function frameSpec(s, t, url) {
     layers: [{
       url: `/raw/${tk.name}/f${String(fi).padStart(5, "0")}.jpg`,
       samples, ptMats,
-      pointer: s.pointer ? pointerAt(tk, fi) : null,
+      pointer: s.pointer ? pointerAt(tk, clamp(srcFrame(s, t), 0, tk.frames.length - 1)) : null,
       alpha: vis,
       blur: (1 - vis) * 16,
       bright: (0.55 + 0.45 * vis).toFixed(3),
