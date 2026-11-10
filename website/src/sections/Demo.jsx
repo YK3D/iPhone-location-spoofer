@@ -1,4 +1,5 @@
 import { Component, Suspense, lazy, useEffect, useRef, useState } from "react";
+import { prefetchMap } from "../sim/prefetch.js";
 
 const loadSimulator = () => import("../sim/Simulator.jsx");
 const Simulator = lazy(loadSimulator);
@@ -14,32 +15,43 @@ class Boundary extends Component {
   }
 }
 
-// The map is the heaviest thing on the page (a 1 MB library and a WebGL canvas), so:
-// its code downloads and is parsed while the browser is idle, and the map itself is only created
-// once the demo is on screen and the page has stopped scrolling, so it never costs frames mid-scroll.
+// The map is the heaviest thing on the page, so it gets ready in the background in three steps:
+//  1. as soon as the visitor starts scrolling, the map's data for its first view (style, tiles, fonts)
+//     downloads into the browser cache: network only, nothing for the page to draw;
+//  2. its code (a 1 MB library) loads the next time the browser is idle;
+//  3. the map itself is created at a pause in the scrolling within about a screen of the demo, from
+//     the cache, so it appears almost at once and never costs frames mid-flick (a link or a jump to
+//     the demo ends in such a pause, so it starts straight away).
 export default function Demo() {
   const ref = useRef(null);
   const [mount, setMount] = useState(false);
 
   useEffect(() => {
     const ric = "requestIdleCallback" in window;
-    const prefetch = () => { loadSimulator().catch(() => {}); };
-    const idle = ric ? requestIdleCallback(prefetch) : setTimeout(prefetch, 2500);
-
-    let visible = false;
+    let near = false;
+    let started = false;
     let quiet = 0;
-    const settle = () => {
-      clearTimeout(quiet);
-      quiet = setTimeout(() => { if (visible) setMount(true); }, 160);
+    let idle = 0;
+    const create = () => {
+      if (started) return;
+      started = true;
+      loadSimulator().then(() => setMount(true)).catch(() => setMount(true));
     };
-    const io = new IntersectionObserver(([e]) => { visible = e.isIntersecting; if (visible) settle(); }, { rootMargin: "0px 0px -15% 0px" });
-    if (ref.current) io.observe(ref.current);
-    window.addEventListener("scroll", settle, { passive: true });
-    return () => {
-      if (ric) cancelIdleCallback(idle); else clearTimeout(idle);
+    const onScroll = () => {
+      prefetchMap();
+      if (!idle) idle = ric ? requestIdleCallback(() => loadSimulator().catch(() => {})) : setTimeout(() => loadSimulator().catch(() => {}), 1500);
       clearTimeout(quiet);
-      io.disconnect();
-      window.removeEventListener("scroll", settle);
+      if (near) quiet = setTimeout(create, 120);
+    };
+    // within about a screen of the demo: create it at the next pause in the scrolling
+    const ioNear = new IntersectionObserver(([e]) => { near = e.isIntersecting; if (near) { clearTimeout(quiet); quiet = setTimeout(create, 120); } }, { rootMargin: "100% 0px" });
+    if (ref.current) ioNear.observe(ref.current);
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      ioNear.disconnect();
+      clearTimeout(quiet);
+      if (idle) { if (ric) cancelIdleCallback(idle); else clearTimeout(idle); }
     };
   }, []);
 

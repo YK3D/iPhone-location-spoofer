@@ -11,7 +11,7 @@ import Icon from "../components/Icon.jsx";
 
 maplibregl.setWorkerUrl(workerUrl);
 
-const STYLE = "https://tiles.openfreemap.org/styles/dark";
+import { MAP_START, MAP_STYLE as STYLE } from "./prefetch.js";
 // The app's own tuning of OpenFreeMap's dark style (DARK_MAP_PAINT in ui/app.js), so the demo map looks
 // like the app's: readable water, parks, buildings, road hierarchy and labels. Missing layers are skipped.
 const DARK_MAP_PAINT = [
@@ -48,7 +48,7 @@ const MODES = [
   { key: "foot", label: "Footpaths", kmh: 5 },
   { key: "straight", label: "Straight line", kmh: 50 },
 ];
-const START = [51.5007, -0.1246];
+const START = MAP_START.center;
 const PRESETS = [
   { name: "Westminster by car", mode: "car", kmh: 50, pts: [[51.5007, -0.1246], [51.5033, -0.1195], [51.5081, -0.1281]] },
   { name: "Paris by bike", mode: "bike", kmh: 18, pts: [[48.8584, 2.2945], [48.8638, 2.3135], [48.8606, 2.3376]] },
@@ -255,7 +255,7 @@ export default function Simulator() {
         container: mapBox.current,
         style: STYLE,
         center: ll(START),
-        zoom: 15,
+        zoom: MAP_START.zoom,
         attributionControl: { compact: true },
         cooperativeGestures: true,
         pixelRatio: Math.min(window.devicePixelRatio || 1, 2), // 3x screens draw a third fewer pixels

@@ -36,7 +36,7 @@ site when anything under `website/` or one of those files changes (`ignoreComman
 | `src/pages/DocPage.jsx` | The document pages (Vercel rewrites their paths to the app) |
 | `src/sim/engine.js` | A compact port of the app's speed engine (`browser/spoofer/profile.py`): cornering limits, acceleration and braking. Keep its constants in step with the app |
 | `src/sim/routing.js` | Routes from the same public OSRM servers the app uses, at most one request per second |
-| `src/sim/Simulator.jsx` | The in-browser demo (MapLibre, OpenFreeMap tiles with the app's dark-map colours). Its code loads while the browser is idle; the map starts once the demo is on screen and scrolling has stopped |
+| `src/sim/Simulator.jsx` | The in-browser demo (MapLibre, OpenFreeMap tiles with the app's dark-map colours). Once the visitor starts scrolling, the map's data for its first view downloads in the background (`src/sim/prefetch.js`) and its code loads when the browser is idle; the map is created at a pause in the scrolling within about a screen of the demo |
 | `api/releases.js` | Latest stable release of each edition. An optional `GITHUB_TOKEN` environment variable raises GitHub's rate limit |
 | `public/media/` | Clips of the real app made by `scripts/record-clips.cjs`, and the showreel made by `scripts/showreel/` |
 | `scripts/make-contours.py` | Draws the topographic lines behind the hero (`src/assets/contours.svg`) |

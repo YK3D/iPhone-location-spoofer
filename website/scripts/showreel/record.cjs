@@ -144,17 +144,19 @@ class Recorder {
     this.take.marks.push(m);
   }
 
-  // ---- the pointer: a speed ramp (quintic ease in-out) along a slight arc, one position per frame
-  async moveTo(to, { min = 260, max = 620 } = {}) {
+  // ---- the pointer: a gentle speed ramp (sine-blended cubic ease in-out, so it neither snaps off nor
+  // brakes hard) along a slight arc, one position per frame
+  async moveTo(to, { min = 320, max = 700 } = {}) {
     const from = { x: this.pointer.x, y: this.pointer.y };
     const dist = Math.hypot(to.x - from.x, to.y - from.y);
-    const ms = Math.max(min, Math.min(max, 180 + dist * 0.42));
+    const ms = Math.max(min, Math.min(max, 240 + dist * 0.45));
     const steps = Math.max(2, Math.round(ms * FPS / 1000));
     const bend = Math.min(50, dist * 0.1) * (to.x > from.x ? -1 : 1);
     const nx = -(to.y - from.y) / (dist || 1), ny = (to.x - from.x) / (dist || 1);
     for (let i = 1; i <= steps; i++) {
       const f = i / steps;
-      const e = f < 0.5 ? 16 * f ** 5 : 1 - (-2 * f + 2) ** 5 / 2;
+      const cubic = f < 0.5 ? 4 * f ** 3 : 1 - (-2 * f + 2) ** 3 / 2;
+      const e = 0.5 * cubic + 0.5 * (0.5 - 0.5 * Math.cos(Math.PI * f));
       const arc = Math.sin(Math.PI * e) * bend;
       this.pointer.x = from.x + (to.x - from.x) * e + nx * arc;
       this.pointer.y = from.y + (to.y - from.y) * e + ny * arc;
